@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.js.map
+.env
+.secrets/
+sdk/dist/
+sdk/node_modules/
+*.sqlite

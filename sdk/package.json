@@ -1,0 +1,13 @@
+{
+  "name": "@hasna/attachments-sdk",
+  "version": "0.1.0",
+  "description": "Zero-dependency TypeScript client for @hasna/attachments REST API",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "publishConfig": { "access": "restricted", "registry": "https://registry.npmjs.org/" },
+  "license": "MIT",
+  "scripts": {
+    "build": "bun build sdk/src/index.ts --outdir sdk/dist --target browser",
+    "test": "bun test sdk/"
+  }
+}

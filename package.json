@@ -1,0 +1,39 @@
+{
+  "name": "@hasna/attachments",
+  "version": "0.1.0",
+  "description": "File transfer for AI agents — S3-backed upload, shareable links, CLI + MCP + REST API",
+  "bin": {
+    "attachments": "./dist/cli/index.js",
+    "attachments-mcp": "./dist/mcp/server.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "build:cli": "bun build src/cli/index.ts --outdir dist/cli --target bun",
+    "test": "bash scripts/test.sh",
+    "test:coverage": "bash scripts/test.sh --coverage",
+    "dev": "bun run src/cli/index.ts"
+  },
+  "publishConfig": {
+    "access": "restricted",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "keywords": ["attachments", "s3", "file-transfer", "ai-agents", "mcp", "cli"],
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1007.0",
+    "@aws-sdk/s3-request-presigner": "^3.1007.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@types/mime-types": "^3.0.1",
+    "commander": "^14.0.3",
+    "date-fns": "^4.1.0",
+    "hono": "^4.12.7",
+    "mime-types": "^3.0.2",
+    "nanoid": "^5.1.6"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.10",
+    "typescript": "^5.9.3"
+  }
+}
