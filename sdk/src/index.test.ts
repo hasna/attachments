@@ -272,6 +272,62 @@ describe("AttachmentsClient", () => {
     });
   });
 
+  // ── uploadBuffer ────────────────────────────────────────────────────────
+
+  describe("uploadBuffer()", () => {
+    it("uploads a Buffer and returns mapped attachment", async () => {
+      mockFetch(201, rawAttachment);
+      const buf = Buffer.from("hello world");
+      const result = await client.uploadBuffer(buf, "hello.txt");
+      // @ts-expect-error
+      const [url, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(url).toBe(`${BASE_URL}/api/attachments`);
+      expect(init.method).toBe("POST");
+      expect(init.body).toBeInstanceOf(FormData);
+      expect(result).toEqual(expectedAttachment);
+    });
+
+    it("uploads a Uint8Array and returns mapped attachment", async () => {
+      mockFetch(201, rawAttachment);
+      const bytes = new Uint8Array([72, 101, 108, 108, 111]);
+      const result = await client.uploadBuffer(bytes, "bytes.bin");
+      // @ts-expect-error
+      const [url, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(url).toBe(`${BASE_URL}/api/attachments`);
+      expect(init.method).toBe("POST");
+      expect(init.body).toBeInstanceOf(FormData);
+      expect(result).toEqual(expectedAttachment);
+    });
+
+    it("includes the correct filename in FormData", async () => {
+      mockFetch(201, rawAttachment);
+      const buf = Buffer.from("data");
+      await client.uploadBuffer(buf, "report.pdf");
+      // @ts-expect-error
+      const [, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      const form = init.body as FormData;
+      const file = form.get("file") as File;
+      expect(file).toBeInstanceOf(Blob);
+      expect(file.name).toBe("report.pdf");
+    });
+
+    it("appends expiry and tag to FormData when provided", async () => {
+      mockFetch(201, rawAttachment);
+      const buf = Buffer.from("tagged");
+      await client.uploadBuffer(buf, "tagged.txt", { expiry: "7d", tag: "my-tag" });
+      // @ts-expect-error
+      const [, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      const form = init.body as FormData;
+      expect(form.get("expiry")).toBe("7d");
+      expect(form.get("tag")).toBe("my-tag");
+    });
+
+    it("throws on non-201 response", async () => {
+      mockFetch(400, { error: "file field is required" });
+      await expect(client.uploadBuffer(Buffer.from(""), "empty.txt")).rejects.toThrow("file field is required");
+    });
+  });
+
   // ── download ─────────────────────────────────────────────────────────────
 
   describe("download()", () => {

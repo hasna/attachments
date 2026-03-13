@@ -41,6 +41,8 @@ const mockDbUpdateLink = mock((_id: string, _link: string, _expiresAt?: number |
 const mockDbDelete = mock((_id: string) => {});
 const mockDbClose = mock(() => {});
 
+const mockDbInsert = mock((_att: unknown) => {});
+
 mock.module("../core/db", () => ({
   AttachmentsDB: class MockAttachmentsDB {
     findById = mockDbFindById;
@@ -48,17 +50,19 @@ mock.module("../core/db", () => ({
     updateLink = mockDbUpdateLink;
     delete = mockDbDelete;
     close = mockDbClose;
-    insert = mock(() => {});
+    insert = mockDbInsert;
   },
 }));
 
 const mockS3Delete = mock(async (_key: string) => {});
 const mockS3Presign = mock(async (_key: string, _expiresIn: number) => "https://s3.amazonaws.com/test-bucket/test.txt?sig=regenerated");
+const mockS3PresignPut = mock(async (_key: string, _contentType: string, _expiresIn: number) => "https://s3.amazonaws.com/test-bucket/upload?sig=put123");
 
 mock.module("../core/s3", () => ({
   S3Client: class MockS3Client {
     delete = mockS3Delete;
     presign = mockS3Presign;
+    presignPut = mockS3PresignPut;
   },
 }));
 
@@ -151,6 +155,9 @@ describe("REST API server", () => {
     mockDbClose.mockReset();
     mockS3Delete.mockReset();
     mockS3Delete.mockImplementation(async () => {});
+    mockS3PresignPut.mockReset();
+    mockS3PresignPut.mockImplementation(async () => "https://s3.amazonaws.com/test-bucket/upload?sig=put123");
+    mockDbInsert.mockReset();
     mockGeneratePresignedLink.mockReset();
     mockGeneratePresignedLink.mockImplementation(
       async () => "https://s3.amazonaws.com/test-bucket/test.txt?sig=new"
@@ -258,6 +265,18 @@ describe("REST API server", () => {
       await app.request("/api/attachments?expired=true");
       const [opts] = mockDbFindAll.mock.calls[0] as [{ includeExpired?: boolean }];
       expect(opts?.includeExpired).toBe(true);
+    });
+
+    it("passes tag query param to db.findAll", async () => {
+      await app.request("/api/attachments?tag=session-123");
+      const [opts] = mockDbFindAll.mock.calls[0] as [{ tag?: string }];
+      expect(opts?.tag).toBe("session-123");
+    });
+
+    it("does not pass tag when query param is missing", async () => {
+      await app.request("/api/attachments");
+      const [opts] = mockDbFindAll.mock.calls[0] as [{ tag?: string }];
+      expect(opts?.tag).toBeUndefined();
     });
 
     it("returns only requested fields when ?fields= is set", async () => {
@@ -473,6 +492,97 @@ describe("REST API server", () => {
       } finally {
         setConfig({ defaults: { linkType: "presigned" } });
       }
+    });
+  });
+
+  // --- POST /api/attachments/presign-upload ---
+
+  describe("POST /api/attachments/presign-upload", () => {
+    it("returns 201 with presigned upload URL", async () => {
+      const res = await app.request("/api/attachments/presign-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "report.pdf" }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.upload_url).toContain("s3.amazonaws.com");
+      expect(body.id).toMatch(/^att_/);
+      expect(body.s3_key).toContain("report.pdf");
+      expect(body).toHaveProperty("expires_at");
+    });
+
+    it("returns 400 when filename is missing", async () => {
+      const res = await app.request("/api/attachments/presign-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("filename is required");
+    });
+
+    it("returns 400 when body is missing", async () => {
+      const res = await app.request("/api/attachments/presign-upload", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBeTruthy();
+    });
+
+    it("returns 400 for invalid expiry format", async () => {
+      const res = await app.request("/api/attachments/presign-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "test.txt", expiry: "invalid" }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("Invalid expiry format");
+    });
+
+    it("uses custom content_type when provided", async () => {
+      const res = await app.request("/api/attachments/presign-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "data.bin", content_type: "application/octet-stream" }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(mockS3PresignPut).toHaveBeenCalledTimes(1);
+      const [, contentType] = mockS3PresignPut.mock.calls[0] as [string, string, number];
+      expect(contentType).toBe("application/octet-stream");
+    });
+
+    it("inserts a DB record with size 0", async () => {
+      await app.request("/api/attachments/presign-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "test.txt" }),
+      });
+
+      expect(mockDbInsert).toHaveBeenCalledTimes(1);
+      const [att] = mockDbInsert.mock.calls[0] as [{ size: number; filename: string }];
+      expect(att.size).toBe(0);
+      expect(att.filename).toBe("test.txt");
+    });
+
+    it("defaults expiry to 1h", async () => {
+      await app.request("/api/attachments/presign-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "file.txt" }),
+      });
+
+      expect(mockS3PresignPut).toHaveBeenCalledTimes(1);
+      const [, , expiresIn] = mockS3PresignPut.mock.calls[0] as [string, string, number];
+      expect(expiresIn).toBe(3600);
     });
   });
 

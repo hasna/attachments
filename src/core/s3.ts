@@ -136,4 +136,14 @@ export class S3Client {
 
     return getSignedUrl(this.client, command, { expiresIn });
   }
+
+  async presignPut(key: string, contentType: string, expiresIn: number): Promise<string> {
+    const command = new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      ContentType: contentType,
+    });
+
+    return getSignedUrl(this.client, command, { expiresIn });
+  }
 }

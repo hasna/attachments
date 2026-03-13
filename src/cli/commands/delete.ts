@@ -8,6 +8,7 @@ export function deleteCommand(): Command {
     .description("Delete an attachment by ID")
     .argument("<id>", "Attachment ID to delete")
     .option("-y, --yes", "Skip confirmation prompt", false)
+    .option("--brief", "Compact one-line output")
     .action(async (id: string, options) => {
       const db = new AttachmentsDB();
       try {
@@ -34,7 +35,11 @@ export function deleteCommand(): Command {
         await s3.delete(att.s3Key);
 
         db.delete(id);
-        process.stdout.write(`✓ Deleted ${att.id} (${att.filename})\n`);
+        if (options.brief) {
+          process.stdout.write(`deleted ${att.id}\n`);
+        } else {
+          process.stdout.write(`✓ Deleted ${att.id} (${att.filename})\n`);
+        }
       } finally {
         db.close();
       }

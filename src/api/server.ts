@@ -3,6 +3,8 @@ import { writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { nanoid } from "nanoid";
+import { format } from "date-fns";
+import { lookup as mimeLookup } from "mime-types";
 import { uploadFile } from "../core/upload";
 import { streamAttachment } from "../core/download";
 import { AttachmentsDB } from "../core/db";
@@ -52,6 +54,7 @@ export function createApp(): Hono {
           filename: attachment.filename,
           size: attachment.size,
           link: attachment.link,
+          tag: attachment.tag,
           expires_at: attachment.expiresAt,
           created_at: attachment.createdAt,
         },
@@ -77,14 +80,16 @@ export function createApp(): Hono {
     const fieldsParam = c.req.query("fields");
     const format = c.req.query("format");
     const expiredParam = c.req.query("expired");
+    const tagParam = c.req.query("tag");
 
     const limit = limitParam ? parseInt(limitParam, 10) : 20;
     const includeExpired = expiredParam === "true";
+    const tag = tagParam || undefined;
 
     const db = new AttachmentsDB();
     let attachments;
     try {
-      attachments = db.findAll({ limit, includeExpired });
+      attachments = db.findAll({ limit, includeExpired, tag });
     } finally {
       db.close();
     }
@@ -96,6 +101,7 @@ export function createApp(): Hono {
       size: a.size,
       content_type: a.contentType,
       link: a.link,
+      tag: a.tag,
       expires_at: a.expiresAt,
       created_at: a.createdAt,
     }));
@@ -149,6 +155,7 @@ export function createApp(): Hono {
       size: attachment.size,
       content_type: attachment.contentType,
       link: attachment.link,
+      tag: attachment.tag,
       expires_at: attachment.expiresAt,
       created_at: attachment.createdAt,
     });
@@ -287,6 +294,81 @@ export function createApp(): Hono {
       link: newLink,
       expires_at: newExpiresAt,
     });
+  });
+
+  // POST /api/attachments/presign-upload — generate presigned PUT URL
+  app.post("/api/attachments/presign-upload", async (c) => {
+    try {
+      let body: { filename?: string; expiry?: string; content_type?: string } = {};
+      try {
+        body = await c.req.json();
+      } catch {
+        return c.json({ error: "Request body is required" }, 400);
+      }
+
+      if (!body.filename) {
+        return c.json({ error: "filename is required" }, 400);
+      }
+
+      const config = getConfig();
+      const filename = body.filename;
+
+      // Determine content type
+      const contentType =
+        body.content_type ?? (mimeLookup(filename) || "application/octet-stream");
+
+      // Parse expiry (default 1h)
+      const expiryStr = body.expiry ?? "1h";
+      const expiryMs = parseExpiry(expiryStr);
+      if (expiryMs === null) {
+        return c.json({ error: `Invalid expiry format: ${expiryStr}` }, 400);
+      }
+
+      const expirySeconds = Math.floor(expiryMs / 1000);
+
+      // Generate ID and S3 key
+      const id = `att_${nanoid(11)}`;
+      const datePrefix = format(new Date(), "yyyy-MM-dd");
+      const s3Key = `attachments/${datePrefix}/${id}/${filename}`;
+
+      // Generate presigned PUT URL
+      const s3 = new S3Client(config.s3);
+      const uploadUrl = await s3.presignPut(s3Key, contentType, expirySeconds);
+
+      // Create DB record with size 0 (pending upload)
+      const now = Date.now();
+      const expiresAt = now + expiryMs;
+      const db = new AttachmentsDB();
+      try {
+        db.insert({
+          id,
+          filename,
+          s3Key,
+          bucket: config.s3.bucket,
+          size: 0,
+          contentType,
+          link: null,
+          tag: null,
+          expiresAt,
+          createdAt: now,
+        });
+      } finally {
+        db.close();
+      }
+
+      return c.json(
+        {
+          upload_url: uploadUrl,
+          id,
+          s3_key: s3Key,
+          expires_at: expiresAt,
+        },
+        201
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
   });
 
   // GET /d/:id — public shortlink → redirect to download

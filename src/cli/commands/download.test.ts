@@ -198,6 +198,18 @@ describe("download command", () => {
     }
   });
 
+  it("outputs brief one-line format when --brief is passed", async () => {
+    const capture = captureOutput();
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["download", "att_abc123xyz", "--brief"], { from: "user" });
+      const combined = capture.out.join("");
+      expect(combined).toBe("/tmp/hello.txt 543 KB\n");
+    } finally {
+      capture.restore();
+    }
+  });
+
   it("formats byte sizes correctly: MB for large files", async () => {
     mockDownloadAttachment.mockImplementation(async () => ({
       path: "/tmp/big.zip",

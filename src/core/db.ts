@@ -11,6 +11,7 @@ export interface Attachment {
   size: number;
   contentType: string;
   link: string | null;
+  tag: string | null;
   expiresAt: number | null; // unix timestamp in ms, null = no expiry
   createdAt: number; // unix timestamp in ms
 }
@@ -23,6 +24,7 @@ interface AttachmentRow {
   size: number;
   content_type: string;
   link: string | null;
+  tag: string | null;
   expires_at: number | null;
   created_at: number;
 }
@@ -36,6 +38,7 @@ function rowToAttachment(row: AttachmentRow): Attachment {
     size: row.size,
     contentType: row.content_type,
     link: row.link,
+    tag: row.tag,
     expiresAt: row.expires_at,
     createdAt: row.created_at,
   };
@@ -64,19 +67,27 @@ export class AttachmentsDB {
         size INTEGER NOT NULL,
         content_type TEXT NOT NULL,
         link TEXT,
+        tag TEXT,
         expires_at INTEGER,
         created_at INTEGER NOT NULL
       );
     `);
+
+    // Migration: add tag column if it doesn't exist (for existing databases)
+    try {
+      this.db.run(`ALTER TABLE attachments ADD COLUMN tag TEXT`);
+    } catch {
+      // Column already exists — ignore
+    }
   }
 
   insert(attachment: Attachment): void {
     this.db
       .prepare(
         `INSERT INTO attachments
-          (id, filename, s3_key, bucket, size, content_type, link, expires_at, created_at)
+          (id, filename, s3_key, bucket, size, content_type, link, tag, expires_at, created_at)
          VALUES
-          ($id, $filename, $s3_key, $bucket, $size, $content_type, $link, $expires_at, $created_at)`
+          ($id, $filename, $s3_key, $bucket, $size, $content_type, $link, $tag, $expires_at, $created_at)`
       )
       .run({
         $id: attachment.id,
@@ -86,6 +97,7 @@ export class AttachmentsDB {
         $size: attachment.size,
         $content_type: attachment.contentType,
         $link: attachment.link,
+        $tag: attachment.tag,
         $expires_at: attachment.expiresAt,
         $created_at: attachment.createdAt,
       });
@@ -103,17 +115,29 @@ export class AttachmentsDB {
   findAll(opts?: {
     limit?: number;
     includeExpired?: boolean;
+    tag?: string;
   }): Attachment[] {
     const includeExpired = opts?.includeExpired ?? false;
     const limit = opts?.limit;
+    const tag = opts?.tag;
     const now = Date.now();
 
     let sql = `SELECT * FROM attachments`;
     const params: (number | string)[] = [];
+    const conditions: string[] = [];
 
     if (!includeExpired) {
-      sql += ` WHERE (expires_at IS NULL OR expires_at > ?)`;
+      conditions.push(`(expires_at IS NULL OR expires_at > ?)`);
       params.push(now);
+    }
+
+    if (tag != null) {
+      conditions.push(`tag = ?`);
+      params.push(tag);
+    }
+
+    if (conditions.length > 0) {
+      sql += ` WHERE ${conditions.join(" AND ")}`;
     }
 
     sql += ` ORDER BY created_at DESC`;

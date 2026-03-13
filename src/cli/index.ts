@@ -4,6 +4,10 @@ import { registerUpload } from "./commands/upload";
 import { registerDownload } from "./commands/download";
 import { registerServe } from "./commands/serve";
 import { registerMcp } from "./commands/mcp";
+import { registerClean } from "./commands/clean";
+import { registerWhoami } from "./commands/whoami";
+import { registerStatus } from "./commands/status";
+import { registerPresign } from "./commands/presign";
 
 const program = new Command()
   .name("attachments")
@@ -15,6 +19,10 @@ registerUpload(program);
 registerDownload(program);
 registerServe(program);
 registerMcp(program);
+registerClean(program);
+registerWhoami(program);
+registerStatus(program);
+registerPresign(program);
 
 // TODO: register list, delete, link, config
 

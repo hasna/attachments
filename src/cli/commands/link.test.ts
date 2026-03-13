@@ -354,6 +354,36 @@ describe("linkCommand", () => {
     }
   });
 
+  it("outputs just the URL when --brief is passed", async () => {
+    const att = makeAttachment({ id: "att_brief", link: "https://cdn.example.com/file" });
+    mockFindById.mockImplementation(() => att);
+
+    const capture = captureOutput();
+    try {
+      const program = buildLinkCmd();
+      await program.parseAsync(["link", "att_brief", "--brief"], { from: "user" });
+      const combined = capture.out.join("");
+      expect(combined).toBe("https://cdn.example.com/file\n");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("outputs 'no link' when --brief is passed and link is null", async () => {
+    const att = makeAttachment({ id: "att_brief_nolink", link: null });
+    mockFindById.mockImplementation(() => att);
+
+    const capture = captureOutput();
+    try {
+      const program = buildLinkCmd();
+      await program.parseAsync(["link", "att_brief_nolink", "--brief"], { from: "user" });
+      const combined = capture.out.join("");
+      expect(combined).toBe("no link\n");
+    } finally {
+      capture.restore();
+    }
+  });
+
   it("calls db.close in all cases", async () => {
     const att = makeAttachment();
     mockFindById.mockImplementation(() => att);

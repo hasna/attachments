@@ -32,6 +32,7 @@ function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
     size: 1024,
     contentType: "image/png",
     link: null,
+    tag: null,
     expiresAt: null,
     createdAt: Date.now(),
     ...overrides,
@@ -84,6 +85,20 @@ describe("AttachmentsDB", () => {
       expect(found!.link).toBe("https://example.com/file");
       expect(found!.expiresAt).toBe(9999999999999);
     });
+
+    it("preserves tag when set on insert", () => {
+      const att = makeAttachment({ tag: "session-123" });
+      db.insert(att);
+      const found = db.findById(att.id);
+      expect(found!.tag).toBe("session-123");
+    });
+
+    it("stores tag as null when not set", () => {
+      const att = makeAttachment();
+      db.insert(att);
+      const found = db.findById(att.id);
+      expect(found!.tag).toBeNull();
+    });
   });
 
   describe("findAll", () => {
@@ -124,6 +139,31 @@ describe("AttachmentsDB", () => {
 
     it("returns empty array when no attachments", () => {
       expect(db.findAll()).toEqual([]);
+    });
+
+    it("filters by tag when tag option is set", () => {
+      const now = Date.now();
+      db.insert(makeAttachment({ id: "att_tagged1", tag: "session-1", createdAt: now }));
+      db.insert(makeAttachment({ id: "att_tagged2", tag: "session-1", createdAt: now - 1 }));
+      db.insert(makeAttachment({ id: "att_other", tag: "session-2", createdAt: now - 2 }));
+      db.insert(makeAttachment({ id: "att_noTag", tag: null, createdAt: now - 3 }));
+
+      const results = db.findAll({ tag: "session-1" });
+      const ids = results.map((r) => r.id);
+      expect(ids).toContain("att_tagged1");
+      expect(ids).toContain("att_tagged2");
+      expect(ids).not.toContain("att_other");
+      expect(ids).not.toContain("att_noTag");
+      expect(results.length).toBe(2);
+    });
+
+    it("returns all when tag option is not set", () => {
+      const now = Date.now();
+      db.insert(makeAttachment({ id: "att_t1", tag: "session-1", createdAt: now }));
+      db.insert(makeAttachment({ id: "att_t2", tag: null, createdAt: now - 1 }));
+
+      const results = db.findAll();
+      expect(results.length).toBe(2);
     });
 
     it("orders by createdAt descending", () => {

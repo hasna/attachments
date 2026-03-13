@@ -7,12 +7,17 @@ export function registerDownload(program: Command): void {
     .command("download <id-or-url>")
     .description("Download an attachment by ID or /d/:id URL")
     .option("--output <path>", "Destination directory or filename (defaults to current directory)")
-    .action(async (idOrUrl: string, options: { output?: string }) => {
+    .option("--brief", "Compact one-line output")
+    .action(async (idOrUrl: string, options: { output?: string; brief?: boolean }) => {
       try {
         const result = await downloadAttachment(idOrUrl, options.output);
-        process.stdout.write(
-          `\u2713 Downloaded ${result.filename} \u2192 ${result.path} (${formatBytes(result.size)})\n`
-        );
+        if (options.brief) {
+          process.stdout.write(`${result.path} ${formatBytes(result.size)}\n`);
+        } else {
+          process.stdout.write(
+            `\u2713 Downloaded ${result.filename} \u2192 ${result.path} (${formatBytes(result.size)})\n`
+          );
+        }
       } catch (err: unknown) {
         exitError(err instanceof Error ? err.message : String(err));
       }

@@ -1,5 +1,6 @@
-import { readFileSync, statSync } from "fs";
-import { basename } from "path";
+import { readFileSync, statSync, writeFileSync, unlinkSync, mkdirSync } from "fs";
+import { basename, join } from "path";
+import { tmpdir } from "os";
 import { nanoid } from "nanoid";
 import { lookup as mimeLookup } from "mime-types";
 import { format } from "date-fns";
@@ -70,6 +71,7 @@ export async function uploadFile(
     size: fileSize,
     contentType,
     link,
+    tag: opts.tag ?? null,
     expiresAt,
     createdAt: Date.now(),
   };
@@ -83,4 +85,88 @@ export async function uploadFile(
   }
 
   return attachment;
+}
+
+export async function uploadFromBuffer(
+  buffer: Buffer,
+  filename: string,
+  opts: UploadOptions = {},
+  deps: UploadDeps = {}
+): Promise<Attachment> {
+  const tempDir = join(tmpdir(), "open-attachments-stdin");
+  mkdirSync(tempDir, { recursive: true });
+  const tempPath = join(tempDir, filename);
+
+  try {
+    writeFileSync(tempPath, buffer);
+    return await uploadFile(tempPath, opts, deps);
+  } finally {
+    try {
+      unlinkSync(tempPath);
+    } catch {
+      // ignore cleanup errors
+    }
+  }
+}
+
+/**
+ * Extract a filename from a URL, using Content-Disposition header if available,
+ * otherwise falling back to the last path segment.
+ */
+function extractFilenameFromUrl(url: string, contentDisposition?: string | null): string {
+  // Try Content-Disposition header first
+  if (contentDisposition) {
+    const match = contentDisposition.match(/filename[*]?=(?:UTF-8''|"?)([^";]+)"?/i);
+    if (match?.[1]) {
+      return decodeURIComponent(match[1].trim());
+    }
+  }
+
+  // Fall back to last path segment from URL
+  try {
+    const parsed = new URL(url);
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    if (segments.length > 0) {
+      const lastSegment = decodeURIComponent(segments[segments.length - 1]!);
+      if (lastSegment && lastSegment.includes(".")) {
+        return lastSegment;
+      }
+    }
+  } catch {
+    // invalid URL, fall through
+  }
+
+  return `download_${nanoid(6)}`;
+}
+
+export async function uploadFromUrl(
+  url: string,
+  opts: UploadOptions = {},
+  deps: UploadDeps = {}
+): Promise<Attachment> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch URL: ${response.status} ${response.statusText}`);
+  }
+
+  const contentDisposition = response.headers.get("content-disposition");
+  const filename = extractFilenameFromUrl(url, contentDisposition);
+
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  const tempDir = join(tmpdir(), "open-attachments-url");
+  mkdirSync(tempDir, { recursive: true });
+  const tempPath = join(tempDir, filename);
+
+  try {
+    writeFileSync(tempPath, buffer);
+    return await uploadFile(tempPath, opts, deps);
+  } finally {
+    try {
+      unlinkSync(tempPath);
+    } catch {
+      // ignore cleanup errors
+    }
+  }
 }

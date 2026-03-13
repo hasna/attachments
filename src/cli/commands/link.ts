@@ -12,6 +12,7 @@ export function linkCommand(): Command {
     .option("--regenerate", "Generate a fresh presigned URL", false)
     .option("--expiry <time>", "Expiry duration for regenerated link (e.g. 7d, 24h, 30m, never)")
     .option("--format <format>", "Output format: human or json", "human")
+    .option("--brief", "Compact one-line output")
     .action(async (id: string, options) => {
       const format = options.format as string;
       if (!["human", "json"].includes(format)) {
@@ -58,7 +59,9 @@ export function linkCommand(): Command {
           db.updateLink(att.id, link ?? "", expiresAt);
         }
 
-        if (format === "json") {
+        if (options.brief) {
+          process.stdout.write(`${link ?? "no link"}\n`);
+        } else if (format === "json") {
           process.stdout.write(
             JSON.stringify({ id: att.id, filename: att.filename, link, expiresAt }, null, 2) +
               "\n"

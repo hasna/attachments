@@ -244,6 +244,21 @@ describe("deleteCommand", () => {
       stdinEncodingSpy.mockRestore();
     }
   });
+
+  it("outputs brief format when --brief is passed", async () => {
+    const att = makeAttachment({ id: "att_brief_del", s3Key: "uploads/brief.pdf" });
+    mockFindById.mockImplementation(() => att);
+
+    const capture = captureOutput();
+    try {
+      const program = buildDeleteCmd();
+      await program.parseAsync(["delete", "att_brief_del", "--yes", "--brief"], { from: "user" });
+      const combined = capture.out.join("");
+      expect(combined).toBe("deleted att_brief_del\n");
+    } finally {
+      capture.restore();
+    }
+  });
 });
 
 // ─── Output format ────────────────────────────────────────────────────────────

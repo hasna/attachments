@@ -120,6 +120,32 @@ export class AttachmentsClient {
   }
 
   /**
+   * Upload raw bytes (Buffer or Uint8Array) as an attachment.
+   * Useful when you already have the file contents in memory.
+   */
+  async uploadBuffer(
+    buffer: Buffer | Uint8Array,
+    filename: string,
+    opts?: { expiry?: string; tag?: string }
+  ): Promise<Attachment> {
+    const form = new FormData();
+    const blob = new Blob([buffer]);
+    form.append("file", blob, filename);
+
+    if (opts?.expiry) form.append("expiry", opts.expiry);
+    if (opts?.tag) form.append("tag", opts.tag);
+
+    const res = await fetch(`${this.baseUrl}/api/attachments`, {
+      method: "POST",
+      body: form,
+    });
+
+    await checkResponse(res);
+    const raw = await res.json() as RawAttachment;
+    return mapAttachment(raw);
+  }
+
+  /**
    * Download a file to the local filesystem (Node/Bun only).
    * @param idOrUrl - Attachment ID or a full download URL.
    * @param destPath - Directory or full file path to write to. Defaults to cwd.

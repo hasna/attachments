@@ -354,3 +354,48 @@ describe("S3Client.presign", () => {
     await expect(client.presign("k", 10)).rejects.toThrow("SignatureExpired");
   });
 });
+
+describe("S3Client.presignPut", () => {
+  beforeEach(() => {
+    mockGetSignedUrl.mockReset();
+    mockGetSignedUrl.mockImplementation(
+      async (_c: unknown, _cmd: unknown, _opts: unknown) => "https://presigned.url/put-key?sig=put123"
+    );
+  });
+
+  it("returns the presigned PUT URL from getSignedUrl", async () => {
+    const client = makeClient();
+    const url = await client.presignPut("files/upload.pdf", "application/pdf", 3600);
+
+    expect(url).toBe("https://presigned.url/put-key?sig=put123");
+  });
+
+  it("passes expiresIn to getSignedUrl", async () => {
+    const client = makeClient();
+    await client.presignPut("k", "text/plain", 7200);
+
+    expect(mockGetSignedUrl).toHaveBeenCalledTimes(1);
+    const [, , opts] = mockGetSignedUrl.mock.calls[0] as [unknown, unknown, { expiresIn: number }];
+    expect(opts.expiresIn).toBe(7200);
+  });
+
+  it("passes a PutObjectCommand with ContentType to getSignedUrl", async () => {
+    const client = makeClient();
+    await client.presignPut("uploads/file.zip", "application/zip", 300);
+
+    const [, cmd] = mockGetSignedUrl.mock.calls[0] as [unknown, { constructor: { name: string }; input: Record<string, unknown> }, unknown];
+    expect(cmd.constructor.name).toBe("PutObjectCommand");
+    expect(cmd.input["Bucket"]).toBe("test-bucket");
+    expect(cmd.input["Key"]).toBe("uploads/file.zip");
+    expect(cmd.input["ContentType"]).toBe("application/zip");
+  });
+
+  it("propagates errors from getSignedUrl", async () => {
+    mockGetSignedUrl.mockImplementation(async () => {
+      throw new Error("PresignPutFailed");
+    });
+
+    const client = makeClient();
+    await expect(client.presignPut("k", "text/plain", 10)).rejects.toThrow("PresignPutFailed");
+  });
+});

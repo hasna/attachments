@@ -34,10 +34,10 @@ const { listCommand } = await import("./list");
 
 function makeAttachment(overrides: Partial<{
   id: string; filename: string; s3Key: string; bucket: string; size: number;
-  contentType: string; link: string | null; expiresAt: number | null; createdAt: number;
+  contentType: string; link: string | null; tag: string | null; expiresAt: number | null; createdAt: number;
 }> = {}): {
   id: string; filename: string; s3Key: string; bucket: string; size: number;
-  contentType: string; link: string | null; expiresAt: number | null; createdAt: number;
+  contentType: string; link: string | null; tag: string | null; expiresAt: number | null; createdAt: number;
 } {
   return {
     id: "att_test001",
@@ -47,6 +47,7 @@ function makeAttachment(overrides: Partial<{
     size: 1024 * 1024, // 1 MB
     contentType: "image/png",
     link: "https://example.com/link",
+    tag: null,
     expiresAt: null,
     createdAt: Date.now(),
     ...overrides,
@@ -280,6 +281,30 @@ describe("listCommand", () => {
     }
   });
 
+  it("passes --tag to findAll", async () => {
+    const capture = captureOutput();
+    try {
+      const program = buildListCmd();
+      await program.parseAsync(["list", "--tag", "session-123"], { from: "user" });
+      const [opts] = mockFindAll.mock.calls[0] as [{ tag?: string }];
+      expect(opts.tag).toBe("session-123");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("does not pass tag to findAll when --tag is not provided", async () => {
+    const capture = captureOutput();
+    try {
+      const program = buildListCmd();
+      await program.parseAsync(["list"], { from: "user" });
+      const [opts] = mockFindAll.mock.calls[0] as [{ tag?: string }];
+      expect(opts.tag).toBeUndefined();
+    } finally {
+      capture.restore();
+    }
+  });
+
   it("exits with error for invalid format", async () => {
     const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
@@ -311,6 +336,36 @@ describe("listCommand", () => {
     } finally {
       capture.restore();
       exitSpy.mockRestore();
+    }
+  });
+
+  it("outputs brief one-line-per-attachment format when --brief is passed", async () => {
+    mockFindAll.mockImplementation(() => [
+      makeAttachment({ id: "att_abc123", filename: "file.txt", size: 1258291, createdAt: 1742342400000 }),
+    ]);
+    const capture = captureOutput();
+    try {
+      const program = buildListCmd();
+      await program.parseAsync(["list", "--brief"], { from: "user" });
+      const combined = capture.out.join("");
+      expect(combined).toContain("att_abc123");
+      expect(combined).toContain("file.txt");
+      expect(combined).toContain("1.2 MB");
+      expect(combined).toContain("2025-03-19");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("outputs 'No attachments found.' when --brief and list is empty", async () => {
+    mockFindAll.mockImplementation(() => []);
+    const capture = captureOutput();
+    try {
+      const program = buildListCmd();
+      await program.parseAsync(["list", "--brief"], { from: "user" });
+      expect(capture.out.join("")).toContain("No attachments found.");
+    } finally {
+      capture.restore();
     }
   });
 

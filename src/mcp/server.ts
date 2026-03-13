@@ -6,7 +6,10 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { uploadFile } from "../core/upload.js";
+import { nanoid } from "nanoid";
+import { format } from "date-fns";
+import { lookup as mimeLookup } from "mime-types";
+import { uploadFile, uploadFromUrl } from "../core/upload.js";
 import { downloadAttachment } from "../core/download.js";
 import { AttachmentsDB } from "../core/db.js";
 import { getConfig, setConfig, parseExpiry } from "../core/config.js";
@@ -20,15 +23,15 @@ import { S3Client } from "../core/s3.js";
 const FULL_SCHEMAS: Record<string, object> = {
   upload_attachment: {
     name: "upload_attachment",
-    description: "Upload a local file to S3 and return a shareable link.",
+    description: "Upload a local file or a URL to S3 and return a shareable link. Provide either 'path' (local file) or 'url' (remote URL), not both.",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string", description: "Absolute or relative path to the file to upload." },
+        url: { type: "string", description: "HTTP/HTTPS URL to fetch and upload. Alternative to 'path'." },
         expiry: { type: "string", description: "Link expiry, e.g. '24h', '7d', 'never'. Defaults to configured value." },
         tag: { type: "string", description: "Optional tag to attach to the attachment record." },
       },
-      required: ["path"],
     },
   },
   download_attachment: {
@@ -51,6 +54,7 @@ const FULL_SCHEMAS: Record<string, object> = {
       properties: {
         limit: { type: "number", description: "Max number of results." },
         format: { type: "string", enum: ["compact", "json"], description: "Output format." },
+        tag: { type: "string", description: "Filter by tag." },
       },
     },
   },
@@ -78,6 +82,19 @@ const FULL_SCHEMAS: Record<string, object> = {
       required: ["id"],
     },
   },
+  upload_attachments: {
+    name: "upload_attachments",
+    description: "Batch upload multiple local files to S3. Returns an array of results (one per file); individual failures are included inline without aborting the batch.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        paths: { type: "array", items: { type: "string" }, description: "Array of absolute or relative file paths to upload." },
+        expiry: { type: "string", description: "Link expiry, e.g. '24h', '7d', 'never'. Applied to all files." },
+        tag: { type: "string", description: "Optional tag applied to every attachment." },
+      },
+      required: ["paths"],
+    },
+  },
   configure_s3: {
     name: "configure_s3",
     description: "Persist S3 configuration to ~/.attachments/config.json.",
@@ -91,6 +108,19 @@ const FULL_SCHEMAS: Record<string, object> = {
         base_url: { type: "string", description: "Optional custom endpoint / base URL." },
       },
       required: ["bucket", "region", "access_key", "secret_key"],
+    },
+  },
+  presign_upload: {
+    name: "presign_upload",
+    description: "Generate a presigned PUT URL so a client can upload directly to S3 without credentials. Creates a DB record (status: pending upload, size 0).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        filename: { type: "string", description: "Filename for the upload (e.g. report.pdf)." },
+        expiry: { type: "string", description: "URL expiry, e.g. '1h', '30m', '7d'. Defaults to '1h'." },
+        content_type: { type: "string", description: "Content type for the upload. Auto-detected from filename if omitted." },
+      },
+      required: ["filename"],
     },
   },
   describe_tools: {
@@ -123,15 +153,15 @@ const FULL_SCHEMAS: Record<string, object> = {
 const LEAN_TOOLS = [
   {
     name: "upload_attachment",
-    description: "Upload file → link",
+    description: "Upload file or URL → link",
     inputSchema: {
       type: "object" as const,
       properties: {
         path: { type: "string" },
+        url: { type: "string" },
         expiry: { type: "string" },
         tag: { type: "string" },
       },
-      required: ["path"],
     },
   },
   {
@@ -154,6 +184,7 @@ const LEAN_TOOLS = [
       properties: {
         limit: { type: "number" },
         format: { type: "string", enum: ["compact", "json"] },
+        tag: { type: "string" },
       },
     },
   },
@@ -182,6 +213,19 @@ const LEAN_TOOLS = [
     },
   },
   {
+    name: "upload_attachments",
+    description: "Batch upload multiple files → links",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        paths: { type: "array", items: { type: "string" } },
+        expiry: { type: "string" },
+        tag: { type: "string" },
+      },
+      required: ["paths"],
+    },
+  },
+  {
     name: "configure_s3",
     description: "Save S3 config",
     inputSchema: {
@@ -194,6 +238,19 @@ const LEAN_TOOLS = [
         base_url: { type: "string" },
       },
       required: ["bucket", "region", "access_key", "secret_key"],
+    },
+  },
+  {
+    name: "presign_upload",
+    description: "Presigned PUT URL for direct S3 upload",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        filename: { type: "string" },
+        expiry: { type: "string" },
+        content_type: { type: "string" },
+      },
+      required: ["filename"],
     },
   },
   {
@@ -224,14 +281,23 @@ const LEAN_TOOLS = [
 // ---------------------------------------------------------------------------
 
 async function handleUploadAttachment(args: {
-  path: string;
+  path?: string;
+  url?: string;
   expiry?: string;
   tag?: string;
 }) {
-  const attachment = await uploadFile(args.path, {
-    expiry: args.expiry,
-    tag: args.tag,
-  });
+  if (!args.path && !args.url) {
+    throw new Error("Either 'path' or 'url' must be provided.");
+  }
+  if (args.path && args.url) {
+    throw new Error("Provide either 'path' or 'url', not both.");
+  }
+
+  const opts = { expiry: args.expiry, tag: args.tag };
+  const attachment = args.url
+    ? await uploadFromUrl(args.url, opts)
+    : await uploadFile(args.path!, opts);
+
   return {
     id: attachment.id,
     link: attachment.link,
@@ -256,11 +322,12 @@ async function handleDownloadAttachment(args: {
 function handleListAttachments(args: {
   limit?: number;
   format?: "compact" | "json";
+  tag?: string;
 }) {
   const db = new AttachmentsDB();
   let attachments: ReturnType<AttachmentsDB["findAll"]>;
   try {
-    attachments = db.findAll({ limit: args.limit });
+    attachments = db.findAll({ limit: args.limit, tag: args.tag });
   } finally {
     db.close();
   }
@@ -331,6 +398,98 @@ async function handleGetLink(args: {
   db.close();
 
   return { link, expires_at: expiresAt };
+}
+
+async function handleUploadAttachments(args: {
+  paths: string[];
+  expiry?: string;
+  tag?: string;
+}) {
+  if (!args.paths || args.paths.length === 0) {
+    return [];
+  }
+
+  const results: Array<
+    { id: string; link: string | null; filename: string; size: number } | { path: string; error: string }
+  > = [];
+
+  for (const filePath of args.paths) {
+    try {
+      const attachment = await uploadFile(filePath, {
+        expiry: args.expiry,
+        tag: args.tag,
+      });
+      results.push({
+        id: attachment.id,
+        link: attachment.link,
+        filename: attachment.filename,
+        size: attachment.size,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      results.push({ path: filePath, error: message });
+    }
+  }
+
+  return results;
+}
+
+async function handlePresignUpload(args: {
+  filename: string;
+  expiry?: string;
+  content_type?: string;
+}) {
+  const config = getConfig();
+  const filename = args.filename;
+
+  // Determine content type
+  const contentType =
+    args.content_type ?? (mimeLookup(filename) || "application/octet-stream") as string;
+
+  // Parse expiry (default 1h)
+  const expiryStr = args.expiry ?? "1h";
+  const expiryMs = parseExpiry(expiryStr);
+  if (expiryMs === null) {
+    throw new Error(`Invalid expiry format: ${expiryStr}`);
+  }
+
+  const expirySeconds = Math.floor(expiryMs / 1000);
+
+  // Generate ID and S3 key
+  const id = `att_${nanoid(11)}`;
+  const datePrefix = format(new Date(), "yyyy-MM-dd");
+  const s3Key = `attachments/${datePrefix}/${id}/${filename}`;
+
+  // Generate presigned PUT URL
+  const s3 = new S3Client(config.s3);
+  const uploadUrl = await s3.presignPut(s3Key, contentType, expirySeconds);
+
+  // Create DB record with size 0 (pending upload)
+  const now = Date.now();
+  const expiresAt = now + expiryMs;
+  const db = new AttachmentsDB();
+  try {
+    db.insert({
+      id,
+      filename,
+      s3Key,
+      bucket: config.s3.bucket,
+      size: 0,
+      contentType,
+      link: null,
+      tag: null,
+      expiresAt,
+      createdAt: now,
+    });
+  } finally {
+    db.close();
+  }
+
+  return {
+    upload_url: uploadUrl,
+    id,
+    expires_at: expiresAt,
+  };
 }
 
 function handleConfigureS3(args: {
@@ -415,9 +574,19 @@ export function createServer(): Server {
             args as Parameters<typeof handleGetLink>[0]
           );
           break;
+        case "upload_attachments":
+          result = await handleUploadAttachments(
+            args as Parameters<typeof handleUploadAttachments>[0]
+          );
+          break;
         case "configure_s3":
           result = handleConfigureS3(
             args as Parameters<typeof handleConfigureS3>[0]
+          );
+          break;
+        case "presign_upload":
+          result = await handlePresignUpload(
+            args as Parameters<typeof handlePresignUpload>[0]
           );
           break;
         case "describe_tools":
