@@ -22,8 +22,8 @@ function copyToClipboard(text: string): boolean {
 
 export function registerUpload(program: Command): void {
   program
-    .command("upload [file]")
-    .description("Upload a file to S3 and get a shareable link")
+    .command("upload [files...]")
+    .description("Upload one or more files to S3 and get shareable links")
     .option("--expiry <time>", "Link expiry: e.g. 24h, 7d, never (overrides config default)")
     .option(
       "--link-type <type>",
@@ -41,7 +41,7 @@ export function registerUpload(program: Command): void {
     .option("--brief", "Compact one-line output")
     .option("--stdin", "Read file content from stdin instead of a file path")
     .option("--filename <name>", "Filename to use when uploading from stdin")
-    .action(async (file: string | undefined, options: { expiry?: string; linkType?: "presigned" | "server"; tag?: string; format?: string; copy?: boolean; brief?: boolean; stdin?: boolean; filename?: string }) => {
+    .action(async (files: string[], options: { expiry?: string; linkType?: "presigned" | "server"; tag?: string; format?: string; copy?: boolean; brief?: boolean; stdin?: boolean; filename?: string }) => {
       // Validate S3 config before attempting upload
       try {
         validateS3Config();
@@ -49,9 +49,9 @@ export function registerUpload(program: Command): void {
         exitError(err instanceof Error ? err.message : String(err));
       }
 
-      try {
+      // Helper to upload a single file/url/stdin and output result
+      const uploadOne = async (file?: string) => {
         let attachment;
-
         if (options.stdin) {
           if (!options.filename) {
             exitError("--filename is required when using --stdin");
@@ -68,35 +68,20 @@ export function registerUpload(program: Command): void {
           });
         } else if (!file) {
           exitError("A file path is required (or use --stdin)");
-          return; // unreachable but helps TS
+          return;
         } else {
           const isUrl = file.startsWith("http://") || file.startsWith("https://");
-          if (isUrl) {
-            process.stderr.write("Fetching URL...\n");
-          }
+          if (isUrl) process.stderr.write("Fetching URL...\n");
           attachment = isUrl
-            ? await uploadFromUrl(file, {
-                expiry: options.expiry,
-                linkType: options.linkType,
-                tag: options.tag,
-              })
-            : await uploadFile(file, {
-                expiry: options.expiry,
-                linkType: options.linkType,
-                tag: options.tag,
-              });
+            ? await uploadFromUrl(file, { expiry: options.expiry, linkType: options.linkType, tag: options.tag })
+            : await uploadFile(file, { expiry: options.expiry, linkType: options.linkType, tag: options.tag });
         }
 
-        // Attempt clipboard copy if --copy flag is set and a link exists
         let copied = false;
-        if (options.copy && attachment.link) {
-          copied = copyToClipboard(attachment.link);
-        }
+        if (options.copy && attachment.link) copied = copyToClipboard(attachment.link);
 
         if (options.brief) {
-          process.stdout.write(
-            `${attachment.id} ${attachment.link ?? "(none)"} ${formatBytes(attachment.size)}\n`
-          );
+          process.stdout.write(`${attachment.id} ${attachment.link ?? "(none)"} ${formatBytes(attachment.size)}\n`);
         } else if (options.format === "json") {
           process.stdout.write(JSON.stringify(attachment) + "\n");
         } else {
@@ -108,6 +93,16 @@ export function registerUpload(program: Command): void {
               `  Size:    ${formatBytes(attachment.size)}\n` +
               `  Expires: ${formatExpiry(attachment.expiresAt)}\n`
           );
+        }
+      };
+
+      try {
+        if (options.stdin || files.length === 0) {
+          await uploadOne();
+        } else {
+          for (const f of files) {
+            await uploadOne(f);
+          }
         }
       } catch (err: unknown) {
         exitError(err instanceof Error ? err.message : String(err));
