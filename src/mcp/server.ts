@@ -125,7 +125,7 @@ const FULL_SCHEMAS: Record<string, object> = {
   },
   describe_tools: {
     name: "describe_tools",
-    description: "Return full verbose schemas for one or all tools. Set the AGENT_PROFILE env var to control which tools are exposed in tools/list: 'minimal' (upload_attachment, download_attachment, get_link), 'standard' (default, adds list_attachments, delete_attachment, complete_task_with_files), or 'full' (all 12 tools).",
+    description: "Return full verbose schemas for one or all tools. Set the ATTACHMENTS_PROFILE env var to control which tools are exposed in tools/list: 'minimal' (upload_attachment, download_attachment, get_link), 'standard' (default, adds list_attachments, delete_attachment, complete_task_with_files), or 'full' (all 12 tools).",
     inputSchema: {
       type: "object",
       properties: {
@@ -349,7 +349,7 @@ const STANDARD_TOOLS = new Set([
 export function getToolsForProfile(
   profile?: string
 ): typeof LEAN_TOOLS {
-  const p = (profile ?? process.env.AGENT_PROFILE ?? "standard").toLowerCase();
+  const p = (profile ?? process.env.ATTACHMENTS_PROFILE ?? "standard").toLowerCase();
   if (p === "minimal") {
     return LEAN_TOOLS.filter((t) => MINIMAL_TOOLS.has(t.name));
   }

@@ -182,8 +182,8 @@ async function listTools(server: ReturnType<typeof createServer>) {
 // ---------------------------------------------------------------------------
 
 describe("MCP Server — tools/list", () => {
-  it("returns 6 standard tools by default (no AGENT_PROFILE set)", async () => {
-    delete process.env.AGENT_PROFILE;
+  it("returns 6 standard tools by default (no ATTACHMENTS_PROFILE set)", async () => {
+    delete process.env.ATTACHMENTS_PROFILE;
     const server = createServer();
     const result = (await listTools(server)) as { tools: Array<{ name: string }> };
     expect(result.tools).toHaveLength(6);
@@ -197,7 +197,7 @@ describe("MCP Server — tools/list", () => {
   });
 });
 
-describe("AGENT_PROFILE — getToolsForProfile()", () => {
+describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
   it("minimal profile returns exactly 3 tools", () => {
     const tools = getToolsForProfile("minimal");
     expect(tools).toHaveLength(3);
@@ -237,24 +237,24 @@ describe("AGENT_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("complete_task_with_files");
   });
 
-  it("no argument (reads process.env.AGENT_PROFILE) defaults to standard (6 tools)", () => {
-    delete process.env.AGENT_PROFILE;
+  it("no argument (reads process.env.ATTACHMENTS_PROFILE) defaults to standard (6 tools)", () => {
+    delete process.env.ATTACHMENTS_PROFILE;
     const tools = getToolsForProfile();
     expect(tools).toHaveLength(6);
   });
 
-  it("AGENT_PROFILE=minimal env var returns 3 tools", () => {
-    process.env.AGENT_PROFILE = "minimal";
+  it("ATTACHMENTS_PROFILE=minimal env var returns 3 tools", () => {
+    process.env.ATTACHMENTS_PROFILE = "minimal";
     const tools = getToolsForProfile();
     expect(tools).toHaveLength(3);
-    delete process.env.AGENT_PROFILE;
+    delete process.env.ATTACHMENTS_PROFILE;
   });
 
-  it("AGENT_PROFILE=full env var returns 12 tools", () => {
-    process.env.AGENT_PROFILE = "full";
+  it("ATTACHMENTS_PROFILE=full env var returns 12 tools", () => {
+    process.env.ATTACHMENTS_PROFILE = "full";
     const tools = getToolsForProfile();
     expect(tools).toHaveLength(12);
-    delete process.env.AGENT_PROFILE;
+    delete process.env.ATTACHMENTS_PROFILE;
   });
 });
 
