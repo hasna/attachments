@@ -1,6 +1,6 @@
 {
   "name": "@hasna/attachments-sdk",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Zero-dependency TypeScript client for @hasna/attachments REST API",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
