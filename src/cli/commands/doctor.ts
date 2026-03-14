@@ -197,6 +197,26 @@ export function checkVersion(version: string): CheckResult {
   };
 }
 
+export async function checkIntegration(name: string, urlEnvVar: string, defaultUrl: string): Promise<CheckResult> {
+  const url = process.env[urlEnvVar] ?? defaultUrl;
+  const isSet = !!process.env[urlEnvVar];
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`${url}/api/health`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      return { label: `${name} integration (${urlEnvVar})`, status: "ok", message: `${url} — reachable` };
+    }
+    return { label: `${name} integration (${urlEnvVar})`, status: "warn", message: `${url} returned ${res.status}` };
+  } catch {
+    if (!isSet) {
+      return { label: `${name} integration (${urlEnvVar})`, status: "warn", message: `not configured (set ${urlEnvVar} to enable)` };
+    }
+    return { label: `${name} integration (${urlEnvVar})`, status: "error", message: `${url} — unreachable` };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Output formatting
 // ---------------------------------------------------------------------------
@@ -240,6 +260,8 @@ export function registerDoctor(program: Command): void {
       results.push(checkDatabase());
       results.push(checkExpiredLinks());
       results.push(await checkMcpInstalled());
+      results.push(await checkIntegration("todos", "TODOS_URL", "http://localhost:19427"));
+      results.push(await checkIntegration("sessions", "SESSIONS_URL", "http://localhost:3458"));
       results.push(checkVersion(pkgVersion));
 
       process.stdout.write(formatResults(results));
