@@ -17,6 +17,13 @@ export function createApp(): Hono {
 
   // POST /api/attachments — multipart file upload
   app.post("/api/attachments", async (c) => {
+    // Configurable file size limit (default 5GB, override with ATTACHMENTS_MAX_SIZE env var)
+    const maxBytes = parseInt(process.env.ATTACHMENTS_MAX_SIZE ?? String(5 * 1024 * 1024 * 1024), 10);
+    const contentLength = parseInt(c.req.header("content-length") ?? "0", 10);
+    if (contentLength > maxBytes) {
+      return c.json({ error: `File too large. Maximum size is ${Math.round(maxBytes / 1024 / 1024)}MB` }, 413);
+    }
+
     let tmpPath: string | null = null;
     try {
       const body = await c.req.parseBody();
@@ -24,6 +31,12 @@ export function createApp(): Hono {
 
       if (!file || typeof file === "string") {
         return c.json({ error: "file field is required" }, 400);
+      }
+
+      // Post-parse size check (Content-Length may be absent)
+      const fileSize = file instanceof File ? file.size : 0;
+      if (fileSize > maxBytes) {
+        return c.json({ error: `File too large. Maximum size is ${Math.round(maxBytes / 1024 / 1024)}MB` }, 413);
       }
 
       const expiry = typeof body["expiry"] === "string" ? body["expiry"] : undefined;
