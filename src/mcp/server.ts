@@ -10,6 +10,7 @@ import { nanoid } from "nanoid";
 import { format } from "date-fns";
 import { lookup as mimeLookup } from "mime-types";
 import { uploadFile, uploadFromUrl, uploadFromBuffer } from "../core/upload.js";
+import { runHealthCheck } from "../cli/commands/health-check.js";
 import { downloadAttachment } from "../core/download.js";
 import { AttachmentsDB } from "../core/db.js";
 import { getConfig, setConfig, parseExpiry } from "../core/config.js";
@@ -170,6 +171,17 @@ const FULL_SCHEMAS: Record<string, object> = {
         tag: { type: "string", description: "Optional tag for the attachment." },
       },
       required: ["session_id"],
+    },
+  },
+  check_attachment_health: {
+    name: "check_attachment_health",
+    description: "Check the health of all attachment links — identifies expired (past expiresAt), dead (link 404), and healthy ones. Optionally regenerates presigned links for expired attachments. Returns counts and per-attachment status.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        fix: { type: "boolean", description: "If true, regenerate presigned links for expired attachments." },
+        todos_url: { type: "string", description: "Unused currently; reserved for future todos-aware health checks." },
+      },
     },
   },
   complete_task_with_files: {
@@ -358,6 +370,17 @@ const LEAN_TOOLS = [
         notes: { type: "string" },
       },
       required: ["task_id", "paths"],
+    },
+  },
+  {
+    name: "check_attachment_health",
+    description: "Check health of all attachment links (expired/dead/healthy). Use fix:true to regenerate expired links.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        fix: { type: "boolean" },
+        todos_url: { type: "string" },
+      },
     },
   },
 ];
@@ -812,6 +835,31 @@ async function handleSaveSession(args: {
   };
 }
 
+async function handleCheckAttachmentHealth(args: {
+  fix?: boolean;
+  todos_url?: string;
+}) {
+  const summary = await runHealthCheck({ fix: args.fix });
+  return {
+    healthy: summary.healthy,
+    expired: summary.expired,
+    dead: summary.dead,
+    no_link: summary.noLink,
+    fixed: summary.fixed,
+    total: summary.total,
+    summary: `${summary.healthy} healthy, ${summary.expired} expired, ${summary.dead} dead`,
+    results: summary.results.map((r) => ({
+      id: r.id,
+      filename: r.filename,
+      status: r.status,
+      link: r.link,
+      expires_at: r.expiresAt,
+      fixed: r.fixed ?? false,
+      new_link: r.newLink,
+    })),
+  };
+}
+
 function handleSearchTools(args: { query: string }) {
   const q = args.query.toLowerCase();
   const matches = LEAN_TOOLS.map((t) => t.name).filter((name) =>
@@ -904,6 +952,11 @@ export function createServer(): Server {
         case "complete_task_with_files":
           result = await handleCompleteTaskWithFiles(
             args as Parameters<typeof handleCompleteTaskWithFiles>[0]
+          );
+          break;
+        case "check_attachment_health":
+          result = await handleCheckAttachmentHealth(
+            args as Parameters<typeof handleCheckAttachmentHealth>[0]
           );
           break;
         default:

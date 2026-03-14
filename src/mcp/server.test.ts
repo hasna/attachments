@@ -233,9 +233,9 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("save_session");
   });
 
-  it("full profile returns all 13 tools", () => {
+  it("full profile returns all 14 tools", () => {
     const tools = getToolsForProfile("full");
-    expect(tools).toHaveLength(13);
+    expect(tools).toHaveLength(14);
     const names = tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("upload_attachments");
@@ -250,6 +250,7 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("link_to_task");
     expect(names).toContain("complete_task_with_files");
     expect(names).toContain("save_session");
+    expect(names).toContain("check_attachment_health");
   });
 
   it("no argument (reads process.env.ATTACHMENTS_PROFILE) defaults to standard (7 tools)", () => {
@@ -265,10 +266,10 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     delete process.env.ATTACHMENTS_PROFILE;
   });
 
-  it("ATTACHMENTS_PROFILE=full env var returns 13 tools", () => {
+  it("ATTACHMENTS_PROFILE=full env var returns 14 tools", () => {
     process.env.ATTACHMENTS_PROFILE = "full";
     const tools = getToolsForProfile();
-    expect(tools).toHaveLength(13);
+    expect(tools).toHaveLength(14);
     delete process.env.ATTACHMENTS_PROFILE;
   });
 });
@@ -670,7 +671,7 @@ describe("MCP Server — describe_tools", () => {
     };
 
     const parsed = JSON.parse(result.content[0]!.text);
-    expect(Object.keys(parsed)).toHaveLength(13);
+    expect(Object.keys(parsed)).toHaveLength(14);
     expect(parsed.upload_attachment).toBeDefined();
     expect(parsed.upload_attachments).toBeDefined();
     expect(parsed.presign_upload).toBeDefined();
