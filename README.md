@@ -1,17 +1,28 @@
 # @hasna/attachments
 
-> WeTransfer for AI agents — upload files, get shareable links, backed by your own S3 bucket.
+> File storage and sharing for AI agents — upload files, get shareable links, backed by your own S3 bucket.
 
 Give your AI agents a place to put files. Upload a local file, get back a link you can paste into any chat or share with anyone. Works with AWS S3, MinIO, Cloudflare R2, or any S3-compatible storage. Your bucket, your data.
 
+---
+
+## What It Does
+
+`@hasna/attachments` is a full-stack file attachment system built for AI agent workflows. It provides a CLI with 17+ commands, a 14-tool MCP server (with token-optimized profiles), a Hono-based REST API, a React dashboard, and a zero-dependency TypeScript SDK. Agents can upload artifacts, link files to tasks, snapshot session state, and watch for attachment activity — all with a single npm install.
+
+---
+
 ## Features
 
-- **CLI** — `attachments upload`, `download`, `list`, `delete`, `link`, `config`, `serve`, `mcp`
-- **MCP server** — 8 lean-stub tools for Claude Code, Codex, Gemini, and any MCP-compatible agent
-- **REST API** — 8 endpoints served by Hono (Bun or Node.js)
-- **TypeScript SDK** — `@hasna/attachments-sdk`, zero dependencies, works in Node.js, Bun, Deno, and browsers
+- **CLI** — 17+ commands: `upload`, `download`, `list`, `delete`, `link`, `config`, `serve`, `mcp`, `status`, `clean`, `whoami`, `presign-upload`, `link-task`, `complete-task`, `snapshot-session`, `health-check`, `watch`, `task-journal`
+- **MCP server** — 14 tools with `ATTACHMENTS_PROFILE=minimal|standard|full` for token optimization
+- **REST API** — 8+ endpoints served by Hono on port 3457 (localhost binding by default)
+- **TypeScript SDK** — `@hasna/attachments-sdk`, zero dependencies, works in Node.js, Bun, Deno, and the browser
+- **Dashboard** — React + Vite UI with dark/light mode
+- **Integrations** — todos (`link-task`, `complete-task`, `watch`, `task-journal`), sessions (`snapshot-session`), economy (`ATTACHMENTS_TRACK_COSTS`)
+- **Health check** — `attachments health-check [--fix]` with watch mode (SSE-based reactive)
 - **Bring your own S3** — AWS, MinIO, Cloudflare R2, LocalStack, or any S3-compatible endpoint
-- **Presigned URLs or server links** — choose how links are generated
+- **Security** — localhost binding by default; opt-in to external exposure with `--host 0.0.0.0`
 - **Configurable expiry** — `30m`, `24h`, `7d`, `never`
 
 ---
@@ -30,7 +41,6 @@ attachments config set --bucket my-bucket --region us-east-1 \
 # 3. Upload a file
 attachments upload ./report.pdf
 
-# 4. Get the shareable link printed to stdout
 # ✓ Uploaded report.pdf
 #   Link:    https://my-bucket.s3.us-east-1.amazonaws.com/att_abc123.pdf?...
 #   ID:      att_abc123
@@ -103,493 +113,195 @@ attachments config set \
 
 All commands are under the `attachments` binary.
 
-### `upload <file>`
+| Command | Description |
+|---------|-------------|
+| `upload <file>` | Upload a file to S3 and print a shareable link |
+| `download <id-or-url>` | Download an attachment to disk |
+| `list` | List all attachments in the local database |
+| `delete <id>` | Delete an attachment from S3 and local DB |
+| `link <id>` | Show or regenerate a shareable link |
+| `presign-upload <file>` | Generate a presigned upload URL (no server needed) |
+| `config show` | Print current configuration (secrets masked) |
+| `config set` | Update configuration values |
+| `config test` | Test the S3 connection |
+| `serve` | Start the REST API server (default port 3457) |
+| `mcp` | Install/uninstall the MCP server into agent configs |
+| `status` | Show server and storage status |
+| `clean` | Remove expired or orphaned attachments |
+| `whoami` | Show current configuration identity |
+| `health-check [--fix]` | Check system health; `--fix` attempts auto-repair |
+| `watch` | Watch for attachment events (SSE-based reactive stream) |
+| `link-task <id> <task-id>` | Link an attachment to a todos task |
+| `complete-task <task-id>` | Complete a todos task and attach any pending files |
+| `snapshot-session` | Snapshot current session state as an attachment |
+| `task-journal <task-id>` | Append a journal entry to a task's attachment log |
 
-Upload a local file to S3 and print a shareable link.
-
-```bash
-attachments upload ./report.pdf
-attachments upload ./data.csv --expiry 24h
-attachments upload ./archive.zip --expiry never --link-type server
-attachments upload ./image.png --format json
-```
-
-| Option | Description |
-|--------|-------------|
-| `--expiry <time>` | Link expiry: `30m`, `24h`, `7d`, `never`. Defaults to configured value (`7d`). |
-| `--link-type <type>` | `presigned` (S3 signed URL) or `server` (local server shortlink). |
-| `--format <fmt>` | `human` (default) or `json`. |
-
-### `download <id-or-url>`
-
-Download an attachment to disk by its ID or a `/d/:id` shortlink URL.
-
-```bash
-attachments download att_abc123
-attachments download att_abc123 --output ./downloads/
-attachments download http://localhost:3457/d/att_abc123 --output ./file.pdf
-```
-
-| Option | Description |
-|--------|-------------|
-| `--output <path>` | Destination directory or filename. Defaults to the current directory. |
-
-### `list`
-
-List all uploaded attachments stored in the local database.
+### Common options
 
 ```bash
-attachments list
-attachments list --format table
-attachments list --format json
-attachments list --limit 50 --expired
-```
-
-| Option | Description |
-|--------|-------------|
-| `--format <format>` | `compact` (default), `table`, or `json`. |
-| `--limit <n>` | Maximum number of results (default: 20). |
-| `--expired` | Include attachments whose links have expired. |
-
-### `delete <id>`
-
-Delete an attachment from S3 and the local database. Prompts for confirmation unless `--yes` is passed.
-
-```bash
-attachments delete att_abc123
+attachments upload ./report.pdf --expiry 24h --link-type server
+attachments list --format table --limit 50 --expired
 attachments delete att_abc123 --yes
-```
-
-| Option | Description |
-|--------|-------------|
-| `-y, --yes` | Skip the confirmation prompt. |
-
-### `link <id>`
-
-Show or regenerate the shareable link for an attachment.
-
-```bash
-attachments link att_abc123
-attachments link att_abc123 --regenerate
-attachments link att_abc123 --regenerate --expiry 48h
-attachments link att_abc123 --format json
-```
-
-| Option | Description |
-|--------|-------------|
-| `--regenerate` | Generate a fresh presigned URL and persist it. |
-| `--expiry <time>` | Expiry for the regenerated link. |
-| `--format <format>` | `human` (default) or `json`. |
-
-### `config show`
-
-Print the current configuration. Secrets are masked.
-
-```bash
-attachments config show
-```
-
-### `config set`
-
-Update one or more configuration values. Persisted to `~/.attachments/config.json`.
-
-```bash
-attachments config set --bucket my-bucket
-attachments config set --expiry 24h --link-type presigned
-attachments config set --port 8080 --base-url http://myserver.example.com:8080
-```
-
-| Option | Description |
-|--------|-------------|
-| `--bucket <bucket>` | S3 bucket name. |
-| `--region <region>` | AWS region (e.g., `us-east-1`). |
-| `--access-key <id>` | AWS access key ID. |
-| `--secret-key <key>` | AWS secret access key. |
-| `--endpoint <url>` | Custom S3 endpoint (MinIO, R2, LocalStack). |
-| `--port <port>` | Server port (default: 3457). |
-| `--base-url <url>` | Server base URL for shortlinks. |
-| `--expiry <time>` | Default link expiry. |
-| `--link-type <type>` | Default link type: `presigned` or `server`. |
-
-### `config test`
-
-Test the S3 connection by listing one object from the configured bucket.
-
-```bash
-attachments config test
-```
-
-### `serve`
-
-Start the REST API server (Hono, runs on Bun or Node.js).
-
-```bash
-attachments serve
 attachments serve --port 8080
-attachments serve --port 8080 --host 0.0.0.0
+attachments health-check --fix
 ```
-
-| Option | Description |
-|--------|-------------|
-| `--port <number>` | Port to listen on. Overrides the configured value. |
-| `--host <string>` | Host to bind to (default: `localhost`). |
-
-### `mcp`
-
-Install or uninstall the MCP server into AI agent configurations.
-
-```bash
-# Install into Claude Code
-attachments mcp --claude
-
-# Install into all supported agents
-attachments mcp --all
-
-# Uninstall from Codex
-attachments mcp --codex --uninstall
-```
-
-| Option | Description |
-|--------|-------------|
-| `--claude` | Target Claude Code. |
-| `--codex` | Target Codex. |
-| `--gemini` | Target Gemini. |
-| `--all` | Target all agents. |
-| `--uninstall` | Remove instead of install. |
 
 ---
 
-## MCP Tools Reference
+## MCP Server
 
-The MCP server (`attachments-mcp`) exposes 8 tools with lean stubs by default to minimize token usage. Call `describe_tools` for full schemas.
-
-| Tool | Description | Required args |
-|------|-------------|---------------|
-| `upload_attachment` | Upload file → get shareable link | `path` |
-| `download_attachment` | Download attachment to disk | `id_or_url` |
-| `list_attachments` | List attachments in the local DB | — |
-| `delete_attachment` | Delete attachment by ID (DB only) | `id` |
-| `get_link` | Get or regenerate shareable link | `id` |
-| `configure_s3` | Persist S3 credentials to config file | `bucket`, `region`, `access_key`, `secret_key` |
-| `describe_tools` | Return full verbose schema for one or all tools | — |
-| `search_tools` | Search tool names by keyword | `query` |
-
-### Tool details
-
-**`upload_attachment`**
-
-```json
-{ "path": "/tmp/report.pdf", "expiry": "7d", "tag": "weekly-report" }
-```
-
-Returns `{ id, link, size, filename, expires_at }`.
-
-**`download_attachment`**
-
-```json
-{ "id_or_url": "att_abc123", "dest": "/tmp/downloads" }
-```
-
-Returns `{ path, filename, size }`.
-
-**`list_attachments`**
-
-```json
-{ "limit": 10, "format": "compact" }
-```
-
-`format` is `"compact"` (one line per attachment) or `"json"` (array).
-
-**`get_link`**
-
-```json
-{ "id": "att_abc123", "regenerate": true, "expiry": "24h" }
-```
-
-Returns `{ link, expires_at }`.
-
-**`configure_s3`**
-
-```json
-{
-  "bucket": "my-bucket",
-  "region": "us-east-1",
-  "access_key": "AKIA...",
-  "secret_key": "secret...",
-  "base_url": "https://..."
-}
-```
-
-**`describe_tools`**
-
-```json
-{ "tool_name": "upload_attachment" }
-```
-
-Omit `tool_name` to get schemas for all tools.
-
-### Installing the MCP server
+The MCP server exposes 14 tools. Install it into your agent once:
 
 ```bash
 # Claude Code
 attachments mcp --claude
-# or manually:
-claude mcp add --transport stdio --scope user attachments -- attachments-mcp
 
-# Codex — adds to ~/.codex/config.toml
-attachments mcp --codex
-
-# Gemini — adds to ~/.gemini/settings.json
-attachments mcp --gemini
-
-# All at once
+# All agents (Claude Code, Codex, Gemini)
 attachments mcp --all
 ```
 
+### MCP Profiles
+
+Set `ATTACHMENTS_PROFILE` to control token usage. Lean stubs by default — call `describe_tools` for full schemas.
+
+| Profile | Token cost | When to use |
+|---------|-----------|-------------|
+| `minimal` | ~200 tokens | Only core upload/download/list. Fastest. |
+| `standard` (default) | ~600 tokens | All 14 tools with compact descriptions. |
+| `full` | ~1,400 tokens | Full schemas with all options and examples. |
+
+```bash
+# Set in your shell profile or agent environment
+export ATTACHMENTS_PROFILE=minimal
+```
+
+### MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `upload_attachment` | Upload a file and get a shareable link |
+| `download_attachment` | Download an attachment to disk |
+| `list_attachments` | List attachments in the local DB |
+| `delete_attachment` | Delete an attachment by ID |
+| `get_link` | Get or regenerate a shareable link |
+| `configure_s3` | Persist S3 credentials to config |
+| `describe_tools` | Return full verbose schema for one or all tools |
+| `search_tools` | Search tool names by keyword |
+| `health_check` | Check server and S3 health |
+| `link_task` | Link an attachment to a todos task |
+| `complete_task` | Complete a task and attach pending files |
+| `snapshot_session` | Snapshot session state as an attachment |
+| `task_journal` | Append a journal entry to a task's log |
+| `watch` | Subscribe to attachment events (SSE) |
+
 ---
 
-## REST API Reference
+## Agent Workflow
 
-Start the server with `attachments serve` (default port 3457). All endpoints are under `/api/attachments`.
+A `CLAUDE.md` is included at the project root documenting the standard agent workflow for using this tool inside Claude Code sessions. Key patterns:
 
-### `POST /api/attachments` — Upload a file
+- Upload artifacts with `upload_attachment` and store the ID in task descriptions
+- Use `link_task` to associate attachments with todos
+- Use `snapshot_session` at the end of a session for continuity
+- Use `health_check` before long sessions to verify S3 connectivity
+- Use `ATTACHMENTS_PROFILE=minimal` in token-constrained contexts
 
-Accepts `multipart/form-data`.
+See `CLAUDE.md` in the repo for the full documented workflow.
 
-**Request fields:**
+---
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `file` | File | Yes | The file to upload. |
-| `expiry` | string | No | Link expiry (e.g., `24h`, `7d`, `never`). |
-| `tag` | string | No | Optional tag for the attachment. |
+## Integrations
 
-**Response `201`:**
+### todos
 
-```json
-{
-  "id": "att_abc123",
-  "filename": "report.pdf",
-  "size": 145678,
-  "link": "https://bucket.s3.us-east-1.amazonaws.com/att_abc123.pdf?...",
-  "expires_at": 1742428800000,
-  "created_at": 1741824000000
-}
+Link files to task management workflows:
+
+```bash
+attachments link-task att_abc123 TASK-42
+attachments complete-task TASK-42          # marks done + attaches pending files
+attachments task-journal TASK-42           # append journal entry
+attachments watch --task TASK-42           # watch for task-related events
+```
+
+### Sessions
+
+Snapshot the current agent session state:
+
+```bash
+attachments snapshot-session               # uploads session state, prints attachment ID
+```
+
+### Economy (cost tracking)
+
+Set `ATTACHMENTS_TRACK_COSTS=1` to track upload/download costs and report them via the economy MCP:
+
+```bash
+export ATTACHMENTS_TRACK_COSTS=1
+attachments upload ./large-export.csv
 ```
 
 ---
 
-### `GET /api/attachments` — List attachments
+## REST API
 
-**Query parameters:**
+Start the server with `attachments serve` (default port 3457, localhost only).
 
-| Parameter | Description |
-|-----------|-------------|
-| `limit` | Max results (default: 20). |
-| `fields` | Comma-separated field names to include (e.g., `id,filename,link`). |
-| `format` | `compact` returns newline-delimited JSON. |
-| `expired` | `true` to include expired attachments. |
-
-**Response `200`:**
-
-```json
-[
-  {
-    "id": "att_abc123",
-    "filename": "report.pdf",
-    "size": 145678,
-    "content_type": "application/pdf",
-    "link": "https://...",
-    "expires_at": 1742428800000,
-    "created_at": 1741824000000
-  }
-]
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/attachments` | Upload a file (`multipart/form-data`) |
+| `GET` | `/api/attachments` | List attachments |
+| `GET` | `/api/attachments/:id` | Get attachment metadata |
+| `DELETE` | `/api/attachments/:id` | Delete attachment (S3 + DB) |
+| `GET` | `/api/attachments/:id/download` | Download file (redirect or stream) |
+| `GET` | `/api/attachments/:id/link` | Get shareable link |
+| `POST` | `/api/attachments/:id/link` | Regenerate link |
+| `GET` | `/d/:id` | Public shortlink redirect |
+| `GET` | `/health` | Health check endpoint |
 
 ---
 
-### `GET /api/attachments/:id` — Get attachment metadata
-
-**Response `200`:** Same shape as a single item from the list response.
-
-**Response `404`:** `{ "error": "Not found" }`
-
----
-
-### `DELETE /api/attachments/:id` — Delete attachment
-
-Deletes from S3 and removes from the local database.
-
-**Response `200`:** `deleted: att_abc123`
-
-**Response `404`:** `{ "error": "Not found" }`
-
----
-
-### `GET /api/attachments/:id/download` — Download file
-
-If the link is a presigned S3 URL, responds with `302` redirect. Otherwise streams the file directly from S3.
-
-**Response `302`:** Redirect to S3.
-
-**Response `200`:** File binary with `Content-Disposition: attachment; filename="..."`.
-
----
-
-### `GET /api/attachments/:id/link` — Get shareable link
-
-**Response `200`:**
-
-```json
-{ "link": "https://...", "expires_at": 1742428800000 }
-```
-
----
-
-### `POST /api/attachments/:id/link` — Regenerate link
-
-**Request body (optional JSON):**
-
-```json
-{ "expiry": "48h" }
-```
-
-**Response `200`:**
-
-```json
-{ "link": "https://...", "expires_at": 1742601600000 }
-```
-
----
-
-### `GET /d/:id` — Shortlink redirect
-
-Public shortlink that redirects to the file. If a presigned URL exists, redirects to it (302). Otherwise generates a new presigned URL on the fly and redirects.
-
----
-
-## SDK Usage
-
-Install the SDK:
+## SDK
 
 ```bash
 npm install @hasna/attachments-sdk
 ```
 
-The SDK is zero-dependency and works in Node.js, Bun, Deno, and the browser.
+Zero dependencies. Works in Node.js, Bun, Deno, and the browser.
 
 ```typescript
 import { AttachmentsClient } from "@hasna/attachments-sdk";
 
-const client = new AttachmentsClient({
-  serverUrl: "http://localhost:3457",
-});
+const client = new AttachmentsClient({ serverUrl: "http://localhost:3457" });
 
-// Upload (Node.js / Bun — pass a file path)
+// Upload (Node.js/Bun: file path; browser: File object)
 const attachment = await client.upload("./report.pdf", { expiry: "7d" });
-console.log(attachment.link); // https://...
-
-// Upload (browser — pass a File object)
-const file = document.querySelector<HTMLInputElement>("#file")!.files![0];
-const attachment = await client.upload(file, { tag: "user-upload" });
+console.log(attachment.link);
 
 // List
-const attachments = await client.list({ limit: 10 });
+const list = await client.list({ limit: 10 });
 
-// Get metadata for one attachment
+// Get metadata
 const att = await client.get("att_abc123");
 
-// Download to disk (Node.js / Bun)
-const result = await client.download("att_abc123", "./downloads/");
-console.log(result.path); // /home/user/downloads/report.pdf
+// Download to disk (Node.js/Bun)
+const { path } = await client.download("att_abc123", "./downloads/");
 
-// Get shareable link
-const link = await client.getLink("att_abc123");
+// Regenerate link
+const link = await client.regenerateLink("att_abc123", { expiry: "24h" });
 
-// Regenerate link with new expiry
-const newLink = await client.regenerateLink("att_abc123", { expiry: "24h" });
-
-// Delete (removes from S3 and database)
+// Delete
 await client.delete("att_abc123");
 ```
 
-### `AttachmentsClient` API
-
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `upload` | `(filePathOrBlob, opts?) → Attachment` | Upload a file. |
-| `download` | `(idOrUrl, destPath?) → { path, filename, size }` | Download to disk (Node/Bun). |
-| `list` | `(opts?) → Attachment[]` | List attachments. |
-| `get` | `(id) → Attachment` | Get attachment metadata. |
-| `delete` | `(id) → void` | Delete attachment. |
-| `getLink` | `(id) → string` | Get current shareable link. |
-| `regenerateLink` | `(id, opts?) → string` | Regenerate link with optional new expiry. |
-
-### `Attachment` type
-
-```typescript
-interface Attachment {
-  id: string;
-  filename: string;
-  s3Key: string;
-  bucket: string;
-  size: number;
-  contentType: string;
-  link: string | null;
-  expiresAt: number | null;  // Unix timestamp in ms, or null for "never"
-  createdAt: number;
-}
-```
-
----
-
-## Configuration Reference
-
-Configuration is stored at `~/.attachments/config.json`. Edit it directly or use `attachments config set`.
-
-```json
-{
-  "s3": {
-    "bucket": "my-bucket",
-    "region": "us-east-1",
-    "accessKeyId": "AKIAIOSFODNN7EXAMPLE",
-    "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-    "endpoint": "https://custom-endpoint.example.com"
-  },
-  "server": {
-    "port": 3457,
-    "baseUrl": "http://localhost:3457"
-  },
-  "defaults": {
-    "expiry": "7d",
-    "linkType": "presigned"
-  }
-}
-```
-
-### `s3`
-
-| Key | Type | Required | Description |
-|-----|------|----------|-------------|
-| `bucket` | string | Yes | S3 bucket name. |
-| `region` | string | Yes | AWS region (e.g., `us-east-1`, `auto` for R2). |
-| `accessKeyId` | string | Yes | AWS access key ID. |
-| `secretAccessKey` | string | Yes | AWS secret access key. |
-| `endpoint` | string | No | Custom S3-compatible endpoint. Required for MinIO, R2, LocalStack. |
-
-### `server`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `port` | number | `3457` | Port for the REST API server. |
-| `baseUrl` | string | `http://localhost:3457` | Public base URL used to generate `server`-type shortlinks. |
-
-### `defaults`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `expiry` | string | `"7d"` | Default link expiry. Formats: `Nm` (minutes), `Nh` (hours), `Nd` (days), `"never"`. |
-| `linkType` | `"presigned"` \| `"server"` | `"presigned"` | `presigned` generates a time-limited S3 signed URL. `server` generates a `/d/:id` shortlink served by the local server. |
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `upload(fileOrPath, opts?)` | `Attachment` | Upload a file |
+| `download(idOrUrl, dest?)` | `{ path, filename, size }` | Download to disk |
+| `list(opts?)` | `Attachment[]` | List attachments |
+| `get(id)` | `Attachment` | Get metadata |
+| `delete(id)` | `void` | Delete attachment |
+| `getLink(id)` | `string` | Get current link |
+| `regenerateLink(id, opts?)` | `string` | Regenerate with new expiry |
 
 ---
 
