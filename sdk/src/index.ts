@@ -280,4 +280,16 @@ export class AttachmentsClient {
     await checkResponse(res);
     return res.json() as Promise<{ status: string; attachments: number; expired: number; s3_configured: boolean; server: string; timestamp: string }>;
   }
+
+  /**
+   * Get compact context text for agent system prompt injection.
+   * Set ATTACHMENTS_URL env var to auto-inject into agent context.
+   */
+  async getContext(format?: "text" | "json"): Promise<string | { attachments: number; active: number; expired: number; expiring_soon: number; summary: string }> {
+    const url = format === "json" ? `${this.baseUrl}/api/context?format=json` : `${this.baseUrl}/api/context`;
+    const res = await fetch(url);
+    await checkResponse(res);
+    if (format === "json") return res.json() as Promise<{ attachments: number; active: number; expired: number; expiring_soon: number; summary: string }>;
+    return res.text();
+  }
 }
