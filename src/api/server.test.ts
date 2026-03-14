@@ -226,6 +226,21 @@ describe("REST API server", () => {
       expect(opts?.tag).toBe("important");
     });
 
+    it("returns 413 when Content-Length exceeds ATTACHMENTS_MAX_SIZE", async () => {
+      process.env.ATTACHMENTS_MAX_SIZE = "100"; // 100 bytes limit
+      const localApp = createApp();
+      const fd = makeFormData("test.txt", "hello");
+      const res = await localApp.request("/api/attachments", {
+        method: "POST",
+        body: fd,
+        headers: { "content-length": "200" }, // exceeds 100-byte limit
+      });
+      expect(res.status).toBe(413);
+      const body = await res.json();
+      expect(body.error).toContain("too large");
+      delete process.env.ATTACHMENTS_MAX_SIZE;
+    });
+
     it("returns 500 when uploadFile throws", async () => {
       mockUploadFile.mockImplementation(async () => {
         throw new Error("S3 upload failed");
