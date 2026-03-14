@@ -271,4 +271,13 @@ export class AttachmentsClient {
     const body = await res.json() as RawLinkResponse;
     return body.link;
   }
+
+  /**
+   * Get server health status.
+   */
+  async health(): Promise<{ status: string; attachments: number; expired: number; s3_configured: boolean; server: string; timestamp: string }> {
+    const res = await fetch(`${this.baseUrl}/api/health`);
+    await checkResponse(res);
+    return res.json() as Promise<{ status: string; attachments: number; expired: number; s3_configured: boolean; server: string; timestamp: string }>;
+  }
 }
