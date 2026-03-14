@@ -108,6 +108,29 @@ export function createApp(): Hono {
     }
   });
 
+  // GET /api/context — compact text summary for agent system prompt injection
+  // Set ATTACHMENTS_URL=http://localhost:3459 in your agent to enable automatic context
+  app.get("/api/context", (c) => {
+    const db = new AttachmentsDB();
+    try {
+      const all = db.findAll({ includeExpired: true });
+      const active = all.filter(a => !a.expiresAt || a.expiresAt > Date.now());
+      const expiringSoon = all.filter(a => a.expiresAt && a.expiresAt > Date.now() && a.expiresAt - Date.now() < 24 * 60 * 60 * 1000);
+      const expired = all.filter(a => a.expiresAt && a.expiresAt <= Date.now());
+      const lines: string[] = [`Attachments: ${all.length} total (${active.length} active, ${expired.length} expired)`];
+      if (expiringSoon.length > 0) lines.push(`⚠ Expiring in 24h: ${expiringSoon.length} (${expiringSoon.map(a => a.filename).join(", ")})`);
+      if (all.length > 0) {
+        const recent = all.slice(0, 3).map(a => `${a.filename} (${a.id})`).join(", ");
+        lines.push(`Recent: ${recent}`);
+      }
+      const format = c.req.query("format") ?? "text";
+      if (format === "json") return c.json({ attachments: all.length, active: active.length, expired: expired.length, expiring_soon: expiringSoon.length, summary: lines.join("\n") });
+      return c.text(lines.join("\n"));
+    } finally {
+      db.close();
+    }
+  });
+
   // GET /api/report — activity/storage report
   app.get("/api/report", (c) => {
     const days = parseInt(c.req.query("days") ?? "7", 10);
