@@ -872,9 +872,18 @@ function handleSearchTools(args: { query: string }) {
 // Server bootstrap
 // ---------------------------------------------------------------------------
 
+function getMcpVersion(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return (require("../../package.json") as { version: string }).version;
+  } catch {
+    return process.env.npm_package_version ?? "1.0.0";
+  }
+}
+
 export function createServer(): Server {
   const server = new Server(
-    { name: "attachments-mcp", version: "0.1.0" },
+    { name: "attachments-mcp", version: getMcpVersion() },
     { capabilities: { tools: {} } }
   );
 
