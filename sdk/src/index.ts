@@ -13,13 +13,14 @@ export interface Attachment {
   bucket: string;
   size: number;
   contentType: string;
+  tag: string | null;
   link: string | null;
   expiresAt: number | null;
   createdAt: number;
 }
 
 export interface AttachmentsClientOptions {
-  /** Base URL of the attachments server, e.g. "http://localhost:3457" */
+  /** Base URL of the attachments server, e.g. "http://localhost:3459" */
   serverUrl: string;
 }
 
@@ -31,6 +32,7 @@ interface RawAttachment {
   bucket?: string;
   size: number;
   content_type?: string;
+  tag?: string | null;
   link: string | null;
   expires_at: number | null;
   created_at: number;
@@ -51,6 +53,7 @@ function mapAttachment(raw: RawAttachment): Attachment {
     bucket: raw.bucket ?? "",
     size: raw.size,
     contentType: raw.content_type ?? "",
+    tag: raw.tag ?? null,
     link: raw.link,
     expiresAt: raw.expires_at,
     createdAt: raw.created_at,

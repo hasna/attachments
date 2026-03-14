@@ -24,6 +24,7 @@ const expectedAttachment = {
   bucket: "my-bucket",
   size: 12345,
   contentType: "image/jpeg",
+  tag: null,
   link: "https://example.com/link",
   expiresAt: 9999999999,
   createdAt: 1700000000,
