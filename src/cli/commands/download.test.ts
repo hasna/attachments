@@ -86,11 +86,11 @@ describe("download command", () => {
     try {
       const program = buildProgram();
       await program.parseAsync(
-        ["download", "http://localhost:3457/d/att_abc123xyz"],
+        ["download", "http://localhost:3459/d/att_abc123xyz"],
         { from: "user" }
       );
       const [calledId] = mockDownloadAttachment.mock.calls[0] as [string, string | undefined];
-      expect(calledId).toBe("http://localhost:3457/d/att_abc123xyz");
+      expect(calledId).toBe("http://localhost:3459/d/att_abc123xyz");
     } finally {
       capture.restore();
     }

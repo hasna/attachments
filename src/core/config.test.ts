@@ -42,8 +42,8 @@ describe("getConfig", () => {
     expect(cfg.s3.region).toBe("");
     expect(cfg.s3.accessKeyId).toBe("");
     expect(cfg.s3.secretAccessKey).toBe("");
-    expect(cfg.server.port).toBe(3457);
-    expect(cfg.server.baseUrl).toBe("http://localhost:3457");
+    expect(cfg.server.port).toBe(3459);
+    expect(cfg.server.baseUrl).toBe("http://localhost:3459");
     expect(cfg.defaults.expiry).toBe("7d");
     expect(cfg.defaults.linkType).toBe("presigned");
   });
@@ -54,7 +54,7 @@ describe("getConfig", () => {
     expect(cfg.s3.bucket).toBe("my-bucket");
     expect(cfg.s3.region).toBe("us-east-1");
     // Other fields remain at defaults
-    expect(cfg.server.port).toBe(3457);
+    expect(cfg.server.port).toBe(3459);
     expect(cfg.defaults.expiry).toBe("7d");
   });
 
@@ -76,7 +76,7 @@ describe("getConfig", () => {
     // getConfig should fall back to defaults without throwing
     const cfg = getConfig();
     expect(cfg.s3.bucket).toBe("");
-    expect(cfg.server.port).toBe(3457);
+    expect(cfg.server.port).toBe(3459);
   });
 });
 
@@ -153,7 +153,7 @@ describe("validateS3Config", () => {
         accessKeyId: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
       },
-      server: { port: 3457, baseUrl: "http://localhost:3457" },
+      server: { port: 3459, baseUrl: "http://localhost:3459" },
       defaults: { expiry: "7d", linkType: "presigned" },
     };
     expect(() => validateS3Config(validConfig)).not.toThrow();
@@ -168,7 +168,7 @@ describe("validateS3Config", () => {
         secretAccessKey: "secret",
         endpoint: "https://minio.example.com",
       },
-      server: { port: 3457, baseUrl: "http://localhost:3457" },
+      server: { port: 3459, baseUrl: "http://localhost:3459" },
       defaults: { expiry: "7d", linkType: "presigned" },
     };
     expect(() => validateS3Config(validConfig)).not.toThrow();

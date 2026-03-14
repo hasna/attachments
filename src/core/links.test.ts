@@ -55,7 +55,7 @@ describe("generatePresignedLink", () => {
 
 describe("generateServerLink", () => {
   it("returns baseUrl/d/id format", () => {
-    expect(generateServerLink("att_abc123", "http://localhost:3457")).toBe("http://localhost:3457/d/att_abc123");
+    expect(generateServerLink("att_abc123", "http://localhost:3459")).toBe("http://localhost:3459/d/att_abc123");
   });
 
   it("works with https base URL", () => {
@@ -64,7 +64,7 @@ describe("generateServerLink", () => {
 
   it("preserves the full attachment ID", () => {
     const id = "att_AbCdEfGhIj";
-    expect(generateServerLink(id, "http://localhost:3457")).toContain(id);
+    expect(generateServerLink(id, "http://localhost:3459")).toContain(id);
   });
 });
 
@@ -76,7 +76,7 @@ describe("getLinkType", () => {
   it("returns 'presigned' when config defaults to presigned", () => {
     const config = {
       s3: { bucket: "b", region: "r", accessKeyId: "k", secretAccessKey: "s" },
-      server: { port: 3457, baseUrl: "http://localhost:3457" },
+      server: { port: 3459, baseUrl: "http://localhost:3459" },
       defaults: { expiry: "7d", linkType: "presigned" as const },
     };
     expect(getLinkType(config)).toBe("presigned");
@@ -85,7 +85,7 @@ describe("getLinkType", () => {
   it("returns 'server' when config defaults to server", () => {
     const config = {
       s3: { bucket: "b", region: "r", accessKeyId: "k", secretAccessKey: "s" },
-      server: { port: 3457, baseUrl: "http://localhost:3457" },
+      server: { port: 3459, baseUrl: "http://localhost:3459" },
       defaults: { expiry: "7d", linkType: "server" as const },
     };
     expect(getLinkType(config)).toBe("server");

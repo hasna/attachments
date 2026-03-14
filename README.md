@@ -16,7 +16,7 @@ Give your AI agents a place to put files. Upload a local file, get back a link y
 
 - **CLI** — 17+ commands: `upload`, `download`, `list`, `delete`, `link`, `config`, `serve`, `mcp`, `status`, `clean`, `whoami`, `presign-upload`, `link-task`, `complete-task`, `snapshot-session`, `health-check`, `watch`, `task-journal`
 - **MCP server** — 14 tools with `ATTACHMENTS_PROFILE=minimal|standard|full` for token optimization
-- **REST API** — 8+ endpoints served by Hono on port 3457 (localhost binding by default)
+- **REST API** — 8+ endpoints served by Hono on port 3459 (localhost binding by default)
 - **TypeScript SDK** — `@hasna/attachments-sdk`, zero dependencies, works in Node.js, Bun, Deno, and the browser
 - **Dashboard** — React + Vite UI with dark/light mode
 - **Integrations** — todos (`link-task`, `complete-task`, `watch`, `task-journal`), sessions (`snapshot-session`), economy (`ATTACHMENTS_TRACK_COSTS`)
@@ -124,7 +124,7 @@ All commands are under the `attachments` binary.
 | `config show` | Print current configuration (secrets masked) |
 | `config set` | Update configuration values |
 | `config test` | Test the S3 connection |
-| `serve` | Start the REST API server (default port 3457) |
+| `serve` | Start the REST API server (default port 3459) |
 | `mcp` | Install/uninstall the MCP server into agent configs |
 | `status` | Show server and storage status |
 | `clean` | Remove expired or orphaned attachments |
@@ -244,7 +244,7 @@ attachments upload ./large-export.csv
 
 ## REST API
 
-Start the server with `attachments serve` (default port 3457, localhost only).
+Start the server with `attachments serve` (default port 3459, localhost only).
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -271,7 +271,7 @@ Zero dependencies. Works in Node.js, Bun, Deno, and the browser.
 ```typescript
 import { AttachmentsClient } from "@hasna/attachments-sdk";
 
-const client = new AttachmentsClient({ serverUrl: "http://localhost:3457" });
+const client = new AttachmentsClient({ serverUrl: "http://localhost:3459" });
 
 // Upload (Node.js/Bun: file path; browser: File object)
 const attachment = await client.upload("./report.pdf", { expiry: "7d" });

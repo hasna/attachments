@@ -117,7 +117,7 @@ describe("config show — masked output", () => {
 
   it("shows defaults when no config file exists", () => {
     const config = getConfig();
-    expect(config.server.port).toBe(3457);
+    expect(config.server.port).toBe(3459);
     expect(config.defaults.expiry).toBe("7d");
     expect(config.defaults.linkType).toBe("presigned");
   });
@@ -131,7 +131,7 @@ describe("config set — partial updates", () => {
     const cfg = getConfig();
     expect(cfg.s3.bucket).toBe("new-bucket");
     expect(cfg.s3.region).toBe("eu-west-1");
-    expect(cfg.server.port).toBe(3457);
+    expect(cfg.server.port).toBe(3459);
   });
 
   it("sets access key and secret key", () => {
@@ -214,7 +214,7 @@ describe("config test — S3 validation", () => {
         accessKeyId: "id",
         secretAccessKey: "secret",
       },
-      server: { port: 3457, baseUrl: "http://localhost:3457" },
+      server: { port: 3459, baseUrl: "http://localhost:3459" },
       defaults: { expiry: "7d", linkType: "presigned" },
     };
     expect(() => validateS3Config(valid)).not.toThrow();
@@ -229,7 +229,7 @@ describe("config test — S3 validation", () => {
         secretAccessKey: "secret",
         endpoint: "https://minio.example.com",
       },
-      server: { port: 3457, baseUrl: "http://localhost:3457" },
+      server: { port: 3459, baseUrl: "http://localhost:3459" },
       defaults: { expiry: "7d", linkType: "presigned" },
     };
     expect(() => validateS3Config(valid)).not.toThrow();

@@ -74,8 +74,8 @@ const mockConfig = {
     secretAccessKey: "secret",
   },
   server: {
-    port: 3457,
-    baseUrl: "http://localhost:3457",
+    port: 3459,
+    baseUrl: "http://localhost:3459",
   },
   defaults: {
     expiry: "7d",
@@ -395,7 +395,7 @@ describe("REST API server", () => {
     it("streams file when link is a server link (no amazonaws.com)", async () => {
       mockDbFindById.mockImplementation(() => ({
         ...mockAttachment,
-        link: "http://localhost:3457/d/att_test00001",
+        link: "http://localhost:3459/d/att_test00001",
       }));
 
       const res = await app.request("/api/attachments/att_test00001/download");
@@ -406,7 +406,7 @@ describe("REST API server", () => {
     it("returns 500 when streamAttachment throws", async () => {
       mockDbFindById.mockImplementation(() => ({
         ...mockAttachment,
-        link: "http://localhost:3457/d/att_test00001",
+        link: "http://localhost:3459/d/att_test00001",
       }));
       mockStreamAttachment.mockImplementation(async () => {
         throw new Error("S3 download failed");
@@ -620,7 +620,7 @@ describe("REST API server", () => {
     it("generates a presigned URL on-the-fly for server-link attachments", async () => {
       mockDbFindById.mockImplementation(() => ({
         ...mockAttachment,
-        link: "http://localhost:3457/d/att_test00001",
+        link: "http://localhost:3459/d/att_test00001",
       }));
 
       const res = await app.request("/d/att_test00001");
@@ -632,7 +632,7 @@ describe("REST API server", () => {
     it("returns 500 when generatePresignedLink throws during shortlink redirect", async () => {
       mockDbFindById.mockImplementation(() => ({
         ...mockAttachment,
-        link: "http://localhost:3457/d/att_test00001",
+        link: "http://localhost:3459/d/att_test00001",
       }));
       mockGeneratePresignedLink.mockImplementation(async () => {
         throw new Error("Presign failed");

@@ -32,7 +32,7 @@ function makeMockDB() {
 
 const mockConfig = {
   s3: { bucket: "test-bucket", region: "us-east-1", accessKeyId: "AKIATEST", secretAccessKey: "secret" },
-  server: { port: 3457, baseUrl: "http://localhost:3457" },
+  server: { port: 3459, baseUrl: "http://localhost:3459" },
   defaults: { expiry: "7d", linkType: "presigned" as const },
 };
 

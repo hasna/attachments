@@ -15,7 +15,7 @@ export interface DownloadResult {
  * Handles:
  *   - "att_abc123"                          → "att_abc123"
  *   - "/d/att_abc123"                       → "att_abc123"
- *   - "http://localhost:3457/d/att_abc123"  → "att_abc123"
+ *   - "http://localhost:3459/d/att_abc123"  → "att_abc123"
  *   - "https://example.com/d/att_abc123"   → "att_abc123"
  */
 export function extractId(idOrUrl: string): string {

@@ -47,7 +47,7 @@ beforeAll(() => {
   setConfigPath(join(_presignTestConfigDir, "config.json"));
   setConfig({
     s3: { bucket: "test-bucket", region: "us-east-1", accessKeyId: "K", secretAccessKey: "S" },
-    server: { port: 3457, baseUrl: "http://localhost:3457" },
+    server: { port: 3459, baseUrl: "http://localhost:3459" },
     defaults: { expiry: "7d", linkType: "presigned" },
   });
 });

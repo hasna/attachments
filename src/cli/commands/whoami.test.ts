@@ -97,7 +97,7 @@ describe("whoami — full output with valid config", () => {
         accessKeyId: "AKID",
         secretAccessKey: "secret",
       },
-      server: { port: 3457, baseUrl: "http://localhost:3457" },
+      server: { port: 3459, baseUrl: "http://localhost:3459" },
       defaults: { expiry: "7d", linkType: "presigned" },
     });
 
@@ -148,7 +148,7 @@ describe("whoami — full output with valid config", () => {
       expect(output).toContain(`Config: ${TEST_CONFIG_PATH}`);
       expect(output).toContain("\u2713"); // checkmark
       expect(output).toContain("S3: my-bucket (us-east-1)");
-      expect(output).toContain("Server: http://localhost:3457");
+      expect(output).toContain("Server: http://localhost:3459");
       expect(output).toContain("Link type: presigned (default expiry: 7d)");
       expect(output).toContain("Attachments: 3 total, 1 expired");
     } finally {

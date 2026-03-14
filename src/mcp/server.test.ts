@@ -67,7 +67,7 @@ const mockGeneratePresignedLink = mock(
     "https://example.com/new-presigned-url"
 );
 const mockGenerateServerLink = mock(
-  (_id: string, _baseUrl: string) => "http://localhost:3457/d/att_test001"
+  (_id: string, _baseUrl: string) => "http://localhost:3459/d/att_test001"
 );
 const mockGetLinkType = mock(() => "presigned" as const);
 
@@ -126,7 +126,7 @@ beforeAll(() => {
   configModule.setConfigPath(join(_mcpTestConfigDir, "config.json"));
   configModule.setConfig({
     s3: { bucket: "my-bucket", region: "us-east-1", accessKeyId: "AKIATEST", secretAccessKey: "secret" },
-    server: { port: 3457, baseUrl: "http://localhost:3457" },
+    server: { port: 3459, baseUrl: "http://localhost:3459" },
     defaults: { expiry: "7d", linkType: "presigned" },
   });
 });
@@ -474,11 +474,11 @@ describe("MCP Server — download_attachment", () => {
   it("calls downloadAttachment without dest when not provided", async () => {
     const server = createServer();
     await callTool(server, "download_attachment", {
-      id_or_url: "https://localhost:3457/d/att_test001",
+      id_or_url: "https://localhost:3459/d/att_test001",
     });
 
     expect(mockDownloadAttachment).toHaveBeenCalledWith(
-      "https://localhost:3457/d/att_test001",
+      "https://localhost:3459/d/att_test001",
       undefined
     );
   });
@@ -601,7 +601,7 @@ describe("MCP Server — get_link", () => {
     expect(mockGeneratePresignedLink).not.toHaveBeenCalled();
 
     const parsed = JSON.parse(result.content[0]!.text);
-    expect(parsed.link).toBe("http://localhost:3457/d/att_test001");
+    expect(parsed.link).toBe("http://localhost:3459/d/att_test001");
   });
 });
 

@@ -27,7 +27,7 @@ beforeAll(() => {
   setConfigPath(join(_serveTestConfigDir, "config.json"));
   setConfig({
     s3: { bucket: "b", region: "us-east-1", accessKeyId: "k", secretAccessKey: "s" },
-    server: { port: 3457, baseUrl: "http://localhost:3457" },
+    server: { port: 3459, baseUrl: "http://localhost:3459" },
     defaults: { expiry: "7d", linkType: "presigned" },
   });
 });
@@ -93,7 +93,7 @@ describe("serve command", () => {
       await program.parseAsync(["serve"], { from: "user" });
       expect(mockStartServer).toHaveBeenCalledTimes(1);
       const [calledPort] = mockStartServer.mock.calls[0] as [number];
-      expect(calledPort).toBe(3457);
+      expect(calledPort).toBe(3459);
     } finally {
       capture.restore();
     }
@@ -127,8 +127,8 @@ describe("serve command", () => {
     const capture = captureOutput();
     try {
       const program = buildProgram();
-      await program.parseAsync(["serve", "--port", "3457", "--host", "0.0.0.0"], { from: "user" });
-      expect(capture.out.join("")).toContain("http://0.0.0.0:3457");
+      await program.parseAsync(["serve", "--port", "3459", "--host", "0.0.0.0"], { from: "user" });
+      expect(capture.out.join("")).toContain("http://0.0.0.0:3459");
     } finally {
       capture.restore();
     }
@@ -139,7 +139,7 @@ describe("serve command", () => {
     try {
       const program = buildProgram();
       await program.parseAsync(["serve"], { from: "user" });
-      expect(capture.out.join("")).toContain("http://localhost:3457");
+      expect(capture.out.join("")).toContain("http://localhost:3459");
     } finally {
       capture.restore();
     }

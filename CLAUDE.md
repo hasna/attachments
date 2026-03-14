@@ -4,7 +4,7 @@ WeTransfer for AI agents. Upload files, get shareable links, backed by your own 
 
 - **CLI** — `attachments upload`, `download`, `list`, `delete`, `link`, `config`, `serve`, `mcp`
 - **MCP server** — lean-stub tools for Claude Code, Codex, Gemini, and any MCP-compatible agent
-- **REST API** — 8 endpoints via Hono, runs on port **3457**
+- **REST API** — 8 endpoints via Hono, runs on port **3459**
 - **TypeScript SDK** — `@hasna/attachments-sdk`, zero dependencies
 
 ---
@@ -38,7 +38,7 @@ attachments delete att_abc123
 # Get a fresh link for an existing upload
 attachments link att_abc123
 
-# Start REST API server (port 3457)
+# Start REST API server (port 3459)
 attachments serve
 
 # Start MCP server
@@ -125,7 +125,7 @@ Set profile via `ATTACHMENTS_PROFILE` env var before starting the MCP server.
 
 ---
 
-## REST API (port 3457)
+## REST API (port 3459)
 
 | Method | Path | Description |
 |--------|------|-------------|

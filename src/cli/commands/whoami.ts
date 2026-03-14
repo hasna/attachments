@@ -26,7 +26,7 @@ export function registerWhoami(program: Command): void {
       if (!configExists) {
         lines.push(`Config: not found \u2717`);
         lines.push(`S3: not configured \u2717`);
-        lines.push(`Server: http://localhost:3457`);
+        lines.push(`Server: http://localhost:3459`);
         lines.push(`Link type: presigned (default expiry: 7d)`);
         lines.push(`Attachments: 0 total, 0 expired`);
         process.stdout.write(lines.join("\n") + "\n");

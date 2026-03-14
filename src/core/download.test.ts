@@ -74,7 +74,7 @@ describe("extractId", () => {
   });
 
   it("extracts ID from full http URL", () => {
-    expect(extractId("http://localhost:3457/d/att_abc123")).toBe("att_abc123");
+    expect(extractId("http://localhost:3459/d/att_abc123")).toBe("att_abc123");
   });
 
   it("extracts ID from https URL", () => {
@@ -82,11 +82,11 @@ describe("extractId", () => {
   });
 
   it("stops at query string", () => {
-    expect(extractId("http://localhost:3457/d/att_abc123?foo=bar")).toBe("att_abc123");
+    expect(extractId("http://localhost:3459/d/att_abc123?foo=bar")).toBe("att_abc123");
   });
 
   it("stops at hash fragment", () => {
-    expect(extractId("http://localhost:3457/d/att_abc123#section")).toBe("att_abc123");
+    expect(extractId("http://localhost:3459/d/att_abc123#section")).toBe("att_abc123");
   });
 });
 
@@ -141,7 +141,7 @@ describe("downloadAttachment", () => {
     const deps: DownloadDeps = { db: mockDb as any, s3: makeMockS3() as any };
     const dir = makeTempDir();
 
-    await downloadAttachment("http://localhost:3457/d/att_test001", dir, deps);
+    await downloadAttachment("http://localhost:3459/d/att_test001", dir, deps);
 
     expect(mockDb.findById).toHaveBeenCalledWith("att_test001");
   });

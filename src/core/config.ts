@@ -32,8 +32,8 @@ const DEFAULT_CONFIG: AttachmentsConfig = {
     secretAccessKey: "",
   },
   server: {
-    port: 3457,
-    baseUrl: "http://localhost:3457",
+    port: 3459,
+    baseUrl: "http://localhost:3459",
   },
   defaults: {
     expiry: "7d",
