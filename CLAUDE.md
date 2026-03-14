@@ -104,6 +104,7 @@ attachments health-check --fix
 - **sessions**: `snapshot-session` exports session transcript as shareable link
 - **economy**: `ATTACHMENTS_TRACK_COSTS=1` logs upload costs to @hasna/economy
 - **mementos**: tag uploads with project/session for organized storage
+- **Tag conventions**: use `task:TASK-ID`, `session:SESSION-ID`, `project:NAME`, `agent:NAME` for cross-agent discovery (e.g. `attachments list --tag task:OPE-00123`)
 
 ---
 
