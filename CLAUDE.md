@@ -62,7 +62,7 @@ bun run dashboard      # Start dashboard dev server
 ### Session Start
 
 ```bash
-mementos recall --project open-attachments  # Load context
+mementos memory-inject --project open-attachments --format compact  # Load context (compact = 60% token savings)
 ```
 
 ### Uploading Evidence (during work)
