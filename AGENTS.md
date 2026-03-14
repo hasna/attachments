@@ -179,3 +179,33 @@ attachments config test      # verify S3 connectivity
 ```
 
 SQLite database: `~/.attachments/attachments.db`
+
+---
+
+## Context Injection (System Prompt)
+
+Set `ATTACHMENTS_URL=http://localhost:3459` in your agent to enable automatic context injection.
+
+```
+GET http://localhost:3459/api/context
+```
+
+Returns a compact text summary for system prompts:
+```
+Attachments: 42 total (39 active, 3 expired)
+⚠ Expiring in 24h: 2 (report.pdf, data.csv)
+Recent: report.pdf (att_abc), output.json (att_def)
+```
+
+Or use the MCP tool `get_context` (standard profile) for the same result.
+
+---
+
+## Health & Reporting
+
+```bash
+GET http://localhost:3459/api/health    # status + counts
+GET http://localhost:3459/api/report    # detailed activity
+GET http://localhost:3459/api/context   # system prompt text
+attachments report [--days 7]           # CLI equivalent
+```
