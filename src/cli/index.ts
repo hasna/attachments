@@ -14,6 +14,11 @@ import { registerSnapshotSession } from "./commands/snapshot-session";
 import { registerHealthCheck } from "./commands/health-check";
 import { registerWatch } from "./commands/watch";
 import { registerTaskJournal } from "./commands/task-journal";
+import { registerReport } from "./commands/report";
+import { listCommand } from "./commands/list";
+import { deleteCommand } from "./commands/delete";
+import { linkCommand } from "./commands/link";
+import { configCommand } from "./commands/config";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkgVersion: string = (() => { try { return (require("../../package.json") as { version: string }).version; } catch { return process.env.npm_package_version ?? "unknown"; } })();
@@ -38,7 +43,10 @@ registerSnapshotSession(program);
 registerHealthCheck(program);
 registerWatch(program);
 registerTaskJournal(program);
-
-// TODO: register list, delete, link, config
+registerReport(program);
+program.addCommand(listCommand());
+program.addCommand(deleteCommand());
+program.addCommand(linkCommand());
+program.addCommand(configCommand());
 
 program.parse(process.argv);
