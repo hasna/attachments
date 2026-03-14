@@ -15,10 +15,13 @@ import { registerHealthCheck } from "./commands/health-check";
 import { registerWatch } from "./commands/watch";
 import { registerTaskJournal } from "./commands/task-journal";
 
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const pkgVersion: string = (() => { try { return (require("../../package.json") as { version: string }).version; } catch { return process.env.npm_package_version ?? "unknown"; } })();
+
 const program = new Command()
   .name("attachments")
   .description("File transfer for AI agents — S3-backed")
-  .version("0.1.0");
+  .version(pkgVersion);
 
 // Register all subcommands
 registerUpload(program);
