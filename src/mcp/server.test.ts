@@ -135,7 +135,7 @@ mock.module("../core/s3.js", () => ({
 }));
 
 // Import server AFTER mocks are set up
-const { createServer } = await import("./server.js");
+const { createServer, getToolsForProfile } = await import("./server.js");
 
 // Restore all mocks after this file's tests complete
 afterAll(() => {
@@ -182,11 +182,47 @@ async function listTools(server: ReturnType<typeof createServer>) {
 // ---------------------------------------------------------------------------
 
 describe("MCP Server — tools/list", () => {
-  it("returns 12 lean tools", async () => {
+  it("returns 6 standard tools by default (no AGENT_PROFILE set)", async () => {
+    delete process.env.AGENT_PROFILE;
     const server = createServer();
     const result = (await listTools(server)) as { tools: Array<{ name: string }> };
-    expect(result.tools).toHaveLength(12);
+    expect(result.tools).toHaveLength(6);
     const names = result.tools.map((t) => t.name);
+    expect(names).toContain("upload_attachment");
+    expect(names).toContain("download_attachment");
+    expect(names).toContain("get_link");
+    expect(names).toContain("list_attachments");
+    expect(names).toContain("delete_attachment");
+    expect(names).toContain("complete_task_with_files");
+  });
+});
+
+describe("AGENT_PROFILE — getToolsForProfile()", () => {
+  it("minimal profile returns exactly 3 tools", () => {
+    const tools = getToolsForProfile("minimal");
+    expect(tools).toHaveLength(3);
+    const names = tools.map((t) => t.name);
+    expect(names).toContain("upload_attachment");
+    expect(names).toContain("download_attachment");
+    expect(names).toContain("get_link");
+  });
+
+  it("standard profile returns exactly 6 tools", () => {
+    const tools = getToolsForProfile("standard");
+    expect(tools).toHaveLength(6);
+    const names = tools.map((t) => t.name);
+    expect(names).toContain("upload_attachment");
+    expect(names).toContain("download_attachment");
+    expect(names).toContain("get_link");
+    expect(names).toContain("list_attachments");
+    expect(names).toContain("delete_attachment");
+    expect(names).toContain("complete_task_with_files");
+  });
+
+  it("full profile returns all 12 tools", () => {
+    const tools = getToolsForProfile("full");
+    expect(tools).toHaveLength(12);
+    const names = tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("upload_attachments");
     expect(names).toContain("download_attachment");
@@ -199,6 +235,26 @@ describe("MCP Server — tools/list", () => {
     expect(names).toContain("search_tools");
     expect(names).toContain("link_to_task");
     expect(names).toContain("complete_task_with_files");
+  });
+
+  it("no argument (reads process.env.AGENT_PROFILE) defaults to standard (6 tools)", () => {
+    delete process.env.AGENT_PROFILE;
+    const tools = getToolsForProfile();
+    expect(tools).toHaveLength(6);
+  });
+
+  it("AGENT_PROFILE=minimal env var returns 3 tools", () => {
+    process.env.AGENT_PROFILE = "minimal";
+    const tools = getToolsForProfile();
+    expect(tools).toHaveLength(3);
+    delete process.env.AGENT_PROFILE;
+  });
+
+  it("AGENT_PROFILE=full env var returns 12 tools", () => {
+    process.env.AGENT_PROFILE = "full";
+    const tools = getToolsForProfile();
+    expect(tools).toHaveLength(12);
+    delete process.env.AGENT_PROFILE;
   });
 });
 
