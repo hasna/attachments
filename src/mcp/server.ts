@@ -144,6 +144,19 @@ const FULL_SCHEMAS: Record<string, object> = {
       required: ["query"],
     },
   },
+  link_to_task: {
+    name: "link_to_task",
+    description: "Link an uploaded attachment to a todos task by updating the task's metadata with attachment info (id, link, filename, size). Uses the todos REST API.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        attachment_id: { type: "string", description: "Attachment ID (att_xxx)." },
+        task_id: { type: "string", description: "Task ID to link the attachment to (e.g. TASK-001)." },
+        todos_url: { type: "string", description: "Todos REST server base URL. Defaults to http://localhost:3000." },
+      },
+      required: ["attachment_id", "task_id"],
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -272,6 +285,19 @@ const LEAN_TOOLS = [
         query: { type: "string" },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "link_to_task",
+    description: "Link attachment to a todos task",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        attachment_id: { type: "string" },
+        task_id: { type: "string" },
+        todos_url: { type: "string" },
+      },
+      required: ["attachment_id", "task_id"],
     },
   },
 ];
@@ -520,6 +546,55 @@ function handleDescribeTools(args: { tool_name?: string }) {
   return FULL_SCHEMAS;
 }
 
+async function handleLinkToTask(args: {
+  attachment_id: string;
+  task_id: string;
+  todos_url?: string;
+}) {
+  const todosUrl = args.todos_url ?? "http://localhost:3000";
+  const db = new AttachmentsDB();
+  let att: ReturnType<AttachmentsDB["findById"]>;
+  try {
+    att = db.findById(args.attachment_id);
+  } finally {
+    db.close();
+  }
+
+  if (!att) {
+    throw new Error(`Attachment not found: ${args.attachment_id}`);
+  }
+
+  const url = `${todosUrl}/api/tasks/${args.task_id}`;
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      metadata: {
+        _attachments: [
+          {
+            id: att.id,
+            link: att.link,
+            filename: att.filename,
+            size: att.size,
+          },
+        ],
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error(`Task not found: ${args.task_id}`);
+    }
+    const body = await response.text().catch(() => "");
+    throw new Error(
+      `Failed to update task ${args.task_id}: HTTP ${response.status}${body ? ` — ${body}` : ""}`
+    );
+  }
+
+  return `Linked ${args.attachment_id} → task ${args.task_id}`;
+}
+
 function handleSearchTools(args: { query: string }) {
   const q = args.query.toLowerCase();
   const matches = LEAN_TOOLS.map((t) => t.name).filter((name) =>
@@ -597,6 +672,11 @@ export function createServer(): Server {
         case "search_tools":
           result = handleSearchTools(
             args as Parameters<typeof handleSearchTools>[0]
+          );
+          break;
+        case "link_to_task":
+          result = await handleLinkToTask(
+            args as Parameters<typeof handleLinkToTask>[0]
           );
           break;
         default:

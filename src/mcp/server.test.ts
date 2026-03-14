@@ -182,10 +182,10 @@ async function listTools(server: ReturnType<typeof createServer>) {
 // ---------------------------------------------------------------------------
 
 describe("MCP Server — tools/list", () => {
-  it("returns 10 lean tools", async () => {
+  it("returns 11 lean tools", async () => {
     const server = createServer();
     const result = (await listTools(server)) as { tools: Array<{ name: string }> };
-    expect(result.tools).toHaveLength(10);
+    expect(result.tools).toHaveLength(11);
     const names = result.tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("upload_attachments");
@@ -197,6 +197,7 @@ describe("MCP Server — tools/list", () => {
     expect(names).toContain("presign_upload");
     expect(names).toContain("describe_tools");
     expect(names).toContain("search_tools");
+    expect(names).toContain("link_to_task");
   });
 });
 
@@ -597,7 +598,7 @@ describe("MCP Server — describe_tools", () => {
     };
 
     const parsed = JSON.parse(result.content[0]!.text);
-    expect(Object.keys(parsed)).toHaveLength(10);
+    expect(Object.keys(parsed)).toHaveLength(11);
     expect(parsed.upload_attachment).toBeDefined();
     expect(parsed.upload_attachments).toBeDefined();
     expect(parsed.presign_upload).toBeDefined();
@@ -732,6 +733,104 @@ describe("MCP Server — presign_upload", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain("Invalid expiry format");
+  });
+});
+
+describe("MCP Server — link_to_task", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    mockFindById.mockClear();
+    mockClose.mockClear();
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("links attachment to task and returns success message", async () => {
+    globalThis.fetch = mock(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => "",
+    })) as unknown as typeof fetch;
+
+    const server = createServer();
+    const result = (await callTool(server, "link_to_task", {
+      attachment_id: "att_test001",
+      task_id: "TASK-001",
+    })) as { content: Array<{ text: string }> };
+
+    expect(result.content[0]!.text).toContain("Linked att_test001 → task TASK-001");
+  });
+
+  it("calls PATCH on correct todos URL with attachment metadata", async () => {
+    let capturedUrl = "";
+    let capturedBody = "";
+    globalThis.fetch = mock(async (url: unknown, opts: unknown) => {
+      capturedUrl = String(url);
+      capturedBody = (opts as RequestInit).body as string;
+      return { ok: true, status: 200, text: async () => "" } as Response;
+    }) as unknown as typeof fetch;
+
+    const server = createServer();
+    await callTool(server, "link_to_task", {
+      attachment_id: "att_test001",
+      task_id: "TASK-001",
+      todos_url: "http://localhost:4000",
+    });
+
+    expect(capturedUrl).toBe("http://localhost:4000/api/tasks/TASK-001");
+    const body = JSON.parse(capturedBody);
+    expect(body.metadata._attachments[0].id).toBe("att_test001");
+    expect(body.metadata._attachments[0].filename).toBe("test.txt");
+  });
+
+  it("returns error when attachment not found", async () => {
+    mockFindById.mockReturnValueOnce(null as unknown as ReturnType<typeof mockFindById>);
+
+    const server = createServer();
+    const result = (await callTool(server, "link_to_task", {
+      attachment_id: "att_missing",
+      task_id: "TASK-001",
+    })) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("not found");
+  });
+
+  it("returns error when task not found (404)", async () => {
+    globalThis.fetch = mock(async () => ({
+      ok: false,
+      status: 404,
+      text: async () => "not found",
+    })) as unknown as typeof fetch;
+
+    const server = createServer();
+    const result = (await callTool(server, "link_to_task", {
+      attachment_id: "att_test001",
+      task_id: "TASK-999",
+    })) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("TASK-999");
+  });
+
+  it("defaults todos_url to http://localhost:3000", async () => {
+    let capturedUrl = "";
+    globalThis.fetch = mock(async (url: unknown) => {
+      capturedUrl = String(url);
+      return { ok: true, status: 200, text: async () => "" } as Response;
+    }) as unknown as typeof fetch;
+
+    const server = createServer();
+    await callTool(server, "link_to_task", {
+      attachment_id: "att_test001",
+      task_id: "TASK-001",
+    });
+
+    expect(capturedUrl).toContain("http://localhost:3000");
   });
 });
 

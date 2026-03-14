@@ -8,6 +8,7 @@ import { registerClean } from "./commands/clean";
 import { registerWhoami } from "./commands/whoami";
 import { registerStatus } from "./commands/status";
 import { registerPresign } from "./commands/presign";
+import { registerLinkTask } from "./commands/link-task";
 
 const program = new Command()
   .name("attachments")
@@ -23,6 +24,7 @@ registerClean(program);
 registerWhoami(program);
 registerStatus(program);
 registerPresign(program);
+registerLinkTask(program);
 
 // TODO: register list, delete, link, config
 
