@@ -1,0 +1,96 @@
+:root {
+  /* Typography */
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'SF Mono', Consolas, monospace;
+
+  /* Light theme */
+  --bg: #ffffff;
+  --text: #6b7280;
+  --text-h: #111827;
+  --border: #e5e7eb;
+
+  --input-bg: #f9fafb;
+  --card-bg: #ffffff;
+  --zone-bg: #f9fafb;
+  --hover-bg: #f3f4f6;
+  --th-bg: #f9fafb;
+
+  --accent: #7c3aed;
+  --accent-dark: #6d28d9;
+  --accent-bg: rgba(124, 58, 237, 0.08);
+  --accent-border: rgba(124, 58, 237, 0.3);
+
+  --success: #059669;
+  --danger: #dc2626;
+  --danger-bg: rgba(220, 38, 38, 0.08);
+  --danger-border: rgba(220, 38, 38, 0.25);
+
+  font: 14px/1.5 var(--sans);
+  color: var(--text);
+  background: var(--bg);
+  color-scheme: light dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1117;
+    --text: #9ca3af;
+    --text-h: #f9fafb;
+    --border: #1f2937;
+
+    --input-bg: #161b27;
+    --card-bg: #131720;
+    --zone-bg: #161b27;
+    --hover-bg: #1a2030;
+    --th-bg: #141921;
+
+    --accent: #a78bfa;
+    --accent-dark: #8b5cf6;
+    --accent-bg: rgba(167, 139, 250, 0.12);
+    --accent-border: rgba(167, 139, 250, 0.35);
+
+    --success: #34d399;
+    --danger: #f87171;
+    --danger-bg: rgba(248, 113, 113, 0.1);
+    --danger-border: rgba(248, 113, 113, 0.3);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+}
+
+#root {
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+h1, h2, h3 {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+p {
+  margin: 0;
+}
+
+input, select, button {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+a {
+  color: var(--accent);
+}

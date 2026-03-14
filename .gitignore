@@ -6,3 +6,5 @@ dist/
 sdk/dist/
 sdk/node_modules/
 *.sqlite
+dashboard/node_modules/
+dashboard/dist/
