@@ -182,10 +182,10 @@ async function listTools(server: ReturnType<typeof createServer>) {
 // ---------------------------------------------------------------------------
 
 describe("MCP Server — tools/list", () => {
-  it("returns 11 lean tools", async () => {
+  it("returns 12 lean tools", async () => {
     const server = createServer();
     const result = (await listTools(server)) as { tools: Array<{ name: string }> };
-    expect(result.tools).toHaveLength(11);
+    expect(result.tools).toHaveLength(12);
     const names = result.tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("upload_attachments");
@@ -198,6 +198,7 @@ describe("MCP Server — tools/list", () => {
     expect(names).toContain("describe_tools");
     expect(names).toContain("search_tools");
     expect(names).toContain("link_to_task");
+    expect(names).toContain("complete_task_with_files");
   });
 });
 
@@ -598,11 +599,12 @@ describe("MCP Server — describe_tools", () => {
     };
 
     const parsed = JSON.parse(result.content[0]!.text);
-    expect(Object.keys(parsed)).toHaveLength(11);
+    expect(Object.keys(parsed)).toHaveLength(12);
     expect(parsed.upload_attachment).toBeDefined();
     expect(parsed.upload_attachments).toBeDefined();
     expect(parsed.presign_upload).toBeDefined();
     expect(parsed.describe_tools).toBeDefined();
+    expect(parsed.complete_task_with_files).toBeDefined();
   });
 
   it("returns error for unknown tool_name", async () => {
@@ -828,6 +830,171 @@ describe("MCP Server — link_to_task", () => {
     await callTool(server, "link_to_task", {
       attachment_id: "att_test001",
       task_id: "TASK-001",
+    });
+
+    expect(capturedUrl).toContain("http://localhost:3000");
+  });
+});
+
+describe("MCP Server — complete_task_with_files", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    mockUploadFile.mockClear();
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("uploads files and completes task with attachment_ids", async () => {
+    mockUploadFile
+      .mockImplementationOnce(async () => ({
+        id: "att_ev001",
+        filename: "screenshot.png",
+        s3Key: "attachments/2024-01-01/att_ev001/screenshot.png",
+        bucket: "my-bucket",
+        size: 50000,
+        contentType: "image/png",
+        link: "https://example.com/att_ev001",
+        expiresAt: null,
+        createdAt: 1699000000000,
+      }))
+      .mockImplementationOnce(async () => ({
+        id: "att_ev002",
+        filename: "output.txt",
+        s3Key: "attachments/2024-01-01/att_ev002/output.txt",
+        bucket: "my-bucket",
+        size: 1024,
+        contentType: "text/plain",
+        link: "https://example.com/att_ev002",
+        expiresAt: null,
+        createdAt: 1699000000000,
+      }));
+
+    let capturedUrl = "";
+    let capturedBody = "";
+    globalThis.fetch = mock(async (url: unknown, opts: unknown) => {
+      capturedUrl = String(url);
+      capturedBody = (opts as RequestInit).body as string;
+      return { ok: true, status: 200, text: async () => "" } as Response;
+    }) as unknown as typeof fetch;
+
+    const server = createServer();
+    const result = (await callTool(server, "complete_task_with_files", {
+      task_id: "TASK-001",
+      paths: ["/tmp/screenshot.png", "/tmp/output.txt"],
+      todos_url: "http://localhost:3000",
+    })) as { content: Array<{ text: string }> };
+
+    expect(mockUploadFile).toHaveBeenCalledTimes(2);
+    expect(capturedUrl).toBe("http://localhost:3000/api/tasks/TASK-001/complete");
+
+    const body = JSON.parse(capturedBody);
+    expect(body.attachment_ids).toEqual(["att_ev001", "att_ev002"]);
+    expect(body.notes).toBeUndefined();
+
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed.task_id).toBe("TASK-001");
+    expect(parsed.attachment_ids).toEqual(["att_ev001", "att_ev002"]);
+    expect(parsed.links).toEqual(["https://example.com/att_ev001", "https://example.com/att_ev002"]);
+  });
+
+  it("includes notes in the POST body when provided", async () => {
+    mockUploadFile.mockImplementationOnce(async () => ({
+      id: "att_ev003",
+      filename: "result.txt",
+      s3Key: "key",
+      bucket: "my-bucket",
+      size: 100,
+      contentType: "text/plain",
+      link: null,
+      expiresAt: null,
+      createdAt: 1699000000000,
+    }));
+
+    let capturedBody = "";
+    globalThis.fetch = mock(async (_url: unknown, opts: unknown) => {
+      capturedBody = (opts as RequestInit).body as string;
+      return { ok: true, status: 200, text: async () => "" } as Response;
+    }) as unknown as typeof fetch;
+
+    const server = createServer();
+    await callTool(server, "complete_task_with_files", {
+      task_id: "TASK-002",
+      paths: ["/tmp/result.txt"],
+      notes: "All tests green",
+    });
+
+    const body = JSON.parse(capturedBody);
+    expect(body.notes).toBe("All tests green");
+  });
+
+  it("returns error when task not found (404)", async () => {
+    mockUploadFile.mockImplementationOnce(async () => ({
+      id: "att_ev004",
+      filename: "file.txt",
+      s3Key: "key",
+      bucket: "my-bucket",
+      size: 100,
+      contentType: "text/plain",
+      link: null,
+      expiresAt: null,
+      createdAt: 1699000000000,
+    }));
+
+    globalThis.fetch = mock(async () => ({
+      ok: false,
+      status: 404,
+      text: async () => "not found",
+    })) as unknown as typeof fetch;
+
+    const server = createServer();
+    const result = (await callTool(server, "complete_task_with_files", {
+      task_id: "TASK-999",
+      paths: ["/tmp/file.txt"],
+    })) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("TASK-999");
+  });
+
+  it("returns error when paths array is empty", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "complete_task_with_files", {
+      task_id: "TASK-001",
+      paths: [],
+    })) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("non-empty array");
+    expect(mockUploadFile).not.toHaveBeenCalled();
+  });
+
+  it("defaults todos_url to http://localhost:3000", async () => {
+    mockUploadFile.mockImplementationOnce(async () => ({
+      id: "att_ev005",
+      filename: "file.txt",
+      s3Key: "key",
+      bucket: "my-bucket",
+      size: 100,
+      contentType: "text/plain",
+      link: null,
+      expiresAt: null,
+      createdAt: 1699000000000,
+    }));
+
+    let capturedUrl = "";
+    globalThis.fetch = mock(async (url: unknown) => {
+      capturedUrl = String(url);
+      return { ok: true, status: 200, text: async () => "" } as Response;
+    }) as unknown as typeof fetch;
+
+    const server = createServer();
+    await callTool(server, "complete_task_with_files", {
+      task_id: "TASK-001",
+      paths: ["/tmp/file.txt"],
     });
 
     expect(capturedUrl).toContain("http://localhost:3000");

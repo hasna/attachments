@@ -157,6 +157,21 @@ const FULL_SCHEMAS: Record<string, object> = {
       required: ["attachment_id", "task_id"],
     },
   },
+  complete_task_with_files: {
+    name: "complete_task_with_files",
+    description: "Upload one or more local files to S3 and complete a todos task with those attachment IDs as evidence. Calls POST /api/tasks/:id/complete with attachment_ids.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "Task ID to complete (e.g. TASK-001)." },
+        paths: { type: "array", items: { type: "string" }, description: "Array of absolute or relative file paths to upload as evidence." },
+        todos_url: { type: "string", description: "Todos REST server base URL. Defaults to http://localhost:3000." },
+        expiry: { type: "string", description: "Link expiry for uploaded files, e.g. '24h', '7d', 'never'." },
+        notes: { type: "string", description: "Optional completion notes to include in the task completion." },
+      },
+      required: ["task_id", "paths"],
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -298,6 +313,21 @@ const LEAN_TOOLS = [
         todos_url: { type: "string" },
       },
       required: ["attachment_id", "task_id"],
+    },
+  },
+  {
+    name: "complete_task_with_files",
+    description: "Upload files and complete a todos task with them as evidence",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        task_id: { type: "string" },
+        paths: { type: "array", items: { type: "string" } },
+        todos_url: { type: "string" },
+        expiry: { type: "string" },
+        notes: { type: "string" },
+      },
+      required: ["task_id", "paths"],
     },
   },
 ];
@@ -595,6 +625,55 @@ async function handleLinkToTask(args: {
   return `Linked ${args.attachment_id} → task ${args.task_id}`;
 }
 
+async function handleCompleteTaskWithFiles(args: {
+  task_id: string;
+  paths: string[];
+  todos_url?: string;
+  expiry?: string;
+  notes?: string;
+}) {
+  if (!args.paths || args.paths.length === 0) {
+    throw new Error("'paths' must be a non-empty array.");
+  }
+
+  const todosUrl = args.todos_url ?? "http://localhost:3000";
+
+  // Upload each file and collect attachment IDs + links
+  const attachment_ids: string[] = [];
+  const links: Array<string | null> = [];
+
+  for (const filePath of args.paths) {
+    const attachment = await uploadFile(filePath, { expiry: args.expiry });
+    attachment_ids.push(attachment.id);
+    links.push(attachment.link);
+  }
+
+  // Complete the task via todos REST API
+  const url = `${todosUrl}/api/tasks/${args.task_id}/complete`;
+  const body: Record<string, unknown> = { attachment_ids };
+  if (args.notes !== undefined) {
+    body.notes = args.notes;
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error(`Task not found: ${args.task_id}`);
+    }
+    const responseBody = await response.text().catch(() => "");
+    throw new Error(
+      `Failed to complete task ${args.task_id}: HTTP ${response.status}${responseBody ? ` — ${responseBody}` : ""}`
+    );
+  }
+
+  return { task_id: args.task_id, attachment_ids, links };
+}
+
 function handleSearchTools(args: { query: string }) {
   const q = args.query.toLowerCase();
   const matches = LEAN_TOOLS.map((t) => t.name).filter((name) =>
@@ -677,6 +756,11 @@ export function createServer(): Server {
         case "link_to_task":
           result = await handleLinkToTask(
             args as Parameters<typeof handleLinkToTask>[0]
+          );
+          break;
+        case "complete_task_with_files":
+          result = await handleCompleteTaskWithFiles(
+            args as Parameters<typeof handleCompleteTaskWithFiles>[0]
           );
           break;
         default:
