@@ -10,6 +10,7 @@ import { registerStatus } from "./commands/status";
 import { registerPresign } from "./commands/presign";
 import { registerLinkTask } from "./commands/link-task";
 import { registerCompleteTask } from "./commands/complete-task";
+import { registerSnapshotSession } from "./commands/snapshot-session";
 
 const program = new Command()
   .name("attachments")
@@ -27,6 +28,7 @@ registerStatus(program);
 registerPresign(program);
 registerLinkTask(program);
 registerCompleteTask(program);
+registerSnapshotSession(program);
 
 // TODO: register list, delete, link, config
 

@@ -93,7 +93,19 @@ const mockUploadFromUrl = mock(async (_url: string, _opts: object) => ({
   createdAt: 1699000000000,
 }));
 
-mock.module("../core/upload.js", () => ({ uploadFile: mockUploadFile, uploadFromUrl: mockUploadFromUrl }));
+const mockUploadFromBuffer = mock(async (_buffer: Buffer, filename: string, _opts: object) => ({
+  id: "att_buf001",
+  filename,
+  s3Key: `attachments/2024-01-01/att_buf001/${filename}`,
+  bucket: "my-bucket",
+  size: 512,
+  contentType: "text/markdown",
+  link: "https://example.com/presigned-buf",
+  expiresAt: 1700000000000,
+  createdAt: 1699000000000,
+}));
+
+mock.module("../core/upload.js", () => ({ uploadFile: mockUploadFile, uploadFromUrl: mockUploadFromUrl, uploadFromBuffer: mockUploadFromBuffer }));
 mock.module("../core/download.js", () => ({
   downloadAttachment: mockDownloadAttachment,
 }));
@@ -182,11 +194,11 @@ async function listTools(server: ReturnType<typeof createServer>) {
 // ---------------------------------------------------------------------------
 
 describe("MCP Server — tools/list", () => {
-  it("returns 6 standard tools by default (no ATTACHMENTS_PROFILE set)", async () => {
+  it("returns 7 standard tools by default (no ATTACHMENTS_PROFILE set)", async () => {
     delete process.env.ATTACHMENTS_PROFILE;
     const server = createServer();
     const result = (await listTools(server)) as { tools: Array<{ name: string }> };
-    expect(result.tools).toHaveLength(6);
+    expect(result.tools).toHaveLength(7);
     const names = result.tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("download_attachment");
@@ -194,6 +206,7 @@ describe("MCP Server — tools/list", () => {
     expect(names).toContain("list_attachments");
     expect(names).toContain("delete_attachment");
     expect(names).toContain("complete_task_with_files");
+    expect(names).toContain("save_session");
   });
 });
 
@@ -207,9 +220,9 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("get_link");
   });
 
-  it("standard profile returns exactly 6 tools", () => {
+  it("standard profile returns exactly 7 tools", () => {
     const tools = getToolsForProfile("standard");
-    expect(tools).toHaveLength(6);
+    expect(tools).toHaveLength(7);
     const names = tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("download_attachment");
@@ -217,11 +230,12 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("list_attachments");
     expect(names).toContain("delete_attachment");
     expect(names).toContain("complete_task_with_files");
+    expect(names).toContain("save_session");
   });
 
-  it("full profile returns all 12 tools", () => {
+  it("full profile returns all 13 tools", () => {
     const tools = getToolsForProfile("full");
-    expect(tools).toHaveLength(12);
+    expect(tools).toHaveLength(13);
     const names = tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("upload_attachments");
@@ -235,12 +249,13 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("search_tools");
     expect(names).toContain("link_to_task");
     expect(names).toContain("complete_task_with_files");
+    expect(names).toContain("save_session");
   });
 
-  it("no argument (reads process.env.ATTACHMENTS_PROFILE) defaults to standard (6 tools)", () => {
+  it("no argument (reads process.env.ATTACHMENTS_PROFILE) defaults to standard (7 tools)", () => {
     delete process.env.ATTACHMENTS_PROFILE;
     const tools = getToolsForProfile();
-    expect(tools).toHaveLength(6);
+    expect(tools).toHaveLength(7);
   });
 
   it("ATTACHMENTS_PROFILE=minimal env var returns 3 tools", () => {
@@ -250,10 +265,10 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     delete process.env.ATTACHMENTS_PROFILE;
   });
 
-  it("ATTACHMENTS_PROFILE=full env var returns 12 tools", () => {
+  it("ATTACHMENTS_PROFILE=full env var returns 13 tools", () => {
     process.env.ATTACHMENTS_PROFILE = "full";
     const tools = getToolsForProfile();
-    expect(tools).toHaveLength(12);
+    expect(tools).toHaveLength(13);
     delete process.env.ATTACHMENTS_PROFILE;
   });
 });
@@ -655,12 +670,13 @@ describe("MCP Server — describe_tools", () => {
     };
 
     const parsed = JSON.parse(result.content[0]!.text);
-    expect(Object.keys(parsed)).toHaveLength(12);
+    expect(Object.keys(parsed)).toHaveLength(13);
     expect(parsed.upload_attachment).toBeDefined();
     expect(parsed.upload_attachments).toBeDefined();
     expect(parsed.presign_upload).toBeDefined();
     expect(parsed.describe_tools).toBeDefined();
     expect(parsed.complete_task_with_files).toBeDefined();
+    expect(parsed.save_session).toBeDefined();
   });
 
   it("returns error for unknown tool_name", async () => {
@@ -1054,6 +1070,104 @@ describe("MCP Server — complete_task_with_files", () => {
     });
 
     expect(capturedUrl).toContain("http://localhost:3000");
+  });
+});
+
+describe("MCP Server — save_session", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    mockUploadFromBuffer.mockClear();
+    originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async (_url: unknown) => ({
+      ok: true,
+      status: 200,
+      json: async () => [
+        { role: "user", content: "Hello", timestamp: 1700000000000 },
+        { role: "assistant", content: "Hi there" },
+      ],
+    })) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("fetches session messages and uploads as markdown by default", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "save_session", {
+      session_id: "ses_abc",
+    })) as { content: Array<{ text: string }> };
+
+    expect(mockUploadFromBuffer).toHaveBeenCalledTimes(1);
+    const [buf, filename] = mockUploadFromBuffer.mock.calls[0] as [Buffer, string, unknown];
+    expect(filename).toEndWith(".md");
+    const content = buf.toString("utf-8");
+    expect(content).toContain("# Session Snapshot");
+    expect(content).toContain("Hello");
+
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed.id).toBe("att_buf001");
+    expect(parsed.link).toBe("https://example.com/presigned-buf");
+    expect(parsed.filename).toEndWith(".md");
+  });
+
+  it("uploads as HTML when format=html", async () => {
+    const server = createServer();
+    await callTool(server, "save_session", {
+      session_id: "ses_html",
+      format: "html",
+    });
+
+    const [buf, filename] = mockUploadFromBuffer.mock.calls[0] as [Buffer, string, unknown];
+    expect(filename).toEndWith(".html");
+    expect(buf.toString("utf-8")).toContain("<!DOCTYPE html>");
+  });
+
+  it("uses custom sessions_url when provided", async () => {
+    let capturedUrl = "";
+    globalThis.fetch = mock(async (url: unknown) => {
+      capturedUrl = String(url);
+      return { ok: true, status: 200, json: async () => [] };
+    }) as unknown as typeof fetch;
+
+    const server = createServer();
+    await callTool(server, "save_session", {
+      session_id: "ses_custom",
+      sessions_url: "http://localhost:9999",
+    });
+
+    expect(capturedUrl).toContain("localhost:9999");
+    expect(capturedUrl).toContain("ses_custom");
+  });
+
+  it("passes expiry and tag to uploadFromBuffer", async () => {
+    const server = createServer();
+    await callTool(server, "save_session", {
+      session_id: "ses_opts",
+      expiry: "7d",
+      tag: "qa-run",
+    });
+
+    const [, , opts] = mockUploadFromBuffer.mock.calls[0] as [Buffer, string, { expiry?: string; tag?: string }];
+    expect(opts.expiry).toBe("7d");
+    expect(opts.tag).toBe("qa-run");
+  });
+
+  it("returns error when sessions API is unreachable", async () => {
+    globalThis.fetch = mock(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+    })) as unknown as typeof fetch;
+
+    const server = createServer();
+    const result = (await callTool(server, "save_session", {
+      session_id: "ses_fail",
+    })) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("Failed to fetch session");
   });
 });
 

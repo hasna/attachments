@@ -9,7 +9,7 @@ import {
 import { nanoid } from "nanoid";
 import { format } from "date-fns";
 import { lookup as mimeLookup } from "mime-types";
-import { uploadFile, uploadFromUrl } from "../core/upload.js";
+import { uploadFile, uploadFromUrl, uploadFromBuffer } from "../core/upload.js";
 import { downloadAttachment } from "../core/download.js";
 import { AttachmentsDB } from "../core/db.js";
 import { getConfig, setConfig, parseExpiry } from "../core/config.js";
@@ -155,6 +155,21 @@ const FULL_SCHEMAS: Record<string, object> = {
         todos_url: { type: "string", description: "Todos REST server base URL. Defaults to http://localhost:3000." },
       },
       required: ["attachment_id", "task_id"],
+    },
+  },
+  save_session: {
+    name: "save_session",
+    description: "Fetch a session transcript from the open-sessions REST API and upload it as an attachment. Returns a shareable link and attachment ID.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID to snapshot." },
+        sessions_url: { type: "string", description: "Sessions REST API base URL. Defaults to http://localhost:3458." },
+        format: { type: "string", enum: ["markdown", "html"], description: "Transcript format. Defaults to markdown." },
+        expiry: { type: "string", description: "Link expiry, e.g. '7d', '24h', 'never'." },
+        tag: { type: "string", description: "Optional tag for the attachment." },
+      },
+      required: ["session_id"],
     },
   },
   complete_task_with_files: {
@@ -316,6 +331,21 @@ const LEAN_TOOLS = [
     },
   },
   {
+    name: "save_session",
+    description: "Snapshot a session transcript → attachment link",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        session_id: { type: "string" },
+        sessions_url: { type: "string" },
+        format: { type: "string", enum: ["markdown", "html"] },
+        expiry: { type: "string" },
+        tag: { type: "string" },
+      },
+      required: ["session_id"],
+    },
+  },
+  {
     name: "complete_task_with_files",
     description: "Upload files and complete a todos task with them as evidence",
     inputSchema: {
@@ -344,6 +374,7 @@ const STANDARD_TOOLS = new Set([
   "list_attachments",
   "delete_attachment",
   "complete_task_with_files",
+  "save_session",
 ]);
 
 export function getToolsForProfile(
@@ -702,6 +733,85 @@ async function handleCompleteTaskWithFiles(args: {
   return { task_id: args.task_id, attachment_ids, links };
 }
 
+async function handleSaveSession(args: {
+  session_id: string;
+  sessions_url?: string;
+  format?: "markdown" | "html";
+  expiry?: string;
+  tag?: string;
+}) {
+  const sessionsUrl = args.sessions_url ?? "http://localhost:3458";
+  const fmt = args.format === "html" ? "html" : "markdown";
+
+  // Fetch messages from sessions API
+  async function fetchMessages(): Promise<Array<Record<string, unknown>>> {
+    const messagesUrl = `${sessionsUrl}/api/sessions/${args.session_id}/messages`;
+    const res = await fetch(messagesUrl);
+    if (res.ok) {
+      const data = await res.json() as unknown;
+      if (Array.isArray(data)) return data as Array<Record<string, unknown>>;
+      const obj = data as Record<string, unknown>;
+      if (Array.isArray(obj.messages)) return obj.messages as Array<Record<string, unknown>>;
+      if (Array.isArray(obj.data)) return obj.data as Array<Record<string, unknown>>;
+      return [{ role: "raw", content: JSON.stringify(data) }];
+    }
+    const sessionUrl = `${sessionsUrl}/api/sessions/${args.session_id}`;
+    const res2 = await fetch(sessionUrl);
+    if (!res2.ok) {
+      throw new Error(`Failed to fetch session ${args.session_id}: HTTP ${res2.status}`);
+    }
+    const data2 = await res2.json() as unknown;
+    const obj2 = data2 as Record<string, unknown>;
+    if (Array.isArray(obj2.messages)) return obj2.messages as Array<Record<string, unknown>>;
+    return [{ role: "raw", content: JSON.stringify(data2) }];
+  }
+
+  const messages = await fetchMessages();
+
+  type Msg = Record<string, unknown>;
+  const escape = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  let content: string;
+  if (fmt === "html") {
+    const body = messages
+      .map((msg: Msg) => {
+        const role = String(msg.role ?? "unknown");
+        const text = String(msg.content ?? msg.text ?? JSON.stringify(msg));
+        const ts = msg.timestamp ?? msg.created_at;
+        const timeStr = ts ? ` <small>${new Date(ts as string).toISOString()}</small>` : "";
+        return `<div class="message ${escape(role)}"><strong>${escape(role)}</strong>${timeStr}<p>${escape(text)}</p></div>`;
+      })
+      .join("\n");
+    content = `<!DOCTYPE html>\n<html>\n<head><meta charset="utf-8"><title>Session: ${escape(args.session_id)}</title></head>\n<body>\n<h1>Session Snapshot: ${escape(args.session_id)}</h1>\n${body}\n</body>\n</html>`;
+  } else {
+    const lines: string[] = [`# Session Snapshot: ${args.session_id}`, ""];
+    for (const msg of messages as Msg[]) {
+      const role = String(msg.role ?? "unknown");
+      const text = String(msg.content ?? msg.text ?? JSON.stringify(msg));
+      const ts = msg.timestamp ?? msg.created_at;
+      const header = ts ? `### ${role} (${new Date(ts as string).toISOString()})` : `### ${role}`;
+      lines.push(header, "", text, "");
+    }
+    content = lines.join("\n");
+  }
+
+  const ext = fmt === "html" ? "html" : "md";
+  const filename = `session-${args.session_id}.${ext}`;
+  const buffer = Buffer.from(content, "utf-8");
+
+  const attachment = await uploadFromBuffer(buffer, filename, {
+    expiry: args.expiry,
+    tag: args.tag,
+  });
+
+  return {
+    id: attachment.id,
+    link: attachment.link,
+    filename: attachment.filename,
+  };
+}
+
 function handleSearchTools(args: { query: string }) {
   const q = args.query.toLowerCase();
   const matches = LEAN_TOOLS.map((t) => t.name).filter((name) =>
@@ -784,6 +894,11 @@ export function createServer(): Server {
         case "link_to_task":
           result = await handleLinkToTask(
             args as Parameters<typeof handleLinkToTask>[0]
+          );
+          break;
+        case "save_session":
+          result = await handleSaveSession(
+            args as Parameters<typeof handleSaveSession>[0]
           );
           break;
         case "complete_task_with_files":
