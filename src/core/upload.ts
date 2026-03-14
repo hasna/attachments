@@ -8,6 +8,7 @@ import { S3Client } from "./s3";
 import { AttachmentsDB, Attachment } from "./db";
 import { getConfig, parseExpiry } from "./config";
 import { generatePresignedLink, generateServerLink, getLinkType } from "./links";
+import { trackUploadCost } from "./economy";
 
 export interface UploadOptions {
   expiry?: string;       // e.g. "24h", "7d", "never" — overrides config default
@@ -83,6 +84,9 @@ export async function uploadFile(
   } finally {
     if (!_deps.db) db.close();
   }
+
+  // 10. Optionally track upload cost to economy server (non-blocking, silent failure)
+  void trackUploadCost({ filename, sizeBytes: fileSize, operation: "upload" });
 
   return attachment;
 }
