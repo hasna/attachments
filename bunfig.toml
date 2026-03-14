@@ -1,0 +1,4 @@
+[test]
+# Bun runs each test file in a separate worker by default in some versions
+# This ensures mock.module() isolation between test files
+smol = false
