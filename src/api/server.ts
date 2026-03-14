@@ -11,9 +11,30 @@ import { AttachmentsDB } from "../core/db";
 import { getConfig, parseExpiry } from "../core/config";
 import { generatePresignedLink, generateServerLink } from "../core/links";
 import { S3Client } from "../core/s3";
+import { computeReport } from "../cli/commands/report";
 
 export function createApp(): Hono {
   const app = new Hono();
+
+  // GET /api/health — quick status check
+  app.get("/api/health", (c) => {
+    const db = new AttachmentsDB();
+    try {
+      const all = db.findAll({ includeExpired: true });
+      const expired = all.filter(a => a.expiresAt !== null && a.expiresAt <= Date.now()).length;
+      const config = (() => { try { return getConfig(); } catch { return null; } })();
+      return c.json({
+        status: "ok",
+        attachments: all.length,
+        expired,
+        s3_configured: !!(config?.s3?.bucket && config?.s3?.accessKeyId),
+        server: `http://localhost:${config?.server?.port ?? 3459}`,
+        timestamp: new Date().toISOString(),
+      });
+    } finally {
+      db.close();
+    }
+  });
 
   // POST /api/attachments — multipart file upload
   app.post("/api/attachments", async (c) => {
@@ -85,6 +106,27 @@ export function createApp(): Hono {
         }
       }
     }
+  });
+
+  // GET /api/report — activity/storage report
+  app.get("/api/report", (c) => {
+    const days = parseInt(c.req.query("days") ?? "7", 10);
+    const tag = c.req.query("tag") || undefined;
+
+    if (isNaN(days) || days < 1) {
+      return c.json({ error: "days must be a positive integer" }, 400);
+    }
+
+    const nowMs = Date.now();
+    const sinceMs = nowMs - days * 24 * 60 * 60 * 1000;
+    const db = new AttachmentsDB();
+    let all;
+    try {
+      all = db.findAll({ includeExpired: true, tag });
+    } finally {
+      db.close();
+    }
+    return c.json(computeReport(all, sinceMs, nowMs));
   });
 
   // GET /api/attachments — list attachments

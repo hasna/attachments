@@ -169,6 +169,28 @@ describe("REST API server", () => {
     }));
   });
 
+  // --- GET /api/health ---
+
+  describe("GET /api/health", () => {
+    it("returns 200 with correct shape", async () => {
+      mockDbFindAll.mockImplementation(() => [
+        { ...mockAttachment, expiresAt: Date.now() - 1000 }, // expired
+        { ...mockAttachment, id: "att_test00002", expiresAt: Date.now() + 1000 }, // not expired
+      ]);
+
+      const res = await app.request("/api/health");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe("ok");
+      expect(body.attachments).toBe(2);
+      expect(body.expired).toBe(1);
+      expect(typeof body.s3_configured).toBe("boolean");
+      expect(body.s3_configured).toBe(true);
+      expect(typeof body.timestamp).toBe("string");
+      expect(new Date(body.timestamp).getTime()).toBeGreaterThan(0);
+    });
+  });
+
   // --- POST /api/attachments ---
 
   describe("POST /api/attachments", () => {
@@ -598,6 +620,56 @@ describe("REST API server", () => {
       expect(mockS3PresignPut).toHaveBeenCalledTimes(1);
       const [, , expiresIn] = mockS3PresignPut.mock.calls[0] as [string, string, number];
       expect(expiresIn).toBe(3600);
+    });
+  });
+
+  // --- GET /api/report ---
+
+  describe("GET /api/report", () => {
+    it("returns 200 with correct report shape", async () => {
+      const res = await app.request("/api/report");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toHaveProperty("period");
+      expect(body).toHaveProperty("uploads");
+      expect(body).toHaveProperty("total");
+      expect(body).toHaveProperty("expiringSoon");
+      expect(body).toHaveProperty("alreadyExpired");
+      expect(body).toHaveProperty("topTags");
+      expect(body).toHaveProperty("largestUploads");
+    });
+
+    it("uses default 7 days when days param is absent", async () => {
+      const res = await app.request("/api/report");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.period.days).toBe(7);
+    });
+
+    it("respects ?days= query param", async () => {
+      const res = await app.request("/api/report?days=30");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.period.days).toBe(30);
+    });
+
+    it("returns 400 for non-positive days", async () => {
+      const res = await app.request("/api/report?days=0");
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBeTruthy();
+    });
+
+    it("passes tag query param to db.findAll", async () => {
+      await app.request("/api/report?tag=project:foo");
+      const [opts] = mockDbFindAll.mock.calls[0] as [{ tag?: string }];
+      expect(opts?.tag).toBe("project:foo");
+    });
+
+    it("passes includeExpired: true to db.findAll", async () => {
+      await app.request("/api/report");
+      const [opts] = mockDbFindAll.mock.calls[0] as [{ includeExpired?: boolean }];
+      expect(opts?.includeExpired).toBe(true);
     });
   });
 
