@@ -26,5 +26,6 @@ export function registerServe(program: Command): void {
       }
 
       startServer(port, host);
+      process.stdout.write(`✓ attachments server running at http://${host}:${port}\n`);
     });
 }
