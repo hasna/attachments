@@ -8,9 +8,15 @@ export function registerWhoami(program: Command): void {
     .command("whoami")
     .description("Show setup summary and environment status")
     .action(() => {
-      // Version from package.json
-      const pkg = require("../../../package.json");
-      const version = pkg.version ?? "unknown";
+      // Version — read from package.json relative to the module, fallback to env var
+      let version = "unknown";
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const pkg = require("../../../package.json");
+        version = pkg.version ?? process.env.npm_package_version ?? "unknown";
+      } catch {
+        version = process.env.npm_package_version ?? "unknown";
+      }
 
       const lines: string[] = [];
       lines.push(`@hasna/attachments v${version}`);

@@ -1,6 +1,6 @@
 {
   "name": "@hasna/attachments",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "File transfer for AI agents — S3-backed upload, shareable links, CLI + MCP + REST API",
   "bin": {
     "attachments": "./dist/cli/index.js",
@@ -9,8 +9,9 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target bun",
+    "build": "bun build src/index.ts src/cli/index.ts src/mcp/server.ts --outdir dist --target bun",
     "build:cli": "bun build src/cli/index.ts --outdir dist/cli --target bun",
+    "prepare": "bun run build",
     "test": "bash scripts/test.sh",
     "test:coverage": "bash scripts/test.sh --coverage",
     "dev": "bun run src/cli/index.ts",

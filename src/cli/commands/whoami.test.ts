@@ -144,7 +144,7 @@ describe("whoami — full output with valid config", () => {
       await program.parseAsync(["whoami"], { from: "user" });
       const output = capture.out.join("");
 
-      expect(output).toContain("@hasna/attachments v0.9.1");
+      expect(output).toContain("@hasna/attachments v0.9.2");
       expect(output).toContain(`Config: ${TEST_CONFIG_PATH}`);
       expect(output).toContain("\u2713"); // checkmark
       expect(output).toContain("S3: my-bucket (us-east-1)");
@@ -166,7 +166,7 @@ describe("whoami — missing config", () => {
       await program.parseAsync(["whoami"], { from: "user" });
       const output = capture.out.join("");
 
-      expect(output).toContain("@hasna/attachments v0.9.1");
+      expect(output).toContain("@hasna/attachments v0.9.2");
       expect(output).toContain("Config: not found");
       expect(output).toContain("\u2717"); // cross mark
       expect(output).toContain("S3: not configured");
