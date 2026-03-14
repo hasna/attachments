@@ -12,6 +12,7 @@ import { registerLinkTask } from "./commands/link-task";
 import { registerCompleteTask } from "./commands/complete-task";
 import { registerSnapshotSession } from "./commands/snapshot-session";
 import { registerHealthCheck } from "./commands/health-check";
+import { registerWatch } from "./commands/watch";
 
 const program = new Command()
   .name("attachments")
@@ -31,6 +32,7 @@ registerLinkTask(program);
 registerCompleteTask(program);
 registerSnapshotSession(program);
 registerHealthCheck(program);
+registerWatch(program);
 
 // TODO: register list, delete, link, config
 
