@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-03-14
+
+### Fixed
+- SDK `Attachment` type was missing `tag` field (added in v0.2.0 but never reflected in types)
+- Default port changed from 3457 (conflict with @hasna/configs) to 3459
+- Server now binds to `localhost` by default instead of `0.0.0.0`
+- `src/index.ts` now exports the full library API (was empty in v0.1.0)
+- `prepare` script ensures `dist/` is rebuilt before every `npm publish`
+
+### Added (since v0.1.0)
+- **Dashboard** — React + Vite UI with dark/light mode for browsing and managing attachments
+- **CLI** — new commands: `health-check`, `watch`, `link-task`, `complete-task`, `snapshot-session`, `task-journal`, `status`, `clean`, `whoami`, `presign-upload`
+- **MCP** — expanded from 8 to 14 tools total; `ATTACHMENTS_PROFILE` env var for token optimization (`minimal`=3, `standard`=7, `full`=14)
+- **Economy integration** — set `ATTACHMENTS_TRACK_COSTS=1` to log cost data via the economy service
+- **Sessions integration** — `snapshot-session` / `save_session` MCP tool fetches a transcript from open-sessions and uploads it to S3
+- **Todos integration** — `link-task`, `complete-task`, `watch` (reactive health checks), `task-journal`, `link_to_task` MCP tool, `complete_task_with_files` MCP tool
+- **File size limit** — `ATTACHMENTS_MAX_SIZE` env var (default 5 GB); uploads exceeding the limit return HTTP 413
+- **Tag support** — `--tag` flag on CLI upload/list, `?tag=` query param on REST API, `tag` param in all relevant MCP tools
+- **Batch upload** — `upload_attachments` MCP tool and `upload_attachments` REST endpoint for multi-file uploads
+- **Presigned PUT** — `presign-upload` CLI and `presign_upload` MCP tool for direct client-to-S3 uploads without server credentials
+- **Health check MCP tool** — `check_attachment_health` audits all links (expired/dead/healthy) with optional `fix:true` to regenerate expired presigned links
+- **AGENTS.md** — standard agent workflow documentation
+
 ## [0.1.0] - 2026-03-12
 
 ### Added
