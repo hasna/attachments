@@ -25,7 +25,6 @@ export function registerServe(program: Command): void {
         exitError(`Invalid port: ${options.port}`);
       }
 
-      startServer(port);
-      process.stdout.write(`\u2713 attachments server running at http://${host}:${port}\n`);
+      startServer(port, host);
     });
 }

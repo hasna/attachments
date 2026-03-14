@@ -405,7 +405,7 @@ export function createApp(): Hono {
   return app;
 }
 
-export function startServer(port: number): void {
+export function startServer(port: number, hostname = "localhost"): void {
   const app = createApp();
   const config = getConfig();
   const resolvedPort = port ?? config.server.port;
@@ -414,14 +414,15 @@ export function startServer(port: number): void {
   if (typeof Bun !== "undefined") {
     Bun.serve({
       port: resolvedPort,
+      hostname,
       fetch: app.fetch,
     });
-    console.log(`Attachments server running on http://localhost:${resolvedPort}`);
+    console.log(`Attachments server running on http://${hostname}:${resolvedPort}`);
   } else {
     // Fallback for Node.js environments
     import("@hono/node-server").then(({ serve }) => {
-      serve({ fetch: app.fetch, port: resolvedPort });
-      console.log(`Attachments server running on http://localhost:${resolvedPort}`);
+      serve({ fetch: app.fetch, port: resolvedPort, hostname });
+      console.log(`Attachments server running on http://${hostname}:${resolvedPort}`);
     });
   }
 }
