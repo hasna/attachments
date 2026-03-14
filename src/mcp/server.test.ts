@@ -194,11 +194,11 @@ async function listTools(server: ReturnType<typeof createServer>) {
 // ---------------------------------------------------------------------------
 
 describe("MCP Server — tools/list", () => {
-  it("returns 7 standard tools by default (no ATTACHMENTS_PROFILE set)", async () => {
+  it("returns 9 standard tools by default (no ATTACHMENTS_PROFILE set)", async () => {
     delete process.env.ATTACHMENTS_PROFILE;
     const server = createServer();
     const result = (await listTools(server)) as { tools: Array<{ name: string }> };
-    expect(result.tools).toHaveLength(7);
+    expect(result.tools).toHaveLength(9);
     const names = result.tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("download_attachment");
@@ -207,6 +207,8 @@ describe("MCP Server — tools/list", () => {
     expect(names).toContain("delete_attachment");
     expect(names).toContain("complete_task_with_files");
     expect(names).toContain("save_session");
+    expect(names).toContain("report_stats");
+    expect(names).toContain("get_context");
   });
 });
 
@@ -220,9 +222,9 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("get_link");
   });
 
-  it("standard profile returns exactly 7 tools", () => {
+  it("standard profile returns exactly 9 tools", () => {
     const tools = getToolsForProfile("standard");
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(9);
     const names = tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("download_attachment");
@@ -231,11 +233,13 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("delete_attachment");
     expect(names).toContain("complete_task_with_files");
     expect(names).toContain("save_session");
+    expect(names).toContain("report_stats");
+    expect(names).toContain("get_context");
   });
 
-  it("full profile returns all 14 tools", () => {
+  it("full profile returns all 16 tools", () => {
     const tools = getToolsForProfile("full");
-    expect(tools).toHaveLength(14);
+    expect(tools).toHaveLength(16);
     const names = tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("upload_attachments");
@@ -253,10 +257,10 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("check_attachment_health");
   });
 
-  it("no argument (reads process.env.ATTACHMENTS_PROFILE) defaults to standard (7 tools)", () => {
+  it("no argument (reads process.env.ATTACHMENTS_PROFILE) defaults to standard (9 tools)", () => {
     delete process.env.ATTACHMENTS_PROFILE;
     const tools = getToolsForProfile();
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(9);
   });
 
   it("ATTACHMENTS_PROFILE=minimal env var returns 3 tools", () => {
@@ -266,10 +270,10 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     delete process.env.ATTACHMENTS_PROFILE;
   });
 
-  it("ATTACHMENTS_PROFILE=full env var returns 14 tools", () => {
+  it("ATTACHMENTS_PROFILE=full env var returns 16 tools", () => {
     process.env.ATTACHMENTS_PROFILE = "full";
     const tools = getToolsForProfile();
-    expect(tools).toHaveLength(14);
+    expect(tools).toHaveLength(16);
     delete process.env.ATTACHMENTS_PROFILE;
   });
 });
@@ -671,13 +675,14 @@ describe("MCP Server — describe_tools", () => {
     };
 
     const parsed = JSON.parse(result.content[0]!.text);
-    expect(Object.keys(parsed)).toHaveLength(14);
+    expect(Object.keys(parsed)).toHaveLength(16);
     expect(parsed.upload_attachment).toBeDefined();
     expect(parsed.upload_attachments).toBeDefined();
     expect(parsed.presign_upload).toBeDefined();
     expect(parsed.describe_tools).toBeDefined();
     expect(parsed.complete_task_with_files).toBeDefined();
     expect(parsed.save_session).toBeDefined();
+    expect(parsed.report_stats).toBeDefined();
   });
 
   it("returns error for unknown tool_name", async () => {
@@ -1169,6 +1174,106 @@ describe("MCP Server — save_session", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain("Failed to fetch session");
+  });
+});
+
+describe("MCP Server — report_stats", () => {
+  beforeEach(() => mockFindAll.mockClear());
+
+  it("returns report with correct shape", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "report_stats", {})) as {
+      content: Array<{ text: string }>;
+    };
+
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed).toHaveProperty("period");
+    expect(parsed).toHaveProperty("uploads");
+    expect(parsed).toHaveProperty("total");
+    expect(parsed).toHaveProperty("expiringSoon");
+    expect(parsed).toHaveProperty("alreadyExpired");
+    expect(parsed).toHaveProperty("topTags");
+    expect(parsed).toHaveProperty("largestUploads");
+  });
+
+  it("uses default 7 days when days is not provided", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "report_stats", {})) as {
+      content: Array<{ text: string }>;
+    };
+
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed.period.days).toBe(7);
+  });
+
+  it("respects custom days param", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "report_stats", { days: 30 })) as {
+      content: Array<{ text: string }>;
+    };
+
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed.period.days).toBe(30);
+  });
+
+  it("passes tag to db.findAll when provided", async () => {
+    const server = createServer();
+    await callTool(server, "report_stats", { tag: "project:foo" });
+
+    expect(mockFindAll).toHaveBeenCalledTimes(1);
+    const [opts] = mockFindAll.mock.calls[0] as [{ tag?: string; includeExpired?: boolean }];
+    expect(opts?.tag).toBe("project:foo");
+  });
+
+  it("passes includeExpired: true to db.findAll", async () => {
+    const server = createServer();
+    await callTool(server, "report_stats", {});
+
+    const [opts] = mockFindAll.mock.calls[0] as [{ includeExpired?: boolean }];
+    expect(opts?.includeExpired).toBe(true);
+  });
+
+  it("returns error for days < 1", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "report_stats", { days: 0 })) as {
+      content: Array<{ text: string }>;
+      isError: boolean;
+    };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("positive integer");
+  });
+});
+
+describe("MCP Server — get_context", () => {
+  beforeEach(() => mockFindAll.mockClear());
+
+  it("returns text summary by default", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "get_context", {})) as {
+      content: Array<{ text: string }>;
+    };
+
+    const text = result.content[0]!.text;
+    expect(text).toContain("Attachments:");
+    expect(text).toContain("total");
+    expect(text).toContain("active");
+    expect(text).toContain("expired");
+  });
+
+  it("returns JSON object when format=json", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "get_context", { format: "json" })) as {
+      content: Array<{ text: string }>;
+    };
+
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed).toHaveProperty("attachments");
+    expect(parsed).toHaveProperty("active");
+    expect(parsed).toHaveProperty("expired");
+    expect(parsed).toHaveProperty("expiring_soon");
+    expect(parsed).toHaveProperty("summary");
+    expect(typeof parsed.attachments).toBe("number");
   });
 });
 

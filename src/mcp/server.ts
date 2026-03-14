@@ -10,6 +10,7 @@ import { nanoid } from "nanoid";
 import { format } from "date-fns";
 import { lookup as mimeLookup } from "mime-types";
 import { uploadFile, uploadFromUrl, uploadFromBuffer } from "../core/upload.js";
+import { computeReport } from "../cli/commands/report.js";
 import { runHealthCheck } from "../cli/commands/health-check.js";
 import { downloadAttachment } from "../core/download.js";
 import { AttachmentsDB } from "../core/db.js";
@@ -124,6 +125,17 @@ const FULL_SCHEMAS: Record<string, object> = {
       required: ["filename"],
     },
   },
+  report_stats: {
+    name: "report_stats",
+    description: "Return an activity and storage report for a recent time window. Equivalent to the `attachments report` CLI command.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        days: { type: "number", description: "Number of days to look back (default: 7)." },
+        tag: { type: "string", description: "Filter by tag (e.g. project:my-project)." },
+      },
+    },
+  },
   describe_tools: {
     name: "describe_tools",
     description: "Return full verbose schemas for one or all tools. Set the ATTACHMENTS_PROFILE env var to control which tools are exposed in tools/list: 'minimal' (upload_attachment, download_attachment, get_link), 'standard' (default, adds list_attachments, delete_attachment, complete_task_with_files), or 'full' (all 12 tools).",
@@ -198,6 +210,16 @@ const FULL_SCHEMAS: Record<string, object> = {
       },
       required: ["task_id", "paths"],
     },
+  },
+  get_context: {
+    name: "get_context",
+    description: "Return a compact text summary of attachment storage for agent system prompt injection.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        format: { type: "string", enum: ["text", "json"], description: "Output format (default: text)" }
+      }
+    }
   },
 };
 
@@ -309,6 +331,17 @@ const LEAN_TOOLS = [
     },
   },
   {
+    name: "report_stats",
+    description: "Activity/storage report for a time window",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        days: { type: "number" },
+        tag: { type: "string" },
+      },
+    },
+  },
+  {
     name: "describe_tools",
     description: "Full schema for tool(s)",
     inputSchema: {
@@ -383,6 +416,16 @@ const LEAN_TOOLS = [
       },
     },
   },
+  {
+    name: "get_context",
+    description: "Compact storage summary for system prompt injection",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        format: { type: "string", enum: ["text", "json"] },
+      },
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -398,6 +441,8 @@ const STANDARD_TOOLS = new Set([
   "delete_attachment",
   "complete_task_with_files",
   "save_session",
+  "report_stats",
+  "get_context",
 ]);
 
 export function getToolsForProfile(
@@ -860,6 +905,43 @@ async function handleCheckAttachmentHealth(args: {
   };
 }
 
+function handleReportStats(args: { days?: number; tag?: string }) {
+  const days = args.days ?? 7;
+  if (isNaN(days) || days < 1) {
+    throw new Error("days must be a positive integer");
+  }
+  const nowMs = Date.now();
+  const sinceMs = nowMs - days * 24 * 60 * 60 * 1000;
+  const db = new AttachmentsDB();
+  let all: ReturnType<AttachmentsDB["findAll"]>;
+  try {
+    all = db.findAll({ includeExpired: true, tag: args.tag });
+  } finally {
+    db.close();
+  }
+  return computeReport(all, sinceMs, nowMs);
+}
+
+async function handleGetContext(args: { format?: string }) {
+  const db = new AttachmentsDB();
+  try {
+    const all = db.findAll({ includeExpired: true });
+    const active = all.filter(a => !a.expiresAt || a.expiresAt > Date.now());
+    const expiringSoon = all.filter(a => a.expiresAt && a.expiresAt > Date.now() && a.expiresAt - Date.now() < 24 * 60 * 60 * 1000);
+    const expired = all.filter(a => a.expiresAt && a.expiresAt <= Date.now());
+    const lines: string[] = [`Attachments: ${all.length} total (${active.length} active, ${expired.length} expired)`];
+    if (expiringSoon.length > 0) lines.push(`⚠ Expiring in 24h: ${expiringSoon.length} (${expiringSoon.map(a => a.filename).join(", ")})`);
+    if (all.length > 0) {
+      const recent = all.slice(0, 3).map(a => `${a.filename} (${a.id})`).join(", ");
+      lines.push(`Recent: ${recent}`);
+    }
+    if (args.format === "json") return { attachments: all.length, active: active.length, expired: expired.length, expiring_soon: expiringSoon.length, summary: lines.join("\n") };
+    return lines.join("\n");
+  } finally {
+    db.close();
+  }
+}
+
 function handleSearchTools(args: { query: string }) {
   const q = args.query.toLowerCase();
   const matches = LEAN_TOOLS.map((t) => t.name).filter((name) =>
@@ -943,6 +1025,11 @@ export function createServer(): Server {
             args as Parameters<typeof handleDescribeTools>[0]
           );
           break;
+        case "report_stats":
+          result = handleReportStats(
+            args as Parameters<typeof handleReportStats>[0]
+          );
+          break;
         case "search_tools":
           result = handleSearchTools(
             args as Parameters<typeof handleSearchTools>[0]
@@ -966,6 +1053,11 @@ export function createServer(): Server {
         case "check_attachment_health":
           result = await handleCheckAttachmentHealth(
             args as Parameters<typeof handleCheckAttachmentHealth>[0]
+          );
+          break;
+        case "get_context":
+          result = await handleGetContext(
+            args as Parameters<typeof handleGetContext>[0]
           );
           break;
         default:
