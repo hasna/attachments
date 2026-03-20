@@ -1,6 +1,6 @@
 {
   "name": "@hasna/attachments",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "description": "File transfer for AI agents — S3-backed upload, shareable links, CLI + MCP + REST API",
   "bin": {
     "attachments": "./dist/cli/index.js",
