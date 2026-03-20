@@ -19,6 +19,7 @@ import { registerResolveEvidence } from "./commands/resolve-evidence";
 import { registerDoctor } from "./commands/doctor";
 import { listCommand } from "./commands/list";
 import { deleteCommand } from "./commands/delete";
+import { removeCommand } from "./commands/remove";
 import { linkCommand } from "./commands/link";
 import { configCommand } from "./commands/config";
 
@@ -50,6 +51,7 @@ registerResolveEvidence(program);
 registerDoctor(program);
 program.addCommand(listCommand());
 program.addCommand(deleteCommand());
+program.addCommand(removeCommand());
 program.addCommand(linkCommand());
 program.addCommand(configCommand());
 
