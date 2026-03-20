@@ -19,6 +19,24 @@ import { generatePresignedLink, generateServerLink, getLinkType } from "../core/
 import { S3Client } from "../core/s3.js";
 
 // ---------------------------------------------------------------------------
+// In-memory agent registry (attribution for uploads)
+// ---------------------------------------------------------------------------
+interface AttachmentAgent { id: string; name: string; session_id?: string; last_seen_at: string; project_id?: string; }
+const agentRegistry = new Map<string, AttachmentAgent>();
+
+function registerAttachmentAgent(name: string, sessionId?: string): AttachmentAgent {
+  const existing = [...agentRegistry.values()].find(a => a.name === name);
+  if (existing) {
+    existing.last_seen_at = new Date().toISOString();
+    if (sessionId) existing.session_id = sessionId;
+    return existing;
+  }
+  const agent: AttachmentAgent = { id: nanoid(8), name, session_id: sessionId, last_seen_at: new Date().toISOString() };
+  agentRegistry.set(agent.id, agent);
+  return agent;
+}
+
+// ---------------------------------------------------------------------------
 // Full verbose schemas — returned by describe_tools on demand
 // ---------------------------------------------------------------------------
 
@@ -426,6 +444,41 @@ const LEAN_TOOLS = [
       },
     },
   },
+  {
+    name: "register_agent",
+    description: "Register this agent session for upload attribution. Returns agent_id.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string", description: "Agent name" },
+        session_id: { type: "string", description: "Session identifier" },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "heartbeat",
+    description: "Mark this agent as active. Call periodically during long upload sessions.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        agent_id: { type: "string", description: "Agent ID from register_agent" },
+      },
+      required: ["agent_id"],
+    },
+  },
+  {
+    name: "set_focus",
+    description: "Set the active project context for this agent session.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        agent_id: { type: "string", description: "Agent ID" },
+        project_id: { type: "string", description: "Project to focus on" },
+      },
+      required: ["agent_id"],
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -443,6 +496,9 @@ const STANDARD_TOOLS = new Set([
   "save_session",
   "report_stats",
   "get_context",
+  "register_agent",
+  "heartbeat",
+  "set_focus",
 ]);
 
 export function getToolsForProfile(
@@ -1060,6 +1116,28 @@ export function createServer(): Server {
             args as Parameters<typeof handleGetContext>[0]
           );
           break;
+        case "register_agent": {
+          const a = args as { name: string; session_id?: string };
+          const agent = registerAttachmentAgent(a.name, a.session_id);
+          result = { agent_id: agent.id, name: agent.name, last_seen_at: agent.last_seen_at };
+          break;
+        }
+        case "heartbeat": {
+          const a = args as { agent_id: string };
+          const agent = agentRegistry.get(a.agent_id);
+          if (!agent) throw new Error(`Agent not found: ${a.agent_id}`);
+          agent.last_seen_at = new Date().toISOString();
+          result = { agent_id: agent.id, last_seen_at: agent.last_seen_at };
+          break;
+        }
+        case "set_focus": {
+          const a = args as { agent_id: string; project_id?: string };
+          const agent = agentRegistry.get(a.agent_id);
+          if (!agent) throw new Error(`Agent not found: ${a.agent_id}`);
+          agent.project_id = a.project_id;
+          result = { agent_id: agent.id, project_id: agent.project_id };
+          break;
+        }
         default:
           throw new Error(`Unknown tool: ${name}`);
       }

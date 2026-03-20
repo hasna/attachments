@@ -22,6 +22,7 @@ import { deleteCommand } from "./commands/delete";
 import { removeCommand } from "./commands/remove";
 import { linkCommand } from "./commands/link";
 import { configCommand } from "./commands/config";
+import { initCommand, heartbeatCommand, focusCommand } from "./commands/agent";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkgVersion: string = (() => { try { return (require("../../package.json") as { version: string }).version; } catch { return process.env.npm_package_version ?? "unknown"; } })();
@@ -54,5 +55,8 @@ program.addCommand(deleteCommand());
 program.addCommand(removeCommand());
 program.addCommand(linkCommand());
 program.addCommand(configCommand());
+program.addCommand(initCommand());
+program.addCommand(heartbeatCommand());
+program.addCommand(focusCommand());
 
 program.parse(process.argv);
