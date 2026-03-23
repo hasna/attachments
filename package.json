@@ -1,7 +1,7 @@
 {
   "name": "@hasna/attachments",
   "version": "1.0.22",
-  "description": "File transfer for AI agents — S3-backed upload, shareable links, CLI + MCP + REST API",
+  "description": "File transfer for AI agents \u2014 S3-backed upload, shareable links, CLI + MCP + REST API",
   "bin": {
     "attachments": "./dist/cli/index.js",
     "attachments-mcp": "./dist/mcp/server.js"
@@ -16,7 +16,8 @@
     "test:coverage": "bash scripts/test.sh --coverage",
     "dev": "bun run src/cli/index.ts",
     "dashboard": "cd dashboard && bun run dev",
-    "dashboard:build": "cd dashboard && bun run build"
+    "dashboard:build": "cd dashboard && bun run build",
+    "postinstall": "mkdir -p $HOME/.hasna/attachments 2>/dev/null || true"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
