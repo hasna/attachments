@@ -479,6 +479,14 @@ const LEAN_TOOLS = [
       required: ["agent_id"],
     },
   },
+  {
+    name: "list_agents",
+    description: "List all registered agents with their last_seen_at timestamps.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -499,6 +507,7 @@ const STANDARD_TOOLS = new Set([
   "register_agent",
   "heartbeat",
   "set_focus",
+  "list_agents",
 ]);
 
 export function getToolsForProfile(
@@ -1136,6 +1145,10 @@ export function createServer(): Server {
           if (!agent) throw new Error(`Agent not found: ${a.agent_id}`);
           agent.project_id = a.project_id;
           result = { agent_id: agent.id, project_id: agent.project_id };
+          break;
+        }
+        case "list_agents": {
+          result = [...agentRegistry.values()];
           break;
         }
         default:
