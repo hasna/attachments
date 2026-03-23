@@ -1,6 +1,6 @@
 import { join } from "path";
 import { homedir } from "os";
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, copyFileSync } from "fs";
 
 export interface AttachmentsConfig {
   s3: {
@@ -41,7 +41,37 @@ const DEFAULT_CONFIG: AttachmentsConfig = {
   },
 };
 
-export let CONFIG_PATH = join(homedir(), ".attachments", "config.json");
+function resolveConfigPath(): string {
+  const home = process.env["HOME"] || process.env["USERPROFILE"] || homedir();
+  const newDir = join(home, ".hasna", "attachments");
+  const oldDir = join(home, ".attachments");
+
+  // Auto-migrate: if old dir exists and new doesn't, copy files over
+  if (existsSync(oldDir) && !existsSync(newDir)) {
+    mkdirSync(newDir, { recursive: true });
+    try {
+      for (const file of readdirSync(oldDir)) {
+        const oldPath = join(oldDir, file);
+        const newPath = join(newDir, file);
+        try {
+          const stat = require("fs").statSync(oldPath);
+          if (stat.isFile()) {
+            copyFileSync(oldPath, newPath);
+          }
+        } catch {
+          // Skip files that can't be copied
+        }
+      }
+    } catch {
+      // If we can't read the old directory, continue with new
+    }
+  }
+
+  mkdirSync(newDir, { recursive: true });
+  return join(newDir, "config.json");
+}
+
+export let CONFIG_PATH = resolveConfigPath();
 
 export function setConfigPath(path: string): void {
   CONFIG_PATH = path;

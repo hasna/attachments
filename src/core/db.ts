@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { join } from "path";
 import { homedir } from "os";
-import { mkdirSync } from "fs";
+import { mkdirSync, existsSync, readdirSync, copyFileSync } from "fs";
 
 export interface Attachment {
   id: string;
@@ -51,9 +51,33 @@ export class AttachmentsDB {
     const resolvedPath =
       dbPath ??
       (() => {
-        const dir = join(homedir(), ".attachments");
-        mkdirSync(dir, { recursive: true });
-        return join(dir, "db.sqlite");
+        const home = process.env["HOME"] || process.env["USERPROFILE"] || homedir();
+        const newDir = join(home, ".hasna", "attachments");
+        const oldDir = join(home, ".attachments");
+
+        // Auto-migrate: if old dir exists and new doesn't, copy files over
+        if (existsSync(oldDir) && !existsSync(newDir)) {
+          mkdirSync(newDir, { recursive: true });
+          try {
+            for (const file of readdirSync(oldDir)) {
+              const oldPath = join(oldDir, file);
+              const newPath = join(newDir, file);
+              try {
+                const stat = require("fs").statSync(oldPath);
+                if (stat.isFile()) {
+                  copyFileSync(oldPath, newPath);
+                }
+              } catch {
+                // Skip files that can't be copied
+              }
+            }
+          } catch {
+            // If we can't read the old directory, continue
+          }
+        }
+
+        mkdirSync(newDir, { recursive: true });
+        return join(newDir, "db.sqlite");
       })();
 
     this.db = new Database(resolvedPath);
