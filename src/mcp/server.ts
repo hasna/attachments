@@ -487,6 +487,19 @@ const LEAN_TOOLS = [
       properties: {},
     },
   },
+  {
+    name: "send_feedback",
+    description: "Send feedback about this service",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        message: { type: "string", description: "Feedback message" },
+        email: { type: "string", description: "Optional email for follow-up" },
+        category: { type: "string", enum: ["bug", "feature", "general"], description: "Feedback category" },
+      },
+      required: ["message"],
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1149,6 +1162,17 @@ export function createServer(): Server {
         }
         case "list_agents": {
           result = [...agentRegistry.values()];
+          break;
+        }
+        case "send_feedback": {
+          const fa = args as { message: string; email?: string; category?: string };
+          const fdb = new AttachmentsDB();
+          try {
+            fdb.run("INSERT INTO feedback (message, email, category, version) VALUES (?, ?, ?, ?)", [fa.message, fa.email || null, fa.category || "general", getMcpVersion()]);
+          } finally {
+            fdb.close();
+          }
+          result = "Feedback saved. Thank you!";
           break;
         }
         default:

@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { join } from "path";
 import { homedir } from "os";
 import { mkdirSync, existsSync, readdirSync, copyFileSync } from "fs";
@@ -103,6 +103,19 @@ export class AttachmentsDB {
     } catch {
       // Column already exists — ignore
     }
+
+    // Feedback table
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS feedback (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        message TEXT NOT NULL,
+        email TEXT,
+        category TEXT DEFAULT 'general',
+        version TEXT,
+        machine_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
   }
 
   insert(attachment: Attachment): void {
@@ -203,6 +216,14 @@ export class AttachmentsDB {
       )
       .run(now);
     return result.changes;
+  }
+
+  run(sql: string, params?: unknown[]): void {
+    if (params) {
+      this.db.prepare(sql).run(...params);
+    } else {
+      this.db.run(sql);
+    }
   }
 
   close(): void {
