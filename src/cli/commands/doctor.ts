@@ -97,7 +97,7 @@ export async function checkS3Connection(): Promise<CheckResult> {
 }
 
 export function checkDatabase(): CheckResult {
-  const dbPath = join(homedir(), ".attachments", "db.sqlite");
+  const dbPath = join(homedir(), ".hasna", "attachments", "db.sqlite");
   if (!existsSync(dbPath)) {
     return {
       label: "Database",

@@ -81,7 +81,7 @@ export function registerStatus(program: Command): void {
       }
 
       // Attachment stats
-      const dbPath = join(homedir(), ".attachments", "db.sqlite");
+      const dbPath = join(homedir(), ".hasna", "attachments", "db.sqlite");
       const db = new AttachmentsDB();
       try {
         const stats = getAttachmentStats(db);

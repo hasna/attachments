@@ -117,7 +117,7 @@ const FULL_SCHEMAS: Record<string, object> = {
   },
   configure_s3: {
     name: "configure_s3",
-    description: "Persist S3 configuration to ~/.attachments/config.json.",
+    description: "Persist S3 configuration to ~/.hasna/attachments/config.json.",
     inputSchema: {
       type: "object",
       properties: {
