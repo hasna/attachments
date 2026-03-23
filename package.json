@@ -1,6 +1,6 @@
 {
   "name": "@hasna/attachments",
-  "version": "1.0.19",
+  "version": "1.0.20",
   "description": "File transfer for AI agents — S3-backed upload, shareable links, CLI + MCP + REST API",
   "bin": {
     "attachments": "./dist/cli/index.js",
@@ -19,8 +19,8 @@
     "dashboard:build": "cd dashboard && bun run build"
   },
   "publishConfig": {
-    "access": "restricted",
-    "registry": "https://registry.npmjs.org/"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
   "keywords": [
     "attachments",
@@ -30,7 +30,7 @@
     "mcp",
     "cli"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1007.0",
     "@aws-sdk/s3-request-presigner": "^3.1007.0",
