@@ -5,6 +5,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { registerCloudTools } from "@hasna/cloud";
 
 import { nanoid } from "nanoid";
 import { format } from "date-fns";
@@ -1206,5 +1207,6 @@ export function createServer(): Server {
 if (import.meta.main) {
   const server = createServer();
   const transport = new StdioServerTransport();
+  registerCloudTools(server, "attachments");
   await server.connect(transport);
 }
