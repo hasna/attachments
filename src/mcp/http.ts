@@ -3,13 +3,20 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 export const MCP_HTTP_SERVICE_NAME = "attachments";
-export const DEFAULT_MCP_HTTP_PORT = 8800;
+export const DEFAULT_MCP_HTTP_PORT = 8850;
 
 export function isHttpMode(
   argv: string[] = process.argv,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   return argv.includes("--http") || env.MCP_HTTP === "1";
+}
+
+export function isStdioMode(
+  argv: string[] = process.argv,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return argv.includes("--stdio") || env.MCP_STDIO === "1";
 }
 
 export function resolveMcpHttpPort(
