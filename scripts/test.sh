@@ -23,6 +23,7 @@ TEST_FILES=(
   "src/core/download.test.ts"
   "src/api/server.test.ts"
   "src/mcp/server.test.ts"
+  "src/mcp/http.test.ts"
   "src/cli/commands/config.test.ts"
   "src/cli/commands/upload.test.ts"
   "src/cli/commands/download.test.ts"

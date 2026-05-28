@@ -6,6 +6,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { registerCloudTools } from "@hasna/cloud";
+import { isHttpMode, resolveMcpHttpPort, startMcpHttpServer } from "./http.js";
 
 import { nanoid } from "nanoid";
 import { format } from "date-fns";
@@ -1042,7 +1043,7 @@ function getMcpVersion(): string {
   }
 }
 
-export function createServer(): Server {
+export function buildServer(): Server {
   const server = new Server(
     { name: "attachments-mcp", version: getMcpVersion() },
     { capabilities: { tools: {} } }
@@ -1197,7 +1198,64 @@ export function createServer(): Server {
     }
   });
 
+  try {
+    registerCloudTools(server as any, "attachments");
+  } catch {
+    // Cloud tools not compatible with low-level Server — skip
+  }
+
   return server;
+}
+
+/** @deprecated Use buildServer() */
+export const createServer = buildServer;
+
+function hasFlag(...flags: string[]): boolean {
+  return process.argv.some((arg) => flags.includes(arg));
+}
+
+function printHelp(): void {
+  process.stdout.write(
+    `Usage: attachments-mcp [options]
+
+Attachments MCP server (stdio transport by default)
+
+Options:
+  --http           Serve MCP over Streamable HTTP (127.0.0.1)
+  --port <number>  HTTP port (default: 8800, env: MCP_HTTP_PORT)
+  -h, --help       Show help
+  -V, --version    Show version
+`,
+  );
+}
+
+async function main(): Promise<void> {
+  if (hasFlag("--help", "-h")) {
+    printHelp();
+    return;
+  }
+
+  if (hasFlag("--version", "-V")) {
+    process.stdout.write(`${getMcpVersion()}\n`);
+    return;
+  }
+
+  if (isHttpMode()) {
+    const handle = await startMcpHttpServer(buildServer, {
+      port: resolveMcpHttpPort(),
+    });
+    process.on("SIGINT", () => {
+      void handle.close().finally(() => process.exit(0));
+    });
+    process.on("SIGTERM", () => {
+      void handle.close().finally(() => process.exit(0));
+    });
+    return;
+  }
+
+  const server = buildServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
 }
 
 // ---------------------------------------------------------------------------
@@ -1205,13 +1263,8 @@ export function createServer(): Server {
 // ---------------------------------------------------------------------------
 
 if (import.meta.main) {
-  const server = createServer();
-  const transport = new StdioServerTransport();
-  // registerCloudTools expects McpServer.tool(); low-level Server lacks it.
-  try {
-    registerCloudTools(server as any, "attachments");
-  } catch {
-    // Cloud tools not compatible with low-level Server — skip
-  }
-  await server.connect(transport);
+  main().catch((error) => {
+    console.error("MCP server error:", error);
+    process.exit(1);
+  });
 }

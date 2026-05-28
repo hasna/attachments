@@ -23,6 +23,21 @@ attachments --help
 attachments-mcp
 ```
 
+## HTTP mode
+
+Run a long-lived Streamable HTTP MCP server on `127.0.0.1` (default port **8800**):
+
+```bash
+attachments-mcp --http
+# or: MCP_HTTP=1 attachments-mcp
+# port override: --port 8800  or  MCP_HTTP_PORT=8800
+```
+
+- Health: `GET http://127.0.0.1:8800/health` → `{"status":"ok","name":"attachments"}`
+- MCP: `http://127.0.0.1:8800/mcp`
+
+Stdio remains the default when no `--http` / `MCP_HTTP=1` is set.
+
 ## Cloud Sync
 
 This package supports cloud sync via `@hasna/cloud`:

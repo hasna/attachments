@@ -194,11 +194,11 @@ async function listTools(server: ReturnType<typeof createServer>) {
 // ---------------------------------------------------------------------------
 
 describe("MCP Server — tools/list", () => {
-  it("returns 9 standard tools by default (no ATTACHMENTS_PROFILE set)", async () => {
+  it("returns 13 standard tools by default (no ATTACHMENTS_PROFILE set)", async () => {
     delete process.env.ATTACHMENTS_PROFILE;
     const server = createServer();
     const result = (await listTools(server)) as { tools: Array<{ name: string }> };
-    expect(result.tools).toHaveLength(9);
+    expect(result.tools).toHaveLength(13);
     const names = result.tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("download_attachment");
@@ -222,9 +222,9 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("get_link");
   });
 
-  it("standard profile returns exactly 9 tools", () => {
+  it("standard profile returns exactly 13 tools", () => {
     const tools = getToolsForProfile("standard");
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(13);
     const names = tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("download_attachment");
@@ -237,9 +237,9 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("get_context");
   });
 
-  it("full profile returns all 16 tools", () => {
+  it("full profile returns all 21 tools", () => {
     const tools = getToolsForProfile("full");
-    expect(tools).toHaveLength(16);
+    expect(tools).toHaveLength(21);
     const names = tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("upload_attachments");
@@ -257,10 +257,10 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("check_attachment_health");
   });
 
-  it("no argument (reads process.env.ATTACHMENTS_PROFILE) defaults to standard (9 tools)", () => {
+  it("no argument (reads process.env.ATTACHMENTS_PROFILE) defaults to standard (13 tools)", () => {
     delete process.env.ATTACHMENTS_PROFILE;
     const tools = getToolsForProfile();
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(13);
   });
 
   it("ATTACHMENTS_PROFILE=minimal env var returns 3 tools", () => {
@@ -270,10 +270,10 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     delete process.env.ATTACHMENTS_PROFILE;
   });
 
-  it("ATTACHMENTS_PROFILE=full env var returns 16 tools", () => {
+  it("ATTACHMENTS_PROFILE=full env var returns 21 tools", () => {
     process.env.ATTACHMENTS_PROFILE = "full";
     const tools = getToolsForProfile();
-    expect(tools).toHaveLength(16);
+    expect(tools).toHaveLength(21);
     delete process.env.ATTACHMENTS_PROFILE;
   });
 });
