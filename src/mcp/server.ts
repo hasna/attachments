@@ -1207,6 +1207,11 @@ export function createServer(): Server {
 if (import.meta.main) {
   const server = createServer();
   const transport = new StdioServerTransport();
-  registerCloudTools(server, "attachments");
+  // registerCloudTools expects McpServer.tool(); low-level Server lacks it.
+  try {
+    registerCloudTools(server as any, "attachments");
+  } catch {
+    // Cloud tools not compatible with low-level Server — skip
+  }
   await server.connect(transport);
 }
