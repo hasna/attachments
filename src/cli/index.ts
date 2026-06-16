@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { registerEventsCommands } from "@hasna/events/commander";
 import { Command } from "commander";
 import { registerUpload } from "./commands/upload";
 import { registerDownload } from "./commands/download";
@@ -58,5 +59,6 @@ program.addCommand(configCommand());
 program.addCommand(initCommand());
 program.addCommand(heartbeatCommand());
 program.addCommand(focusCommand());
+registerEventsCommands(program, { source: "attachments" });
 
 program.parse(process.argv);
