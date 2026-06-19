@@ -1,8 +1,8 @@
 import { Command } from "commander";
 import { AttachmentsDB, type Attachment } from "../../core/db";
 import { S3Client } from "../../core/s3";
-import { getConfig, parseExpiry } from "../../core/config";
-import { generatePresignedLink, generateServerLink, getLinkType } from "../../core/links";
+import { getConfig, getPublicBaseUrl, parseExpiryStrict } from "../../core/config";
+import { generatePresignedLink, generateShareLink, getLinkType } from "../../core/links";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -93,15 +93,16 @@ export async function regenerateLink(att: Attachment, db: AttachmentsDB): Promis
   const config = getConfig();
   const linkType = getLinkType(config);
   const expiryStr = config.defaults.expiry;
-  const expiryMs = parseExpiry(expiryStr);
+  const { milliseconds: expiryMs } = parseExpiryStrict(expiryStr);
   const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
 
   let link: string;
-  if (linkType === "presigned") {
+  if (linkType === "presigned" && (att.storageBackend ?? "s3") === "s3") {
     const s3 = new S3Client(config.s3);
     link = await generatePresignedLink(s3, att.s3Key, expiryMs);
   } else {
-    link = generateServerLink(att.id, config.server.baseUrl);
+    const { token } = db.createShareLink({ attachmentId: att.id, expiresAt });
+    link = generateShareLink(token, getPublicBaseUrl(config), config.server.publicPath);
   }
 
   db.updateLink(att.id, link, expiresAt);

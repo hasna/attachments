@@ -1,5 +1,6 @@
 import { S3Client } from "./s3";
 import { AttachmentsConfig } from "./config";
+import { normalizePublicPath } from "./config";
 
 const DEFAULT_PRESIGN_EXPIRY_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
@@ -21,11 +22,17 @@ export async function generatePresignedLink(
 }
 
 /**
- * Generate a server-hosted download link for an attachment.
- * Returns: `${baseUrl}/d/${id}`
+ * Generate a server-hosted share link.
+ * Returns: `${baseUrl}/a/${token}` by default.
  */
 export function generateServerLink(id: string, baseUrl: string): string {
-  return `${baseUrl}/d/${id}`;
+  return generateShareLink(id, baseUrl);
+}
+
+export function generateShareLink(token: string, baseUrl: string, publicPath = "/a"): string {
+  const cleanBase = baseUrl.replace(/\/+$/, "");
+  const cleanPath = normalizePublicPath(publicPath);
+  return `${cleanBase}${cleanPath}/${token}`;
 }
 
 /**

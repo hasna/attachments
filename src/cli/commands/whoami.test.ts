@@ -34,6 +34,7 @@ afterAll(() => mock.restore());
 
 // Import after mocks
 const { registerWhoami } = await import("./whoami");
+const { version: pkgVersion } = require("../../../package.json") as { version: string };
 
 // ─── test-scoped config path ──────────────────────────────────────────────────
 
@@ -144,7 +145,7 @@ describe("whoami — full output with valid config", () => {
       await program.parseAsync(["whoami"], { from: "user" });
       const output = capture.out.join("");
 
-      expect(output).toContain("@hasna/attachments v1.0.16");
+      expect(output).toContain(`@hasna/attachments v${pkgVersion}`);
       expect(output).toContain(`Config: ${TEST_CONFIG_PATH}`);
       expect(output).toContain("\u2713"); // checkmark
       expect(output).toContain("S3: my-bucket (us-east-1)");
@@ -166,7 +167,7 @@ describe("whoami — missing config", () => {
       await program.parseAsync(["whoami"], { from: "user" });
       const output = capture.out.join("");
 
-      expect(output).toContain("@hasna/attachments v1.0.16");
+      expect(output).toContain(`@hasna/attachments v${pkgVersion}`);
       expect(output).toContain("Config: not found");
       expect(output).toContain("\u2717"); // cross mark
       expect(output).toContain("S3: not configured");

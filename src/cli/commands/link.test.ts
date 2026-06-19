@@ -16,12 +16,14 @@ type MockAttachment = {
 const mockFindById = mock((_id: string): MockAttachment | null => null);
 const mockUpdateLink = mock((_id: string, _link: string, _expiresAt?: number | null) => {});
 const mockDbClose = mock(() => {});
+const mockCreateShareLink = mock((_input: unknown) => ({ shareLink: {}, token: "share_linktest" }));
 
 mock.module("../../core/db", () => ({
   AttachmentsDB: class MockAttachmentsDB {
     constructor(_path?: string) {}
     findById = mockFindById;
     updateLink = mockUpdateLink;
+    createShareLink = mockCreateShareLink;
     close = mockDbClose;
     findAll = mock(() => []);
     insert = mock((_att: unknown) => {});
@@ -58,11 +60,13 @@ beforeAll(() => {
 });
 
 const mockGeneratePresignedLink = mock(async (_s3: unknown, _key: string, _expiryMs: number | null) => "https://s3.example.com/presigned?sig=new");
-const mockGenerateServerLink = mock((id: string, baseUrl: string) => `${baseUrl}/d/${id}`);
+const mockGenerateServerLink = mock((id: string, baseUrl: string) => `${baseUrl}/a/${id}`);
+const mockGenerateShareLink = mock((token: string, baseUrl: string) => `${baseUrl}/a/${token}`);
 
 mock.module("../../core/links", () => ({
   generatePresignedLink: mockGeneratePresignedLink,
   generateServerLink: mockGenerateServerLink,
+  generateShareLink: mockGenerateShareLink,
   getLinkType: mockGetLinkType,
 }));
 
@@ -129,13 +133,13 @@ function captureOutput() {
 describe("generateServerLink", () => {
   it("returns the expected server link URL", () => {
     expect(generateServerLink("att_abc", "http://localhost:3459")).toBe(
-      "http://localhost:3459/d/att_abc"
+      "http://localhost:3459/a/att_abc"
     );
   });
 
   it("handles custom base URLs", () => {
     expect(generateServerLink("att_xyz", "https://files.example.com")).toBe(
-      "https://files.example.com/d/att_xyz"
+      "https://files.example.com/a/att_xyz"
     );
   });
 });
@@ -194,8 +198,12 @@ describe("linkCommand", () => {
     mockUpdateLink.mockReset();
     mockDbClose.mockReset();
     mockS3Presign.mockReset();
+    mockCreateShareLink.mockReset();
+    mockCreateShareLink.mockImplementation(() => ({ shareLink: {}, token: "share_linktest" }));
     mockGeneratePresignedLink.mockReset();
     mockGeneratePresignedLink.mockImplementation(async () => "https://s3.example.com/presigned?sig=new");
+    mockGenerateShareLink.mockReset();
+    mockGenerateShareLink.mockImplementation((token: string, baseUrl: string) => `${baseUrl}/a/${token}`);
     mockGetLinkType.mockImplementation(() => "presigned" as const);
   });
 
@@ -290,14 +298,15 @@ describe("linkCommand", () => {
     const att = makeAttachment({ id: "att_server" });
     mockFindById.mockImplementation(() => att);
     mockGetLinkType.mockImplementation(() => "server" as const);
-    mockGenerateServerLink.mockReset();
-    mockGenerateServerLink.mockImplementation((id: string, baseUrl: string) => `${baseUrl}/d/${id}`);
+    mockGenerateShareLink.mockReset();
+    mockGenerateShareLink.mockImplementation((token: string, baseUrl: string) => `${baseUrl}/a/${token}`);
 
     const capture = captureOutput();
     try {
       const program = buildLinkCmd();
       await program.parseAsync(["link", "att_server", "--regenerate"], { from: "user" });
-      expect(mockGenerateServerLink).toHaveBeenCalled();
+      expect(mockCreateShareLink).toHaveBeenCalled();
+      expect(mockGenerateShareLink).toHaveBeenCalled();
       expect(mockGeneratePresignedLink).not.toHaveBeenCalled();
     } finally {
       capture.restore();

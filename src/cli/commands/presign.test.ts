@@ -9,17 +9,23 @@ import { setConfigPath, setConfig } from "../../core/config";
 // ---------------------------------------------------------------------------
 
 const mockDbInsert = mock((_att: unknown) => {});
+const mockDbFindById = mock((_id: string) => null as unknown);
+const mockDbMarkReady = mock((_input: unknown) => {});
+const mockDbCreateShareLink = mock((_input: unknown) => ({ token: "share_token" }));
+const mockDbDelete = mock((_id: string) => {});
 const mockDbClose = mock(() => {});
 
 mock.module("../../core/db", () => ({
   AttachmentsDB: class MockAttachmentsDB {
     constructor(_path?: string) {}
     insert = mockDbInsert;
+    findById = mockDbFindById;
+    markReady = mockDbMarkReady;
+    createShareLink = mockDbCreateShareLink;
+    delete = mockDbDelete;
     close = mockDbClose;
-    findById = mock(() => null);
     findAll = mock(() => []);
     updateLink = mock(() => {});
-    delete = mock(() => {});
     deleteExpired = mock(() => 0);
   },
 }));
@@ -27,15 +33,19 @@ mock.module("../../core/db", () => ({
 const mockPresignPut = mock(async (_key: string, _contentType: string, _expiresIn: number) =>
   "https://s3.example.com/put-presigned?sig=abc"
 );
+const mockPresign = mock(async (_key: string, _expiresIn: number) => "https://s3.example.com/get-presigned?sig=ready");
+const mockHead = mock(async (_key: string) => ({ contentLength: 4096, contentType: "application/pdf" }));
+const mockS3Delete = mock(async (_key: string) => {});
 
 mock.module("../../core/s3", () => ({
   S3Client: class MockS3Client {
     constructor(_cfg: unknown) {}
     presignPut = mockPresignPut;
-    presign = mock(async () => "https://presigned");
+    presign = mockPresign;
+    head = mockHead;
     upload = mock(async () => {});
     download = mock(async () => Buffer.from(""));
-    delete = mock(async () => {});
+    delete = mockS3Delete;
   },
 }));
 
@@ -58,7 +68,7 @@ afterAll(() => {
 });
 
 // Import after mocks
-const { presignUploadCommand } = await import("./presign");
+const { presignUploadCommand, presignCompleteCommand } = await import("./presign");
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -67,6 +77,7 @@ function buildPresignCmd() {
   const program = new Command();
   program.exitOverride();
   program.addCommand(presignUploadCommand());
+  program.addCommand(presignCompleteCommand());
   return program;
 }
 
@@ -96,9 +107,19 @@ function captureOutput() {
 describe("presign-upload command", () => {
   beforeEach(() => {
     mockDbInsert.mockReset();
+    mockDbFindById.mockReset();
+    mockDbMarkReady.mockReset();
+    mockDbCreateShareLink.mockReset();
+    mockDbDelete.mockReset();
     mockDbClose.mockReset();
     mockPresignPut.mockReset();
+    mockPresign.mockReset();
+    mockHead.mockReset();
+    mockS3Delete.mockReset();
     mockPresignPut.mockImplementation(async () => "https://s3.example.com/put-presigned?sig=abc");
+    mockPresign.mockImplementation(async () => "https://s3.example.com/get-presigned?sig=ready");
+    mockHead.mockImplementation(async () => ({ contentLength: 4096, contentType: "application/pdf" }));
+    mockDbCreateShareLink.mockImplementation(() => ({ token: "share_token" }));
   });
 
   it("generates presigned URL and outputs upload info", async () => {
@@ -110,6 +131,7 @@ describe("presign-upload command", () => {
       expect(out).toContain("Upload URL:");
       expect(out).toContain("https://s3.example.com/put-presigned?sig=abc");
       expect(out).toContain("ID: att_");
+      expect(out).toContain("Finalize: attachments presign-complete att_");
       expect(out).toContain("curl -X PUT");
     } finally {
       capture.restore();
@@ -123,7 +145,7 @@ describe("presign-upload command", () => {
       await program.parseAsync(["presign-upload", "report.pdf", "--expiry", "2h"], { from: "user" });
       expect(mockPresignPut).toHaveBeenCalledTimes(1);
       const [key, contentType, expiresIn] = mockPresignPut.mock.calls[0] as [string, string, number];
-      expect(key).toContain("report.pdf");
+      expect(key).toMatch(/^attachments\/\d{4}-\d{2}-\d{2}\/att_[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\.pdf$/);
       expect(contentType).toBe("application/pdf");
       expect(expiresIn).toBe(7200); // 2h in seconds
     } finally {
@@ -196,6 +218,107 @@ describe("presign-upload command", () => {
       expect(mockDbClose).toHaveBeenCalled();
     } finally {
       capture.restore();
+    }
+  });
+
+  it("finalizes a pending upload and generates a presigned download link", async () => {
+    mockDbFindById.mockImplementation(() => ({
+      id: "att_pending",
+      filename: "report.pdf",
+      s3Key: "attachments/2026-06-19/att_pending/report.pdf",
+      bucket: "test-bucket",
+      size: 0,
+      contentType: "application/pdf",
+      link: null,
+      tag: null,
+      expiresAt: Date.now() + 3600000,
+      createdAt: Date.now(),
+      storageBackend: "s3",
+      status: "pending",
+    }));
+
+    const capture = captureOutput();
+    try {
+      const program = buildPresignCmd();
+      await program.parseAsync(["presign-complete", "att_pending"], { from: "user" });
+      const out = capture.out.join("");
+      expect(mockHead).toHaveBeenCalledWith("attachments/2026-06-19/att_pending/report.pdf");
+      expect(mockPresign).toHaveBeenCalled();
+      expect(mockDbMarkReady).toHaveBeenCalledWith(expect.objectContaining({
+        id: "att_pending",
+        size: 4096,
+        contentType: "application/pdf",
+        link: "https://s3.example.com/get-presigned?sig=ready",
+      }));
+      expect(out).toContain("Link:     https://s3.example.com/get-presigned?sig=ready");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("finalizes to a protected server link when max downloads are set", async () => {
+    mockDbFindById.mockImplementation(() => ({
+      id: "att_pending",
+      filename: "report.pdf",
+      s3Key: "attachments/2026-06-19/att_pending/report.pdf",
+      bucket: "test-bucket",
+      size: 0,
+      contentType: "application/pdf",
+      link: null,
+      tag: null,
+      expiresAt: Date.now() + 3600000,
+      createdAt: Date.now(),
+      storageBackend: "s3",
+      status: "pending",
+    }));
+
+    const capture = captureOutput();
+    try {
+      const program = buildPresignCmd();
+      await program.parseAsync(["presign-complete", "att_pending", "--max-downloads", "1", "--brief"], { from: "user" });
+      expect(mockDbCreateShareLink).toHaveBeenCalledWith(expect.objectContaining({
+        attachmentId: "att_pending",
+        maxUses: 1,
+      }));
+      expect(mockPresign).not.toHaveBeenCalled();
+      expect(capture.out.join("")).toBe("http://localhost:3459/a/share_token\n");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("removes the object and pending record when finalization exceeds the max size", async () => {
+    mockDbFindById.mockImplementation(() => ({
+      id: "att_pending",
+      filename: "huge.bin",
+      s3Key: "attachments/2026-06-19/att_pending/huge.bin",
+      bucket: "test-bucket",
+      size: 0,
+      contentType: "application/octet-stream",
+      link: null,
+      tag: null,
+      expiresAt: Date.now() + 3600000,
+      createdAt: Date.now(),
+      storageBackend: "s3",
+      status: "pending",
+    }));
+    mockHead.mockImplementation(async () => ({ contentLength: 11 * 1024 * 1024 * 1024, contentType: "application/octet-stream" }));
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildPresignCmd();
+      await expect(
+        program.parseAsync(["presign-complete", "att_pending"], { from: "user" })
+      ).rejects.toThrow("process.exit called");
+      expect(mockS3Delete).toHaveBeenCalledWith("attachments/2026-06-19/att_pending/huge.bin");
+      expect(mockDbDelete).toHaveBeenCalledWith("att_pending");
+      expect(capture.err.join("")).toContain("File too large");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
     }
   });
 });

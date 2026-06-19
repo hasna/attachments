@@ -15,6 +15,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const mockS3Send = mock(async (_cmd: unknown) => ({ KeyCount: 0 }));
+let mockListObjectsInputs: Record<string, unknown>[] = [];
 
 mock.module("@aws-sdk/client-s3", () => ({
   S3Client: class MockAWSS3Client {
@@ -22,7 +23,9 @@ mock.module("@aws-sdk/client-s3", () => ({
     send = mockS3Send;
   },
   ListObjectsV2Command: class ListObjectsV2Command {
-    constructor(public input: Record<string, unknown>) {}
+    constructor(public input: Record<string, unknown>) {
+      mockListObjectsInputs.push(input);
+    }
   },
   // Include other exports used by s3.ts to avoid breaking it
   PutObjectCommand: class PutObjectCommand { constructor(public input: Record<string, unknown>) {} },
@@ -50,6 +53,7 @@ beforeEach(() => {
   if (existsSync(TEST_CONFIG_PATH)) {
     rmSync(TEST_CONFIG_PATH);
   }
+  mockListObjectsInputs = [];
 });
 
 afterEach(() => {
@@ -119,7 +123,7 @@ describe("config show — masked output", () => {
     const config = getConfig();
     expect(config.server.port).toBe(3459);
     expect(config.defaults.expiry).toBe("7d");
-    expect(config.defaults.linkType).toBe("presigned");
+    expect(config.defaults.linkType).toBe("server");
   });
 });
 
@@ -182,8 +186,18 @@ describe("config set — partial updates", () => {
         accessKeyId: "AKID",
         secretAccessKey: "secret",
       },
-      server: { port: 4567, baseUrl: "https://attachments.example.com" },
+      storage: { backend: "auto", localDir: "~/.hasna/attachments/objects", maxSizeBytes: 10 * 1024 * 1024 * 1024 },
+      server: { port: 4567, host: "localhost", baseUrl: "https://attachments.example.com", publicPath: "/a" },
       defaults: { expiry: "1h", linkType: "server" },
+      client: {
+        mode: "local",
+        apiBaseUrl: "",
+        apiToken: "",
+        apiTokenEnv: "ATTACHMENTS_API_TOKEN",
+        preferInternal: false,
+      },
+      domains: [],
+      deployment: {},
     };
     setConfig(full);
     expect(getConfig()).toEqual(full);
@@ -483,6 +497,11 @@ describe("configCommand test", () => {
       await program.parseAsync(["config", "test"], { from: "user" });
       expect(capture.out.join("")).toContain("Connection successful");
       expect(capture.out.join("")).toContain("test-bucket");
+      expect(mockListObjectsInputs[0]).toMatchObject({
+        Bucket: "test-bucket",
+        Prefix: "attachments/",
+        MaxKeys: 1,
+      });
     } finally {
       capture.restore();
     }

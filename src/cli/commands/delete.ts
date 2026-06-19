@@ -1,7 +1,8 @@
 import { Command } from "commander";
 import { AttachmentsDB } from "../../core/db";
 import { S3Client } from "../../core/s3";
-import { getConfig } from "../../core/config";
+import { getConfig, isCloudClientMode } from "../../core/config";
+import { deleteCloudAttachment } from "../../core/api-client";
 
 export function deleteCommand(): Command {
   const cmd = new Command("delete")
@@ -10,6 +11,20 @@ export function deleteCommand(): Command {
     .option("-y, --yes", "Skip confirmation prompt", false)
     .option("--brief", "Compact one-line output")
     .action(async (id: string, options) => {
+      if (isCloudClientMode(getConfig())) {
+        if (!options.yes) {
+          process.stdout.write(`Delete ${id}? This cannot be undone. [y/N] `);
+          const answer = await readLine();
+          if (answer.trim().toLowerCase() !== "y") {
+            process.stdout.write("Aborted.\n");
+            process.exit(0);
+          }
+        }
+        await deleteCloudAttachment(id);
+        process.stdout.write(options.brief ? `deleted ${id}\n` : `✓ Deleted ${id}\n`);
+        return;
+      }
+
       const db = new AttachmentsDB();
       try {
         const att = db.findById(id);

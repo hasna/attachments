@@ -54,12 +54,12 @@ describe("generatePresignedLink", () => {
 // ---------------------------------------------------------------------------
 
 describe("generateServerLink", () => {
-  it("returns baseUrl/d/id format", () => {
-    expect(generateServerLink("att_abc123", "http://localhost:3459")).toBe("http://localhost:3459/d/att_abc123");
+  it("returns baseUrl/a/token format", () => {
+    expect(generateServerLink("share_abc123", "http://localhost:3459")).toBe("http://localhost:3459/a/share_abc123");
   });
 
   it("works with https base URL", () => {
-    expect(generateServerLink("att_xyz789", "https://attachments.example.com")).toBe("https://attachments.example.com/d/att_xyz789");
+    expect(generateServerLink("share_xyz789", "https://attachments.example.com")).toBe("https://attachments.example.com/a/share_xyz789");
   });
 
   it("preserves the full attachment ID", () => {

@@ -1,5 +1,7 @@
 import { Command } from "commander";
 import { AttachmentsDB, type Attachment } from "../../core/db";
+import { listCloudAttachments } from "../../core/api-client";
+import { getConfig, isCloudClientMode } from "../../core/config";
 import { formatBytes, formatExpiry } from "../utils";
 
 function compactLine(att: Attachment): string {
@@ -44,7 +46,7 @@ export function listCommand(): Command {
     .option("--limit <n>", "Maximum number of results", "20")
     .option("--brief", "Compact one-line output per attachment")
     .option("--tag <tag>", "Filter by tag")
-    .action((options) => {
+    .action(async (options) => {
       const format = options.format as string;
       const includeExpired = options.expired as boolean;
       const limit = parseInt(options.limit as string, 10);
@@ -62,9 +64,14 @@ export function listCommand(): Command {
 
       const brief = !!options.brief;
 
-      const db = new AttachmentsDB();
+      let db: AttachmentsDB | null = null;
       try {
-        const attachments = db.findAll({ limit, includeExpired, tag });
+        const attachments = isCloudClientMode(getConfig())
+          ? await listCloudAttachments({ limit, includeExpired, tag })
+          : (() => {
+              db = new AttachmentsDB();
+              return db.findAll({ limit, includeExpired, tag });
+            })();
 
         if (brief) {
           if (attachments.length === 0) {
@@ -94,7 +101,7 @@ export function listCommand(): Command {
           }
         }
       } finally {
-        db.close();
+        db?.close();
       }
     });
 

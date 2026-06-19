@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { registerEventsCommands } from "@hasna/events/commander";
 import { Command } from "commander";
+import { registerEventsCommands } from "@hasna/events/commander";
 import { registerUpload } from "./commands/upload";
 import { registerDownload } from "./commands/download";
 import { registerServe } from "./commands/serve";
@@ -24,13 +24,15 @@ import { removeCommand } from "./commands/remove";
 import { linkCommand } from "./commands/link";
 import { configCommand } from "./commands/config";
 import { initCommand, heartbeatCommand, focusCommand } from "./commands/agent";
+import { storageCommand } from "./commands/storage";
+import { domainCommand } from "./commands/domain";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkgVersion: string = (() => { try { return (require("../../package.json") as { version: string }).version; } catch { return process.env.npm_package_version ?? "unknown"; } })();
 
 const program = new Command()
   .name("attachments")
-  .description("File transfer for AI agents — S3-backed")
+  .description("Attachment transfer for agents — local or private S3")
   .version(pkgVersion);
 
 // Register all subcommands
@@ -56,6 +58,8 @@ program.addCommand(deleteCommand());
 program.addCommand(removeCommand());
 program.addCommand(linkCommand());
 program.addCommand(configCommand());
+program.addCommand(storageCommand());
+program.addCommand(domainCommand());
 program.addCommand(initCommand());
 program.addCommand(heartbeatCommand());
 program.addCommand(focusCommand());

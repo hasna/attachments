@@ -141,6 +141,22 @@ describe("status command", () => {
     }
   });
 
+  it("shows connected S3 status when using the default AWS credential chain", async () => {
+    setConfigPath(join(testDir, "config-default-credentials.json"));
+    setConfig({ s3: { bucket: "role-bucket", region: "us-east-1" } });
+
+    const capture = captureOutput();
+    try {
+      const program = buildStatusCmd();
+      await program.parseAsync(["status"], { from: "user" });
+      const output = capture.out.join("");
+      expect(output).toContain("S3: \u2713 connected (role-bucket, us-east-1)");
+    } finally {
+      capture.restore();
+      setConfigPath(testConfigPath);
+    }
+  });
+
   it("shows not configured when S3 config is missing", async () => {
     // Write empty config (no S3 credentials)
     setConfigPath(join(testDir, "config-empty.json"));

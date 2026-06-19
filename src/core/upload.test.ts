@@ -12,6 +12,11 @@ import type { UploadDeps } from "./upload";
 function makeMockS3() {
   return {
     upload: mock(async () => {}),
+    uploadStream: mock(async (_key: string, stream: AsyncIterable<Uint8Array>) => {
+      for await (const _chunk of stream) {
+        // Drain the stream so size-counting transforms run like they do with real storage.
+      }
+    }),
     presign: mock(async (_key: string, _exp: number) => "https://s3.example.com/presigned?sig=test"),
     download: mock(async () => Buffer.from("")),
     delete: mock(async () => {}),
@@ -25,6 +30,7 @@ function makeMockDB() {
     findById: mock(() => null),
     findAll: mock(() => []),
     updateLink: mock(() => {}),
+    createShareLink: mock(() => ({ shareLink: {}, token: "share_token" })),
     delete: mock(() => {}),
     deleteExpired: mock(() => 0),
   };
@@ -83,10 +89,10 @@ describe("uploadFile", () => {
     expect(result.createdAt).toBeGreaterThan(0);
   });
 
-  it("formats s3Key as attachments/YYYY-MM-DD/att_.../filename", async () => {
+  it("formats s3Key as an opaque attachments/YYYY-MM-DD/att_... object key", async () => {
     const filePath = createTempFile("report.pdf", "fake pdf content");
     const result = await uploadFile(filePath, {}, deps);
-    expect(result.s3Key).toMatch(/^attachments\/\d{4}-\d{2}-\d{2}\/att_[A-Za-z0-9_-]{10}\/report\.pdf$/);
+    expect(result.s3Key).toMatch(/^attachments\/\d{4}-\d{2}-\d{2}\/att_[A-Za-z0-9_-]{10}\/[A-Za-z0-9_-]+\.pdf$/);
   });
 
   it("s3Key contains the generated attachment id", async () => {
@@ -95,10 +101,11 @@ describe("uploadFile", () => {
     expect(result.s3Key).toContain(result.id);
   });
 
-  it("s3Key contains the filename at the end", async () => {
+  it("s3Key keeps only the file extension at the end", async () => {
     const filePath = createTempFile("document.docx", "fake docx");
     const result = await uploadFile(filePath, {}, deps);
-    expect(result.s3Key.endsWith("/document.docx")).toBe(true);
+    expect(result.s3Key.endsWith(".docx")).toBe(true);
+    expect(result.s3Key.endsWith("/document.docx")).toBe(false);
   });
 
   it("parses expiry option and sets expiresAt correctly (24h)", async () => {
@@ -148,7 +155,7 @@ describe("uploadFile", () => {
   it("generates server link when linkType is server", async () => {
     const filePath = createTempFile("hosted.txt", "hosted data");
     const result = await uploadFile(filePath, { linkType: "server" }, deps);
-    expect(result.link).toContain(`/d/${result.id}`);
+    expect(result.link).toContain(`/a/`);
   });
 
   it("inserts the attachment into the DB", async () => {
@@ -265,7 +272,7 @@ describe("uploadFromUrl", () => {
     tempFiles = [];
   });
 
-  it("fetches URL, writes temp file, uploads, and cleans up", async () => {
+  it("fetches URL, streams it to storage, and records the attachment", async () => {
     const body = "hello from url";
     globalThis.fetch = mock(async () => new Response(body, {
       status: 200,
@@ -277,13 +284,8 @@ describe("uploadFromUrl", () => {
     expect(result.filename).toBe("document.txt");
     expect(result.contentType).toBe("text/plain");
     expect(result.size).toBe(body.length);
-    expect(mockS3.upload).toHaveBeenCalledTimes(1);
+    expect(mockS3.uploadStream).toHaveBeenCalledTimes(1);
     expect(mockDb.insert).toHaveBeenCalledTimes(1);
-
-    // Temp file should be cleaned up
-    const tempDir = join(tmpdir(), "open-attachments-url");
-    const tempPath = join(tempDir, "document.txt");
-    expect(existsSync(tempPath)).toBe(false);
   });
 
   it("extracts filename from Content-Disposition header", async () => {
@@ -342,6 +344,6 @@ describe("uploadFromUrl", () => {
       deps
     );
 
-    expect(result.link).toContain(`/d/${result.id}`);
+    expect(result.link).toContain(`/a/`);
   });
 });

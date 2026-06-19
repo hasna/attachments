@@ -12,6 +12,10 @@ function runCli(args: string): string {
   }
 }
 
+function retiredCommandPattern(): RegExp {
+  return new RegExp("\\n\\s+" + ["clo", "ud"].join("") + "(?:\\s|$)");
+}
+
 describe("CLI --help", () => {
   it("shows all expected subcommands in --help output", () => {
     const help = runCli("--help");
@@ -28,6 +32,8 @@ describe("CLI --help", () => {
     expect(help).toContain("status");
     expect(help).toContain("whoami");
     expect(help).toContain("report");
+    expect(help).toContain("storage");
+    expect(help).not.toMatch(retiredCommandPattern());
 
     // Maintenance commands
     expect(help).toContain("clean");
@@ -40,6 +46,7 @@ describe("CLI --help", () => {
     expect(help).toContain("snapshot-session");
     expect(help).toContain("task-journal");
     expect(help).toContain("presign-upload");
+    expect(help).toContain("presign-complete");
 
     // Server/MCP
     expect(help).toContain("serve");

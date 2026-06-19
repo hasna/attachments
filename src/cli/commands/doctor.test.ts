@@ -155,6 +155,13 @@ describe("checkS3Configured", () => {
     expect(result.message).toContain("us-east-1");
   });
 
+  it("returns ok when bucket and region are set for the default AWS credential chain", () => {
+    setConfig({ s3: { bucket: "my-bucket", region: "us-east-1" } });
+    const result = checkS3Configured();
+    expect(result.status).toBe("ok");
+    expect(result.message).toContain("default credential chain");
+  });
+
   it("returns fail when S3 fields are missing", () => {
     // No config set — all fields default to empty strings
     const result = checkS3Configured();
@@ -163,7 +170,7 @@ describe("checkS3Configured", () => {
   });
 
   it("returns fail when only some S3 fields are set", () => {
-    setConfig({ s3: { bucket: "my-bucket", region: "us-east-1" } });
+    setConfig({ s3: { bucket: "my-bucket", region: "us-east-1", accessKeyId: "AKI" } });
     const result = checkS3Configured();
     expect(result.status).toBe("fail");
     expect(result.message).toContain("not configured");
@@ -179,6 +186,14 @@ describe("checkS3Connection", () => {
     setConfig({
       s3: { bucket: "my-bucket", region: "us-east-1", accessKeyId: "AKI", secretAccessKey: "secret" },
     });
+    mockS3Response = { KeyCount: 3 };
+    const result = await checkS3Connection();
+    expect(result.status).toBe("ok");
+    expect(result.message).toBe("ok");
+  });
+
+  it("returns ok when S3 uses the default AWS credential chain", async () => {
+    setConfig({ s3: { bucket: "my-bucket", region: "us-east-1" } });
     mockS3Response = { KeyCount: 3 };
     const result = await checkS3Connection();
     expect(result.status).toBe("ok");

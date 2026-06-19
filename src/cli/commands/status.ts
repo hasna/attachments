@@ -1,7 +1,8 @@
 import { Command } from "commander";
 import { ListObjectsV2Command, S3Client as AWSS3Client } from "@aws-sdk/client-s3";
 import { AttachmentsDB } from "../../core/db";
-import { getConfig, CONFIG_PATH } from "../../core/config";
+import { getClientApiBaseUrl, getConfig, hasS3Config, isCloudClientMode, CONFIG_PATH } from "../../core/config";
+import { getCloudHealth } from "../../core/api-client";
 import { formatBytes } from "../utils";
 import { join } from "path";
 import { homedir } from "os";
@@ -12,23 +13,30 @@ async function checkS3Connection(config: ReturnType<typeof getConfig>): Promise<
   region: string;
 }> {
   const { s3 } = config;
-  if (!s3.bucket || !s3.region || !s3.accessKeyId || !s3.secretAccessKey) {
+  if (!hasS3Config(config)) {
     return { connected: false, bucket: s3.bucket, region: s3.region };
   }
 
   try {
+    const staticCredentials =
+      s3.accessKeyId && s3.secretAccessKey
+        ? {
+            credentials: {
+              accessKeyId: s3.accessKeyId,
+              secretAccessKey: s3.secretAccessKey,
+            },
+          }
+        : {};
     const client = new AWSS3Client({
       region: s3.region,
-      credentials: {
-        accessKeyId: s3.accessKeyId,
-        secretAccessKey: s3.secretAccessKey,
-      },
+      ...staticCredentials,
       ...(s3.endpoint ? { endpoint: s3.endpoint, forcePathStyle: true } : {}),
     });
 
     await client.send(
       new ListObjectsV2Command({
         Bucket: s3.bucket,
+        Prefix: "attachments/",
         MaxKeys: 1,
       })
     );
@@ -65,6 +73,24 @@ export function registerStatus(program: Command): void {
     .description("Show system status: S3 connection, attachment stats, config paths")
     .action(async () => {
       const config = getConfig();
+      if (isCloudClientMode(config)) {
+        try {
+          const health = await getCloudHealth();
+          process.stdout.write(`Mode: cloud API\n`);
+          process.stdout.write(`API: ${getClientApiBaseUrl(config) ?? "(not configured)"}\n`);
+          process.stdout.write(`Health: ${health.status ?? "unknown"}\n`);
+          process.stdout.write(`Storage: ${health.storage_backend ?? "unknown"}\n`);
+          process.stdout.write(`Attachments: ${health.attachments ?? "unknown"}\n`);
+          process.stdout.write(`Config: ${CONFIG_PATH}\n`);
+          return;
+        } catch (error) {
+          process.stdout.write(`Mode: cloud API\n`);
+          process.stdout.write(`API: ${getClientApiBaseUrl(config) ?? "(not configured)"}\n`);
+          process.stdout.write(`Health: connection failed (${error instanceof Error ? error.message : String(error)})\n`);
+          process.stdout.write(`Config: ${CONFIG_PATH}\n`);
+          return;
+        }
+      }
 
       // S3 status
       const s3Status = await checkS3Connection(config);
@@ -72,7 +98,7 @@ export function registerStatus(program: Command): void {
         process.stdout.write(
           `S3: \u2713 connected (${s3Status.bucket}, ${s3Status.region})\n`
         );
-      } else if (!config.s3.bucket || !config.s3.region || !config.s3.accessKeyId || !config.s3.secretAccessKey) {
+      } else if (!hasS3Config(config)) {
         process.stdout.write(`S3: \u2717 not configured\n`);
       } else {
         process.stdout.write(

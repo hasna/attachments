@@ -1,16 +1,22 @@
 {
   "name": "@hasna/attachments-sdk",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "description": "Zero-dependency TypeScript client for @hasna/attachments REST API",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src/index.ts"
+  ],
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
   "license": "Apache-2.0",
   "scripts": {
-    "build": "bun build sdk/src/index.ts --outdir sdk/dist --target browser",
-    "test": "bun test sdk/"
+    "build": "rm -rf dist && bun build src/index.ts --outdir dist --target node && bunx tsc src/index.ts --declaration --emitDeclarationOnly --outDir dist --target ES2022 --module ESNext --moduleResolution Bundler --skipLibCheck --lib ES2022,DOM --types bun",
+    "prepare": "bun run build",
+    "prepack": "bun run build",
+    "test": "bun test src"
   }
 }

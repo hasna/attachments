@@ -30,6 +30,18 @@ const mockUploadFromBuffer = mock(async (_buffer: Buffer, _filename: string, _op
   createdAt: 1741913600000,
 }));
 
+const mockUploadStreamAttachment = mock(async (_stream: unknown, _filename: string, _contentType: string, _opts: unknown) => ({
+  id: "att_stdin00001",
+  filename: "stdin-file.txt",
+  s3Key: "attachments/2026-01-01/att_stdin00001/stdin-file.txt",
+  bucket: "my-bucket",
+  size: 512,
+  contentType: "text/plain",
+  link: "https://s3.example.com/presigned?sig=stdin",
+  expiresAt: 1742000000000,
+  createdAt: 1741913600000,
+}));
+
 const mockUploadFromUrl = mock(async (_url: string, _opts: unknown) => ({
   id: "att_fromurl001",
   filename: "remote-file.txt",
@@ -42,14 +54,27 @@ const mockUploadFromUrl = mock(async (_url: string, _opts: unknown) => ({
   createdAt: 1741913600000,
 }));
 
+const testConfig = {
+  s3: { bucket: "my-bucket", region: "us-east-1", accessKeyId: "AKIATEST", secretAccessKey: "secret" },
+  storage: { backend: "s3" as const, localDir: "~/.hasna/attachments/test-objects", maxSizeBytes: 10 * 1024 * 1024 * 1024 },
+  server: { port: 3459, host: "localhost", baseUrl: "http://localhost:3459", publicPath: "/a" },
+  defaults: { expiry: "7d", linkType: "presigned" as const },
+  client: { mode: "local" as const, apiBaseUrl: "", apiToken: "", apiTokenEnv: "ATTACHMENTS_API_TOKEN", preferInternal: false },
+  domains: [],
+  deployment: {},
+};
+
 mock.module("../../core/upload", () => ({
   uploadFile: mockUploadFile,
   uploadFromBuffer: mockUploadFromBuffer,
   uploadFromUrl: mockUploadFromUrl,
+  uploadStreamAttachment: mockUploadStreamAttachment,
 }));
 
-// spyOn validateS3Config to avoid mock.module cache pollution
-const mockValidateS3Config = spyOn(configModule, "validateS3Config").mockImplementation(() => {});
+// spyOn validateStorageConfig to avoid mock.module cache pollution
+const mockGetConfig = spyOn(configModule, "getConfig").mockImplementation(() => testConfig);
+const mockIsCloudClientMode = spyOn(configModule, "isCloudClientMode").mockImplementation(() => false);
+const mockValidateStorageConfig = spyOn(configModule, "validateStorageConfig").mockImplementation(() => {});
 
 // spyOn execSync for clipboard tests
 const mockExecSync = spyOn(childProcess, "execSync").mockImplementation(() => Buffer.from(""));
@@ -109,6 +134,10 @@ function captureOutput() {
 
 describe("upload command", () => {
   beforeEach(() => {
+    mockGetConfig.mockReset();
+    mockGetConfig.mockImplementation(() => testConfig);
+    mockIsCloudClientMode.mockReset();
+    mockIsCloudClientMode.mockImplementation(() => false);
     mockUploadFile.mockReset();
     mockUploadFile.mockImplementation(async () => ({
       id: "att_testid1234",
@@ -133,6 +162,18 @@ describe("upload command", () => {
       expiresAt: 1742000000000,
       createdAt: 1741913600000,
     }));
+    mockUploadStreamAttachment.mockReset();
+    mockUploadStreamAttachment.mockImplementation(async () => ({
+      id: "att_stdin00001",
+      filename: "stdin-file.txt",
+      s3Key: "attachments/2026-01-01/att_stdin00001/stdin-file.txt",
+      bucket: "my-bucket",
+      size: 512,
+      contentType: "text/plain",
+      link: "https://s3.example.com/presigned?sig=stdin",
+      expiresAt: 1742000000000,
+      createdAt: 1741913600000,
+    }));
     mockUploadFromUrl.mockReset();
     mockUploadFromUrl.mockImplementation(async () => ({
       id: "att_fromurl001",
@@ -145,8 +186,8 @@ describe("upload command", () => {
       expiresAt: 1742000000000,
       createdAt: 1741913600000,
     }));
-    mockValidateS3Config.mockReset();
-    mockValidateS3Config.mockImplementation(() => {});
+    mockValidateStorageConfig.mockReset();
+    mockValidateStorageConfig.mockImplementation(() => {});
     mockExecSync.mockReset();
     mockExecSync.mockImplementation(() => Buffer.from(""));
   });
@@ -230,9 +271,9 @@ describe("upload command", () => {
     }
   });
 
-  it("exits with an error when S3 config is invalid", async () => {
-    mockValidateS3Config.mockImplementation(() => {
-      throw new Error("S3 configuration incomplete. Missing: bucket");
+  it("exits with an error when storage config is invalid", async () => {
+    mockValidateStorageConfig.mockImplementation(() => {
+      throw new Error("storage.maxSizeBytes must be a positive number");
     });
 
     const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
@@ -245,7 +286,7 @@ describe("upload command", () => {
       await expect(
         program.parseAsync(["upload", "file.txt"], { from: "user" })
       ).rejects.toThrow("process.exit called");
-      expect(capture.err.join("")).toContain("S3 configuration incomplete");
+      expect(capture.err.join("")).toContain("storage.maxSizeBytes");
     } finally {
       capture.restore();
       exitSpy.mockRestore();
@@ -306,7 +347,7 @@ describe("upload command", () => {
       await program.parseAsync(["upload", "test.txt", "--copy"], { from: "user" });
       expect(mockExecSync).toHaveBeenCalledTimes(1);
       const [cmd, opts] = mockExecSync.mock.calls[0] as [string, { input: string }];
-      expect(cmd).toContain("pbcopy"); // macOS in test env
+      expect(cmd).toContain(process.platform === "darwin" ? "pbcopy" : "xclip");
       expect(opts.input).toBe("https://s3.example.com/presigned?sig=abc");
       const combined = capture.out.join("");
       expect(combined).toContain("(copied to clipboard)");

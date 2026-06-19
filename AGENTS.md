@@ -46,7 +46,7 @@ ATTACHMENTS_PROFILE=full    attachments-mcp
 |----------|---------|-------------|
 | `ATTACHMENTS_PROFILE` | `standard` | Tool set: `minimal`, `standard`, or `full` |
 | `ATTACHMENTS_TRACK_COSTS` | _(unset)_ | Set to `1` to log economy/cost data |
-| `ATTACHMENTS_MAX_SIZE` | `5368709120` (5 GB) | Max upload size in bytes; returns 413 above this |
+| `ATTACHMENTS_MAX_SIZE` | `10737418240` (10 GB) | Max upload size in bytes; returns 413 above this |
 | `ATTACHMENTS_ECONOMY_URL` | `http://localhost:3460` | Economy service base URL |
 
 ---
@@ -55,9 +55,20 @@ ATTACHMENTS_PROFILE=full    attachments-mcp
 
 Default port: **3459**
 Default bind: `localhost`
+Default public route: `/a/<share-token>`
 
 ```bash
 attachments serve --port 3459
+```
+
+For a shared redirect domain, use a path route such as `/a/*` for attachments
+before the generic shortlinks route. Export a provider-neutral or Cloudflare plan
+without credentials:
+
+```bash
+attachments domain plan --format json
+attachments domain plan --format cloudflare
+attachments domain verify --format json
 ```
 
 ---
@@ -178,7 +189,7 @@ attachments config show
 attachments config test      # verify S3 connectivity
 ```
 
-SQLite database: `~/.attachments/attachments.db`
+SQLite database: `~/.hasna/attachments/db.sqlite`
 
 ---
 

@@ -22,6 +22,17 @@ export interface Attachment {
 export interface AttachmentsClientOptions {
   /** Base URL of the attachments server, e.g. "http://localhost:3459" */
   serverUrl: string;
+  /** Optional bearer token for protected API endpoints. Public share URLs do not use it. */
+  token?: string;
+}
+
+export interface UploadOptions {
+  expiry?: string;
+  tag?: string;
+  password?: string;
+  encrypt?: boolean;
+  maxDownloads?: number;
+  linkType?: "presigned" | "server";
 }
 
 // Raw API response shape (snake_case from the server)
@@ -73,14 +84,73 @@ async function checkResponse(res: Response): Promise<void> {
   }
 }
 
+function appendUploadParams(url: URL, opts?: UploadOptions): void {
+  if (opts?.expiry) url.searchParams.set("expiry", opts.expiry);
+  if (opts?.tag) url.searchParams.set("tag", opts.tag);
+  if (opts?.encrypt) url.searchParams.set("encrypt", "1");
+  if (opts?.maxDownloads) url.searchParams.set("max_downloads", String(opts.maxDownloads));
+  if (opts?.linkType) url.searchParams.set("link_type", opts.linkType);
+}
+
+function uploadHeaders(opts?: UploadOptions, extra?: Record<string, string>): Record<string, string> {
+  return {
+    ...(extra ?? {}),
+    ...(opts?.password ? { "x-attachments-password": opts.password } : {}),
+  };
+}
+
+function filenameFromDisposition(value: string | null): string | null {
+  if (!value) return null;
+  const match = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(value);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]!.replace(/^"|"$/g, ""));
+  } catch {
+    return match[1]!.replace(/^"|"$/g, "");
+  }
+}
+
+function toDownloadUrl(idOrUrl: string, baseUrl: string): string {
+  if (!/^https?:\/\//.test(idOrUrl)) {
+    return `${baseUrl}/api/attachments/${idOrUrl}/download`;
+  }
+
+  const url = new URL(idOrUrl);
+  const legacyShare = url.pathname.match(/^\/a\/([^/]+)\/?$/);
+  if (legacyShare) {
+    return `${url.origin}/a/${encodeURIComponent(legacyShare[1]!)}/download`;
+  }
+  return idOrUrl;
+}
+
+function isLegacyShareDownloadUrl(value: string): boolean {
+  if (!/^https?:\/\//.test(value)) return false;
+  return /^\/a\/[^/]+\/download\/?$/.test(new URL(value).pathname);
+}
+
 // ── Client ─────────────────────────────────────────────────────────────────
 
 export class AttachmentsClient {
   private readonly baseUrl: string;
+  private readonly token?: string;
 
   constructor(options: AttachmentsClientOptions) {
     // Strip trailing slash for consistent URL construction
     this.baseUrl = options.serverUrl.replace(/\/$/, "");
+    this.token = options.token;
+  }
+
+  private headers(extra?: Record<string, string>): Record<string, string> | undefined {
+    const headers = {
+      ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+      ...(extra ?? {}),
+    };
+    return Object.keys(headers).length > 0 ? headers : undefined;
+  }
+
+  private fetchInit(extraHeaders?: Record<string, string>): RequestInit | undefined {
+    const headers = this.headers(extraHeaders);
+    return headers ? { headers } : undefined;
   }
 
   /**
@@ -90,31 +160,42 @@ export class AttachmentsClient {
    */
   async upload(
     filePathOrBlob: string | Blob | File,
-    opts?: { expiry?: string; tag?: string }
+    opts?: UploadOptions
   ): Promise<Attachment> {
-    const form = new FormData();
+    const url = new URL(`${this.baseUrl}/api/attachments`);
 
     if (typeof filePathOrBlob === "string") {
-      // Node/Bun path — use synchronous fs read to stay zero-dependency
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const fs = require("fs") as typeof import("fs");
       const path = require("path") as typeof import("path");
-      const buffer = fs.readFileSync(filePathOrBlob);
       const filename = path.basename(filePathOrBlob);
-      const blob = new Blob([buffer]);
-      form.append("file", blob, filename);
-    } else {
-      // Browser File / Blob
-      const name = filePathOrBlob instanceof File ? filePathOrBlob.name : "upload";
-      form.append("file", filePathOrBlob, name);
+      const stat = fs.statSync(filePathOrBlob);
+      url.searchParams.set("filename", filename);
+      appendUploadParams(url, opts);
+      const init = {
+        method: "PUT",
+        headers: this.headers(uploadHeaders(opts, {
+          "content-type": "application/octet-stream",
+          "content-length": String(stat.size),
+        })),
+        body: fs.createReadStream(filePathOrBlob),
+        duplex: "half",
+      } as unknown as RequestInit & { duplex: "half" };
+      const res = await fetch(url, init);
+      await checkResponse(res);
+      const raw = await res.json() as RawAttachment;
+      return mapAttachment(raw);
     }
 
-    if (opts?.expiry) form.append("expiry", opts.expiry);
-    if (opts?.tag) form.append("tag", opts.tag);
+    const name = filePathOrBlob instanceof File ? filePathOrBlob.name : "upload";
+    const contentType = filePathOrBlob.type || "application/octet-stream";
+    url.searchParams.set("filename", name);
+    appendUploadParams(url, opts);
 
-    const res = await fetch(`${this.baseUrl}/api/attachments`, {
-      method: "POST",
-      body: form,
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: this.headers(uploadHeaders(opts, { "content-type": contentType })),
+      body: filePathOrBlob,
     });
 
     await checkResponse(res);
@@ -129,18 +210,19 @@ export class AttachmentsClient {
   async uploadBuffer(
     buffer: Buffer | Uint8Array,
     filename: string,
-    opts?: { expiry?: string; tag?: string }
+    opts?: UploadOptions
   ): Promise<Attachment> {
-    const form = new FormData();
-    const blob = new Blob([buffer]);
-    form.append("file", blob, filename);
+    const url = new URL(`${this.baseUrl}/api/attachments`);
+    url.searchParams.set("filename", filename);
+    appendUploadParams(url, opts);
 
-    if (opts?.expiry) form.append("expiry", opts.expiry);
-    if (opts?.tag) form.append("tag", opts.tag);
-
-    const res = await fetch(`${this.baseUrl}/api/attachments`, {
-      method: "POST",
-      body: form,
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: this.headers(uploadHeaders(opts, {
+        "content-type": "application/octet-stream",
+        "content-length": String(buffer.byteLength),
+      })),
+      body: buffer as never,
     });
 
     await checkResponse(res);
@@ -155,24 +237,43 @@ export class AttachmentsClient {
    */
   async download(
     idOrUrl: string,
-    destPath?: string
+    destPath?: string,
+    opts?: { password?: string }
   ): Promise<{ path: string; filename: string; size: number }> {
-    // Resolve URL — if it looks like a full URL use it, otherwise build from ID
-    const url = idOrUrl.startsWith("http")
-      ? idOrUrl
-      : `${this.baseUrl}/api/attachments/${idOrUrl}/download`;
-
-    const res = await fetch(url);
+    const url = toDownloadUrl(idOrUrl, this.baseUrl);
+    const isApiDownload = url.startsWith(`${this.baseUrl}/api/`);
+    const isPublicShareDownload = isLegacyShareDownloadUrl(url);
+    let init: RequestInit | undefined;
+    if (isApiDownload) {
+      const headers = this.headers(opts?.password ? { "x-attachments-password": opts.password } : undefined);
+      init = headers ? { headers } : undefined;
+    } else if (isPublicShareDownload && opts?.password) {
+      init = {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-attachments-download": "1",
+        },
+        body: new URLSearchParams({ password: opts.password }),
+      };
+    } else if (isPublicShareDownload) {
+      init = { headers: { "x-attachments-download": "1" } };
+    } else if (opts?.password) {
+      init = { headers: { "x-attachments-password": opts.password } };
+    }
+    const res = await fetch(url, init);
     await checkResponse(res);
+    if (!res.body) throw new Error("Download response did not include a body");
 
     // Extract filename from Content-Disposition header
     const disposition = res.headers.get("content-disposition") ?? "";
-    const match = disposition.match(/filename="([^"]+)"/);
-    const filename = match ? match[1] : idOrUrl.split("/").pop() ?? "download";
+    const filename = filenameFromDisposition(disposition) ?? idOrUrl.split("/").filter(Boolean).pop() ?? "download";
 
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const fs = require("fs") as typeof import("fs");
     const path = require("path") as typeof import("path");
+    const { Readable } = require("stream") as typeof import("stream");
+    const { pipeline } = require("stream/promises") as typeof import("stream/promises");
 
     // Determine output path
     let outPath: string;
@@ -189,11 +290,10 @@ export class AttachmentsClient {
       outPath = isDir ? path.join(destPath, filename) : destPath;
     }
 
-    const arrayBuffer = await res.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    fs.writeFileSync(outPath, buffer);
+    await pipeline(Readable.fromWeb(res.body as never), fs.createWriteStream(outPath));
+    const size = Number(res.headers.get("content-length") || fs.statSync(outPath).size);
 
-    return { path: outPath, filename, size: buffer.length };
+    return { path: outPath, filename, size };
   }
 
   /**
@@ -212,7 +312,7 @@ export class AttachmentsClient {
     const query = params.toString();
     const url = `${this.baseUrl}/api/attachments${query ? `?${query}` : ""}`;
 
-    const res = await fetch(url);
+    const res = await fetch(url, this.fetchInit());
     await checkResponse(res);
 
     // compact format returns newline-delimited JSON
@@ -232,7 +332,7 @@ export class AttachmentsClient {
    * Get a single attachment's metadata.
    */
   async get(id: string): Promise<Attachment> {
-    const res = await fetch(`${this.baseUrl}/api/attachments/${id}`);
+    const res = await fetch(`${this.baseUrl}/api/attachments/${id}`, this.fetchInit());
     await checkResponse(res);
     const raw = await res.json() as RawAttachment;
     return mapAttachment(raw);
@@ -244,6 +344,7 @@ export class AttachmentsClient {
   async delete(id: string): Promise<void> {
     const res = await fetch(`${this.baseUrl}/api/attachments/${id}`, {
       method: "DELETE",
+      ...(this.headers() ? { headers: this.headers() } : {}),
     });
     await checkResponse(res);
   }
@@ -252,7 +353,7 @@ export class AttachmentsClient {
    * Get the current shareable link for an attachment.
    */
   async getLink(id: string): Promise<string> {
-    const res = await fetch(`${this.baseUrl}/api/attachments/${id}/link`);
+    const res = await fetch(`${this.baseUrl}/api/attachments/${id}/link`, this.fetchInit());
     await checkResponse(res);
     const body = await res.json() as RawLinkResponse;
     return body.link;
@@ -261,11 +362,24 @@ export class AttachmentsClient {
   /**
    * Regenerate the shareable link for an attachment.
    */
-  async regenerateLink(id: string, opts?: { expiry?: string }): Promise<string> {
+  async regenerateLink(
+    id: string,
+    opts?: {
+      expiry?: string;
+      password?: string;
+      maxDownloads?: number;
+      linkType?: "presigned" | "server";
+    }
+  ): Promise<string> {
     const res = await fetch(`${this.baseUrl}/api/attachments/${id}/link`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(opts ?? {}),
+      headers: this.headers({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        expiry: opts?.expiry,
+        password: opts?.password,
+        max_downloads: opts?.maxDownloads,
+        link_type: opts?.linkType,
+      }),
     });
     await checkResponse(res);
     const body = await res.json() as RawLinkResponse;
@@ -276,7 +390,7 @@ export class AttachmentsClient {
    * Get server health status.
    */
   async health(): Promise<{ status: string; attachments: number; expired: number; s3_configured: boolean; server: string; timestamp: string }> {
-    const res = await fetch(`${this.baseUrl}/api/health`);
+    const res = await fetch(`${this.baseUrl}/api/health`, this.fetchInit());
     await checkResponse(res);
     return res.json() as Promise<{ status: string; attachments: number; expired: number; s3_configured: boolean; server: string; timestamp: string }>;
   }
@@ -287,7 +401,7 @@ export class AttachmentsClient {
    */
   async getContext(format?: "text" | "json"): Promise<string | { attachments: number; active: number; expired: number; expiring_soon: number; summary: string }> {
     const url = format === "json" ? `${this.baseUrl}/api/context?format=json` : `${this.baseUrl}/api/context`;
-    const res = await fetch(url);
+    const res = await fetch(url, this.fetchInit());
     await checkResponse(res);
     if (format === "json") return res.json() as Promise<{ attachments: number; active: number; expired: number; expiring_soon: number; summary: string }>;
     return res.text();

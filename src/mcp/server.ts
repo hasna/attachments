@@ -5,20 +5,20 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { registerCloudTools } from "@hasna/cloud";
 import { isStdioMode, resolveMcpHttpPort, startMcpHttpServer } from "./http.js";
 
 import { nanoid } from "nanoid";
-import { format } from "date-fns";
 import { lookup as mimeLookup } from "mime-types";
 import { uploadFile, uploadFromUrl, uploadFromBuffer } from "../core/upload.js";
 import { computeReport } from "../cli/commands/report.js";
 import { runHealthCheck } from "../cli/commands/health-check.js";
 import { downloadAttachment } from "../core/download.js";
 import { AttachmentsDB } from "../core/db.js";
-import { getConfig, setConfig, parseExpiry } from "../core/config.js";
-import { generatePresignedLink, generateServerLink, getLinkType } from "../core/links.js";
+import { STORAGE_TABLES, getStorageStatus, storagePull, storagePush, storageSync } from "../db/storage-sync.js";
+import { getConfig, getPublicBaseUrl, parseExpiryStrict, setConfig, validateS3Config } from "../core/config.js";
+import { generatePresignedLink, generateShareLink, getLinkType } from "../core/links.js";
 import { S3Client } from "../core/s3.js";
+import { createObjectKey, sanitizeFilename } from "../core/security.js";
 
 // ---------------------------------------------------------------------------
 // In-memory agent registry (attribution for uploads)
@@ -53,6 +53,9 @@ const FULL_SCHEMAS: Record<string, object> = {
         url: { type: "string", description: "HTTP/HTTPS URL to fetch and upload. Alternative to 'path'." },
         expiry: { type: "string", description: "Link expiry, e.g. '24h', '7d', 'never'. Defaults to configured value." },
         tag: { type: "string", description: "Optional tag to attach to the attachment record." },
+        password: { type: "string", description: "Optional password required before public download." },
+        encrypt: { type: "boolean", description: "Encrypt stored bytes using the provided password." },
+        max_downloads: { type: "number", description: "Maximum successful downloads for the generated share link." },
       },
     },
   },
@@ -113,6 +116,9 @@ const FULL_SCHEMAS: Record<string, object> = {
         paths: { type: "array", items: { type: "string" }, description: "Array of absolute or relative file paths to upload." },
         expiry: { type: "string", description: "Link expiry, e.g. '24h', '7d', 'never'. Applied to all files." },
         tag: { type: "string", description: "Optional tag applied to every attachment." },
+        password: { type: "string", description: "Optional password required before public download." },
+        encrypt: { type: "boolean", description: "Encrypt stored bytes using the provided password." },
+        max_downloads: { type: "number", description: "Maximum successful downloads for each generated share link." },
       },
       required: ["paths"],
     },
@@ -125,11 +131,11 @@ const FULL_SCHEMAS: Record<string, object> = {
       properties: {
         bucket: { type: "string", description: "S3 bucket name." },
         region: { type: "string", description: "AWS region, e.g. 'us-east-1'." },
-        access_key: { type: "string", description: "AWS access key ID." },
-        secret_key: { type: "string", description: "AWS secret access key." },
+        access_key: { type: "string", description: "Optional AWS access key ID. Omit when using the runtime default credential chain / IAM role." },
+        secret_key: { type: "string", description: "Optional AWS secret access key. Required only when access_key is provided." },
         base_url: { type: "string", description: "Optional custom endpoint / base URL." },
       },
-      required: ["bucket", "region", "access_key", "secret_key"],
+      required: ["bucket", "region"],
     },
   },
   presign_upload: {
@@ -143,6 +149,21 @@ const FULL_SCHEMAS: Record<string, object> = {
         content_type: { type: "string", description: "Content type for the upload. Auto-detected from filename if omitted." },
       },
       required: ["filename"],
+    },
+  },
+  complete_presigned_upload: {
+    name: "complete_presigned_upload",
+    description: "Verify and finalize a direct S3 upload created by presign_upload. Generates the final share link only after the object exists and passes size checks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Pending attachment ID returned by presign_upload." },
+        expiry: { type: "string", description: "Share link expiry, e.g. '24h', '7d', 'never'. Defaults to configured value." },
+        password: { type: "string", description: "Optional password required before public download." },
+        max_downloads: { type: "number", description: "Maximum successful downloads for the generated share link." },
+        link_type: { type: "string", enum: ["presigned", "server"], description: "Final link type. Defaults to configured value." },
+      },
+      required: ["id"],
     },
   },
   report_stats: {
@@ -258,6 +279,9 @@ const LEAN_TOOLS = [
         url: { type: "string" },
         expiry: { type: "string" },
         tag: { type: "string" },
+        password: { type: "string" },
+        encrypt: { type: "boolean" },
+        max_downloads: { type: "number" },
       },
     },
   },
@@ -318,6 +342,9 @@ const LEAN_TOOLS = [
         paths: { type: "array", items: { type: "string" } },
         expiry: { type: "string" },
         tag: { type: "string" },
+        password: { type: "string" },
+        encrypt: { type: "boolean" },
+        max_downloads: { type: "number" },
       },
       required: ["paths"],
     },
@@ -334,7 +361,7 @@ const LEAN_TOOLS = [
         secret_key: { type: "string" },
         base_url: { type: "string" },
       },
-      required: ["bucket", "region", "access_key", "secret_key"],
+      required: ["bucket", "region"],
     },
   },
   {
@@ -348,6 +375,21 @@ const LEAN_TOOLS = [
         content_type: { type: "string" },
       },
       required: ["filename"],
+    },
+  },
+  {
+    name: "complete_presigned_upload",
+    description: "Finalize a presigned upload after S3 PUT",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        id: { type: "string" },
+        expiry: { type: "string" },
+        password: { type: "string" },
+        max_downloads: { type: "number" },
+        link_type: { type: "string", enum: ["presigned", "server"] },
+      },
+      required: ["id"],
     },
   },
   {
@@ -502,6 +544,44 @@ const LEAN_TOOLS = [
       required: ["message"],
     },
   },
+  {
+    name: "storage_status",
+    description: "Show remote storage configuration and sync metadata",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+  },
+  {
+    name: "storage_push",
+    description: "Push local attachment tables to remote Postgres storage",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        tables: { type: "array", items: { type: "string", enum: [...STORAGE_TABLES] } },
+      },
+    },
+  },
+  {
+    name: "storage_pull",
+    description: "Pull attachment tables from remote Postgres storage",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        tables: { type: "array", items: { type: "string", enum: [...STORAGE_TABLES] } },
+      },
+    },
+  },
+  {
+    name: "storage_sync",
+    description: "Push then pull attachment tables with remote Postgres storage",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        tables: { type: "array", items: { type: "string", enum: [...STORAGE_TABLES] } },
+      },
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -548,6 +628,9 @@ async function handleUploadAttachment(args: {
   url?: string;
   expiry?: string;
   tag?: string;
+  password?: string;
+  encrypt?: boolean;
+  max_downloads?: number;
 }) {
   if (!args.path && !args.url) {
     throw new Error("Either 'path' or 'url' must be provided.");
@@ -556,7 +639,13 @@ async function handleUploadAttachment(args: {
     throw new Error("Provide either 'path' or 'url', not both.");
   }
 
-  const opts = { expiry: args.expiry, tag: args.tag };
+  const opts = {
+    expiry: args.expiry,
+    tag: args.tag,
+    password: args.password,
+    encrypt: args.encrypt,
+    maxDownloads: args.max_downloads,
+  };
   const attachment = args.url
     ? await uploadFromUrl(args.url, opts)
     : await uploadFile(args.path!, opts);
@@ -646,15 +735,16 @@ async function handleGetLink(args: {
   const config = getConfig();
   const linkType = getLinkType(config);
   const expiryStr = args.expiry ?? config.defaults.expiry;
-  const expiryMs = parseExpiry(expiryStr);
+  const { milliseconds: expiryMs } = parseExpiryStrict(expiryStr);
   const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
 
   let link: string;
-  if (linkType === "presigned") {
+  if (linkType === "presigned" && (attachment.storageBackend ?? "s3") === "s3") {
     const s3 = new S3Client(config.s3);
     link = await generatePresignedLink(s3, attachment.s3Key, expiryMs);
   } else {
-    link = generateServerLink(attachment.id, config.server.baseUrl);
+    const { token } = db.createShareLink({ attachmentId: attachment.id, expiresAt });
+    link = generateShareLink(token, getPublicBaseUrl(config), config.server.publicPath);
   }
 
   db.updateLink(args.id, link, expiresAt);
@@ -667,6 +757,9 @@ async function handleUploadAttachments(args: {
   paths: string[];
   expiry?: string;
   tag?: string;
+  password?: string;
+  encrypt?: boolean;
+  max_downloads?: number;
 }) {
   if (!args.paths || args.paths.length === 0) {
     return [];
@@ -681,6 +774,9 @@ async function handleUploadAttachments(args: {
       const attachment = await uploadFile(filePath, {
         expiry: args.expiry,
         tag: args.tag,
+        password: args.password,
+        encrypt: args.encrypt,
+        maxDownloads: args.max_downloads,
       });
       results.push({
         id: attachment.id,
@@ -703,7 +799,7 @@ async function handlePresignUpload(args: {
   content_type?: string;
 }) {
   const config = getConfig();
-  const filename = args.filename;
+  const filename = sanitizeFilename(args.filename);
 
   // Determine content type
   const contentType =
@@ -711,17 +807,17 @@ async function handlePresignUpload(args: {
 
   // Parse expiry (default 1h)
   const expiryStr = args.expiry ?? "1h";
-  const expiryMs = parseExpiry(expiryStr);
+  const { milliseconds: expiryMs } = parseExpiryStrict(expiryStr);
   if (expiryMs === null) {
-    throw new Error(`Invalid expiry format: ${expiryStr}`);
+    throw new Error("Presigned upload expiry cannot be never");
   }
+  validateS3Config(config);
 
   const expirySeconds = Math.floor(expiryMs / 1000);
 
   // Generate ID and S3 key
   const id = `att_${nanoid(11)}`;
-  const datePrefix = format(new Date(), "yyyy-MM-dd");
-  const s3Key = `attachments/${datePrefix}/${id}/${filename}`;
+  const s3Key = createObjectKey(id, filename);
 
   // Generate presigned PUT URL
   const s3 = new S3Client(config.s3);
@@ -743,6 +839,8 @@ async function handlePresignUpload(args: {
       tag: null,
       expiresAt,
       createdAt: now,
+      storageBackend: "s3",
+      status: "pending",
     });
   } finally {
     db.close();
@@ -752,22 +850,103 @@ async function handlePresignUpload(args: {
     upload_url: uploadUrl,
     id,
     expires_at: expiresAt,
+    finalize_tool: "complete_presigned_upload",
   };
+}
+
+async function handleCompletePresignedUpload(args: {
+  id: string;
+  expiry?: string;
+  password?: string;
+  max_downloads?: number;
+  link_type?: "presigned" | "server";
+}) {
+  const config = getConfig();
+  validateS3Config(config);
+
+  const db = new AttachmentsDB();
+  const attachment = db.findById(args.id);
+  if (!attachment) {
+    db.close();
+    throw new Error(`Pending attachment not found: ${args.id}`);
+  }
+  if (attachment.status !== "pending") {
+    db.close();
+    throw new Error(`Attachment upload is already complete: ${args.id}`);
+  }
+
+  try {
+    const s3 = new S3Client(config.s3);
+    const info = await s3.head(attachment.s3Key);
+    const size = info.contentLength ?? attachment.size;
+    if (size > config.storage.maxSizeBytes) {
+      try {
+        await s3.delete(attachment.s3Key);
+      } catch {
+        // Best-effort cleanup; the pending DB row is removed either way.
+      }
+      db.delete(args.id);
+      throw new Error(`File too large. Maximum size is ${config.storage.maxSizeBytes} bytes.`);
+    }
+
+    const { milliseconds: expiryMs } = parseExpiryStrict(args.expiry ?? config.defaults.expiry);
+    const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
+    const maxDownloads = typeof args.max_downloads === "number" && args.max_downloads > 0
+      ? Math.floor(args.max_downloads)
+      : null;
+    const linkType = args.link_type ?? config.defaults.linkType;
+    const mustUseServerLink = !!args.password || maxDownloads !== null || linkType !== "presigned";
+
+    let link: string;
+    if (!mustUseServerLink && (attachment.storageBackend ?? "s3") === "s3") {
+      link = await generatePresignedLink(s3, attachment.s3Key, expiryMs);
+    } else {
+      const { token } = db.createShareLink({
+        attachmentId: attachment.id,
+        expiresAt,
+        password: args.password,
+        maxUses: maxDownloads,
+      });
+      link = generateShareLink(token, getPublicBaseUrl(config), config.server.publicPath);
+    }
+
+    db.markReady({
+      id: attachment.id,
+      size,
+      contentType: info.contentType ?? attachment.contentType,
+      link,
+      expiresAt,
+    });
+
+    return {
+      id: attachment.id,
+      filename: attachment.filename,
+      size,
+      link,
+      expires_at: expiresAt,
+    };
+  } finally {
+    db.close();
+  }
 }
 
 function handleConfigureS3(args: {
   bucket: string;
   region: string;
-  access_key: string;
-  secret_key: string;
+  access_key?: string;
+  secret_key?: string;
   base_url?: string;
 }) {
+  if (!!args.access_key !== !!args.secret_key) {
+    throw new Error("access_key and secret_key must be provided together, or both omitted for default credential-chain auth");
+  }
   setConfig({
     s3: {
       bucket: args.bucket,
       region: args.region,
-      accessKeyId: args.access_key,
-      secretAccessKey: args.secret_key,
+      ...(args.access_key && args.secret_key
+        ? { accessKeyId: args.access_key, secretAccessKey: args.secret_key }
+        : {}),
       ...(args.base_url !== undefined ? { endpoint: args.base_url } : {}),
     },
   });
@@ -1030,6 +1209,15 @@ function handleSearchTools(args: { query: string }) {
   return matches.join("\n");
 }
 
+function readStorageTables(args: Record<string, unknown>): string[] | undefined {
+  return Array.isArray(args["tables"]) ? args["tables"].map(String) : undefined;
+}
+
+function readStorageSyncOptions(args: Record<string, unknown>): { tables?: string[] } | undefined {
+  const tables = readStorageTables(args);
+  return tables ? { tables } : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Server bootstrap
 // ---------------------------------------------------------------------------
@@ -1100,6 +1288,11 @@ export function buildServer(): Server {
             args as Parameters<typeof handlePresignUpload>[0]
           );
           break;
+        case "complete_presigned_upload":
+          result = await handleCompletePresignedUpload(
+            args as Parameters<typeof handleCompletePresignedUpload>[0]
+          );
+          break;
         case "describe_tools":
           result = handleDescribeTools(
             args as Parameters<typeof handleDescribeTools>[0]
@@ -1166,6 +1359,22 @@ export function buildServer(): Server {
           result = [...agentRegistry.values()];
           break;
         }
+        case "storage_status": {
+          result = getStorageStatus();
+          break;
+        }
+        case "storage_push": {
+          result = await storagePush(readStorageSyncOptions(args));
+          break;
+        }
+        case "storage_pull": {
+          result = await storagePull(readStorageSyncOptions(args));
+          break;
+        }
+        case "storage_sync": {
+          result = await storageSync(readStorageSyncOptions(args));
+          break;
+        }
         case "send_feedback": {
           const fa = args as { message: string; email?: string; category?: string };
           const fdb = new AttachmentsDB();
@@ -1197,12 +1406,6 @@ export function buildServer(): Server {
       };
     }
   });
-
-  try {
-    registerCloudTools(server as any, "attachments");
-  } catch {
-    // Cloud tools not compatible with low-level Server — skip
-  }
 
   return server;
 }

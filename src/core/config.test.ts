@@ -44,8 +44,10 @@ describe("getConfig", () => {
     expect(cfg.s3.secretAccessKey).toBe("");
     expect(cfg.server.port).toBe(3459);
     expect(cfg.server.baseUrl).toBe("http://localhost:3459");
+    expect(cfg.server.publicPath).toBe("/a");
+    expect(cfg.storage.maxSizeBytes).toBe(10 * 1024 * 1024 * 1024);
     expect(cfg.defaults.expiry).toBe("7d");
-    expect(cfg.defaults.linkType).toBe("presigned");
+    expect(cfg.defaults.linkType).toBe("server");
   });
 
   it("merges saved config over defaults", () => {
@@ -120,8 +122,18 @@ describe("setConfig", () => {
         secretAccessKey: "secret",
         endpoint: "https://ep.example.com",
       },
-      server: { port: 4000, baseUrl: "https://attachments.example.com" },
+      storage: { backend: "auto", localDir: "~/.hasna/attachments/objects", maxSizeBytes: 10 * 1024 * 1024 * 1024 },
+      server: { port: 4000, host: "localhost", baseUrl: "https://attachments.example.com", publicPath: "/a" },
       defaults: { expiry: "30d", linkType: "server" },
+      client: {
+        mode: "local",
+        apiBaseUrl: "",
+        apiToken: "",
+        apiTokenEnv: "ATTACHMENTS_API_TOKEN",
+        preferInternal: false,
+      },
+      domains: [],
+      deployment: {},
     };
     setConfig(full);
     const cfg = getConfig();
@@ -139,6 +151,11 @@ describe("validateS3Config", () => {
   it("throws listing the specific missing field(s)", () => {
     setConfig({ s3: { bucket: "b", region: "r", accessKeyId: "id" } });
     expect(() => validateS3Config()).toThrow(/secretAccessKey/);
+  });
+
+  it("accepts bucket and region without static keys for IAM role credentials", () => {
+    setConfig({ s3: { bucket: "b", region: "r" } });
+    expect(() => validateS3Config()).not.toThrow();
   });
 
   it("throws with multiple missing fields", () => {

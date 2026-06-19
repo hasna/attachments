@@ -10,13 +10,51 @@ export interface AttachmentsConfig {
     secretAccessKey: string;
     endpoint?: string;
   };
+  storage: {
+    backend: "auto" | "local" | "s3";
+    localDir: string;
+    maxSizeBytes: number;
+  };
   server: {
     port: number;
+    host: string;
     baseUrl: string;
+    publicPath: string;
   };
   defaults: {
     expiry: string;
     linkType: "presigned" | "server";
+  };
+  client: {
+    mode: "local" | "cloud";
+    apiBaseUrl: string;
+    apiToken: string;
+    apiTokenEnv: string;
+    internalBaseUrl?: string;
+    internalMachineId?: string;
+    preferInternal: boolean;
+  };
+  domains: Array<{
+    hostname: string;
+    baseUrl?: string;
+    pathPrefix?: string;
+    primary?: boolean;
+  }>;
+  deployment: {
+    publicHostname?: string;
+    provider?: "manual" | "cloudflare" | "opendomains" | "external";
+    managedBy?: "manual" | "opendomains" | "external";
+    dns?: {
+      zone?: string;
+      recordType?: "A" | "AAAA" | "CNAME";
+      name?: string;
+      target?: string;
+      proxied?: boolean;
+    };
+    routing?: {
+      attachmentsOrigin?: string;
+      fallbackOrigin?: string;
+    };
   };
 }
 
@@ -31,14 +69,30 @@ const DEFAULT_CONFIG: AttachmentsConfig = {
     accessKeyId: "",
     secretAccessKey: "",
   },
+  storage: {
+    backend: "auto",
+    localDir: "~/.hasna/attachments/objects",
+    maxSizeBytes: 10 * 1024 * 1024 * 1024,
+  },
   server: {
     port: 3459,
+    host: "localhost",
     baseUrl: "http://localhost:3459",
+    publicPath: "/a",
   },
   defaults: {
     expiry: "7d",
-    linkType: "presigned",
+    linkType: "server",
   },
+  client: {
+    mode: "local",
+    apiBaseUrl: "",
+    apiToken: "",
+    apiTokenEnv: "ATTACHMENTS_API_TOKEN",
+    preferInternal: false,
+  },
+  domains: [],
+  deployment: {},
 };
 
 function resolveConfigPath(): string {
@@ -118,7 +172,11 @@ function saveRawConfig(config: DeepPartial<AttachmentsConfig>): void {
 
 export function getConfig(): AttachmentsConfig {
   const saved = loadRawConfig();
-  return deepMerge(DEFAULT_CONFIG, saved);
+  return normalizeConfig(saved);
+}
+
+export function normalizeConfig(config: DeepPartial<AttachmentsConfig>): AttachmentsConfig {
+  return deepMerge(DEFAULT_CONFIG, config);
 }
 
 export function setConfig(partial: DeepPartial<AttachmentsConfig>): void {
@@ -132,14 +190,89 @@ export function validateS3Config(config?: AttachmentsConfig): void {
   const missing: string[] = [];
   if (!cfg.s3.bucket) missing.push("bucket");
   if (!cfg.s3.region) missing.push("region");
-  if (!cfg.s3.accessKeyId) missing.push("accessKeyId");
-  if (!cfg.s3.secretAccessKey) missing.push("secretAccessKey");
+  if (!!cfg.s3.accessKeyId !== !!cfg.s3.secretAccessKey) {
+    if (!cfg.s3.accessKeyId) missing.push("accessKeyId");
+    if (!cfg.s3.secretAccessKey) missing.push("secretAccessKey");
+  }
   if (missing.length > 0) {
     throw new Error(
       `S3 configuration incomplete. Missing: ${missing.join(", ")}. ` +
-        `Run 'attachments config set s3.${missing[0]} <value>' to configure.`
+        `Run 'attachments config set --bucket <bucket> --region <region>' and optionally static access keys.`
     );
   }
+}
+
+export function hasS3Config(config?: AttachmentsConfig): boolean {
+  const cfg = config ?? getConfig();
+  return !!(cfg.s3.bucket && cfg.s3.region && (!!cfg.s3.accessKeyId === !!cfg.s3.secretAccessKey));
+}
+
+export function resolveStorageBackend(config?: AttachmentsConfig): "local" | "s3" {
+  const cfg = config ?? getConfig();
+  if (cfg.storage.backend === "local") return "local";
+  if (cfg.storage.backend === "s3") {
+    validateS3Config(cfg);
+    return "s3";
+  }
+  return hasS3Config(cfg) ? "s3" : "local";
+}
+
+export function validateStorageConfig(config?: AttachmentsConfig): void {
+  const cfg = config ?? getConfig();
+  if (cfg.storage.maxSizeBytes <= 0 || !Number.isFinite(cfg.storage.maxSizeBytes)) {
+    throw new Error("storage.maxSizeBytes must be a positive number");
+  }
+  if (resolveStorageBackend(cfg) === "s3") {
+    validateS3Config(cfg);
+  }
+}
+
+export function normalizePublicPath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) return "/a";
+  const withSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return withSlash.replace(/\/+$/, "") || "/a";
+}
+
+export function getPublicBaseUrl(config?: AttachmentsConfig): string {
+  const cfg = config ?? getConfig();
+  const primaryDomain = cfg.domains.find((domain) => domain.primary) ?? cfg.domains[0];
+  return primaryDomain?.baseUrl ?? cfg.server.baseUrl;
+}
+
+export function getClientApiBaseUrl(config?: AttachmentsConfig): string | null {
+  const cfg = config ?? getConfig();
+  const baseUrl = cfg.client.apiBaseUrl || process.env["ATTACHMENTS_API_URL"] || process.env["HASNA_ATTACHMENTS_API_URL"] || "";
+  return baseUrl ? baseUrl.replace(/\/+$/, "") : null;
+}
+
+export function getClientApiToken(config?: AttachmentsConfig): string | null {
+  const cfg = config ?? getConfig();
+  const envName = cfg.client.apiTokenEnv || "ATTACHMENTS_API_TOKEN";
+  const token =
+    process.env[envName] ||
+    process.env["ATTACHMENTS_API_TOKEN"] ||
+    process.env["HASNA_ATTACHMENTS_API_TOKEN"] ||
+    cfg.client.apiToken ||
+    "";
+  return token || null;
+}
+
+export function isCloudClientMode(config?: AttachmentsConfig): boolean {
+  const cfg = config ?? getConfig();
+  const envMode = process.env["ATTACHMENTS_MODE"] || process.env["ATTACHMENTS_CLIENT_MODE"];
+  const mode = (envMode || cfg.client.mode || "local").toLowerCase();
+  return mode === "cloud" || mode === "api" || mode === "remote";
+}
+
+export function getInternalBaseUrl(config?: AttachmentsConfig): string | null {
+  const cfg = config ?? getConfig();
+  const baseUrl =
+    cfg.client.internalBaseUrl ||
+    process.env["ATTACHMENTS_INTERNAL_URL"] ||
+    process.env["HASNA_ATTACHMENTS_INTERNAL_URL"] ||
+    "";
+  return baseUrl ? baseUrl.replace(/\/+$/, "") : null;
 }
 
 /**
@@ -169,4 +302,14 @@ export function parseExpiry(expiry: string): number | null {
     default:
       return null;
   }
+}
+
+export function parseExpiryStrict(expiry: string): { milliseconds: number | null; never: boolean } {
+  const trimmed = expiry.trim();
+  if (trimmed === "never") return { milliseconds: null, never: true };
+  const milliseconds = parseExpiry(trimmed);
+  if (milliseconds === null) {
+    throw new Error(`Invalid expiry format: ${expiry}. Use values like 30m, 24h, 7d, or never.`);
+  }
+  return { milliseconds, never: false };
 }

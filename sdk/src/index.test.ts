@@ -89,6 +89,15 @@ describe("AttachmentsClient", () => {
       expect(calledUrl).toStartWith("http://localhost:3457/api/");
       expect(calledUrl).not.toContain("//api");
     });
+
+    it("sends bearer auth when a token is configured", async () => {
+      const c = new AttachmentsClient({ serverUrl: BASE_URL, token: "test-token" });
+      mockFetch(200, rawAttachment);
+      await c.get("abc123");
+      // @ts-expect-error
+      const [, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(init.headers.authorization).toBe("Bearer test-token");
+    });
   });
 
   // ── list ─────────────────────────────────────────────────────────────────
@@ -225,6 +234,22 @@ describe("AttachmentsClient", () => {
       expect(JSON.parse(init.body)).toEqual({ expiry: "7d" });
     });
 
+    it("sends protected link options in the request body", async () => {
+      mockFetch(200, { link: "https://cdn.example.com/new.jpg", expires_at: 99999 });
+      await client.regenerateLink("abc123", {
+        password: "secret",
+        maxDownloads: 1,
+        linkType: "server",
+      });
+      // @ts-expect-error
+      const [, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(JSON.parse(init.body)).toEqual({
+        password: "secret",
+        max_downloads: 1,
+        link_type: "server",
+      });
+    });
+
     it("throws on non-200 response", async () => {
       mockFetch(404, { error: "Not found" });
       await expect(client.regenerateLink("bad")).rejects.toThrow("Not found");
@@ -234,37 +259,50 @@ describe("AttachmentsClient", () => {
   // ── upload ───────────────────────────────────────────────────────────────
 
   describe("upload()", () => {
-    it("calls POST /api/attachments with FormData when given a Blob", async () => {
+    it("calls PUT /api/attachments with raw bytes when given a Blob", async () => {
       mockFetch(201, rawAttachment);
       const blob = new Blob(["hello"], { type: "text/plain" });
       const result = await client.upload(blob);
       // @ts-expect-error
       const [url, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
-      expect(url).toBe(`${BASE_URL}/api/attachments`);
-      expect(init.method).toBe("POST");
-      expect(init.body).toBeInstanceOf(FormData);
+      expect(url.toString()).toBe(`${BASE_URL}/api/attachments?filename=upload`);
+      expect(init.method).toBe("PUT");
+      expect(init.headers["content-type"]).toStartWith("text/plain");
+      expect(init.body).toBe(blob);
       expect(result).toEqual(expectedAttachment);
     });
 
-    it("calls POST /api/attachments with FormData when given a File", async () => {
+    it("calls PUT /api/attachments with the File name", async () => {
       mockFetch(201, rawAttachment);
       const file = new File(["content"], "test.txt", { type: "text/plain" });
       await client.upload(file);
       // @ts-expect-error
-      const [, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
-      expect(init.method).toBe("POST");
-      expect(init.body).toBeInstanceOf(FormData);
+      const [url, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(url.searchParams.get("filename")).toBe("test.txt");
+      expect(init.method).toBe("PUT");
+      expect(init.body).toBe(file);
     });
 
-    it("appends expiry and tag to FormData when provided (Blob)", async () => {
+    it("appends non-secret options to the query and password to headers", async () => {
       mockFetch(201, rawAttachment);
       const blob = new Blob(["hi"]);
-      await client.upload(blob, { expiry: "24h", tag: "test-tag" });
+      await client.upload(blob, {
+        expiry: "24h",
+        tag: "test-tag",
+        password: "secret",
+        encrypt: true,
+        maxDownloads: 1,
+        linkType: "server",
+      });
       // @ts-expect-error
-      const [, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
-      const form = init.body as FormData;
-      expect(form.get("expiry")).toBe("24h");
-      expect(form.get("tag")).toBe("test-tag");
+      const [url, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(url.searchParams.get("expiry")).toBe("24h");
+      expect(url.searchParams.get("tag")).toBe("test-tag");
+      expect(url.searchParams.get("encrypt")).toBe("1");
+      expect(url.searchParams.get("max_downloads")).toBe("1");
+      expect(url.searchParams.get("link_type")).toBe("server");
+      expect(url.toString()).not.toContain("password=");
+      expect(init.headers["x-attachments-password"]).toBe("secret");
     });
 
     it("throws on non-201 response", async () => {
@@ -282,9 +320,9 @@ describe("AttachmentsClient", () => {
       const result = await client.uploadBuffer(buf, "hello.txt");
       // @ts-expect-error
       const [url, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
-      expect(url).toBe(`${BASE_URL}/api/attachments`);
-      expect(init.method).toBe("POST");
-      expect(init.body).toBeInstanceOf(FormData);
+      expect(url.toString()).toBe(`${BASE_URL}/api/attachments?filename=hello.txt`);
+      expect(init.method).toBe("PUT");
+      expect(init.body).toBe(buf);
       expect(result).toEqual(expectedAttachment);
     });
 
@@ -294,33 +332,29 @@ describe("AttachmentsClient", () => {
       const result = await client.uploadBuffer(bytes, "bytes.bin");
       // @ts-expect-error
       const [url, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
-      expect(url).toBe(`${BASE_URL}/api/attachments`);
-      expect(init.method).toBe("POST");
-      expect(init.body).toBeInstanceOf(FormData);
+      expect(url.searchParams.get("filename")).toBe("bytes.bin");
+      expect(init.method).toBe("PUT");
+      expect(init.body).toBe(bytes);
       expect(result).toEqual(expectedAttachment);
     });
 
-    it("includes the correct filename in FormData", async () => {
+    it("includes the correct filename in the query string", async () => {
       mockFetch(201, rawAttachment);
       const buf = Buffer.from("data");
       await client.uploadBuffer(buf, "report.pdf");
       // @ts-expect-error
-      const [, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
-      const form = init.body as FormData;
-      const file = form.get("file") as File;
-      expect(file).toBeInstanceOf(Blob);
-      expect(file.name).toBe("report.pdf");
+      const [url] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(url.searchParams.get("filename")).toBe("report.pdf");
     });
 
-    it("appends expiry and tag to FormData when provided", async () => {
+    it("appends expiry and tag to the query string", async () => {
       mockFetch(201, rawAttachment);
       const buf = Buffer.from("tagged");
       await client.uploadBuffer(buf, "tagged.txt", { expiry: "7d", tag: "my-tag" });
       // @ts-expect-error
-      const [, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
-      const form = init.body as FormData;
-      expect(form.get("expiry")).toBe("7d");
-      expect(form.get("tag")).toBe("my-tag");
+      const [url] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(url.searchParams.get("expiry")).toBe("7d");
+      expect(url.searchParams.get("tag")).toBe("my-tag");
     });
 
     it("throws on non-201 response", async () => {
@@ -368,6 +402,64 @@ describe("AttachmentsClient", () => {
       // @ts-expect-error
       const [url] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
       expect(url).toBe("https://cdn.example.com/download/123");
+
+      const { unlinkSync } = await import("fs");
+      unlinkSync(outPath);
+    });
+
+    it("adds auth and password headers for protected API downloads", async () => {
+      client = new AttachmentsClient({ serverUrl: BASE_URL, token: "test-token" });
+      const buf = Buffer.from("protected data");
+      mockFetchBinary(200, buf, {
+        "content-disposition": 'attachment; filename="protected.txt"',
+      });
+
+      const outPath = `/tmp/sdk-test-download-protected-${Date.now()}.txt`;
+      await client.download("abc123", outPath, { password: "secret" });
+
+      // @ts-expect-error
+      const [, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(init.headers.authorization).toBe("Bearer test-token");
+      expect(init.headers["x-attachments-password"]).toBe("secret");
+
+      const { unlinkSync } = await import("fs");
+      unlinkSync(outPath);
+    });
+
+    it("turns legacy share page URLs into download URLs", async () => {
+      const buf = Buffer.from("share data");
+      mockFetchBinary(200, buf, {
+        "content-disposition": 'attachment; filename="share.txt"',
+      });
+
+      const outPath = `/tmp/sdk-test-download-share-${Date.now()}.txt`;
+      await client.download("https://has.na/a/token123", outPath);
+
+      // @ts-expect-error
+      const [url, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(url).toBe("https://has.na/a/token123/download");
+      expect(init.headers["x-attachments-download"]).toBe("1");
+
+      const { unlinkSync } = await import("fs");
+      unlinkSync(outPath);
+    });
+
+    it("posts password form data for protected legacy share URLs", async () => {
+      const buf = Buffer.from("share data");
+      mockFetchBinary(200, buf, {
+        "content-disposition": 'attachment; filename="share.txt"',
+      });
+
+      const outPath = `/tmp/sdk-test-download-share-password-${Date.now()}.txt`;
+      await client.download("https://has.na/a/token123", outPath, { password: "secret" });
+
+      // @ts-expect-error
+      const [url, init] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(url).toBe("https://has.na/a/token123/download");
+      expect(init.method).toBe("POST");
+      expect(init.headers["content-type"]).toBe("application/x-www-form-urlencoded");
+      expect(init.headers["x-attachments-download"]).toBe("1");
+      expect(init.body.toString()).toBe("password=secret");
 
       const { unlinkSync } = await import("fs");
       unlinkSync(outPath);

@@ -2,8 +2,9 @@ import { describe, it, expect, mock, beforeAll, beforeEach, afterAll } from "bun
 import { tmpdir } from "os";
 import { join } from "path";
 import { mkdirSync, rmSync } from "fs";
-import type { Attachment } from "../core/db";
+import type { Attachment, ShareLink } from "../core/db";
 import { setConfigPath, setConfig } from "../core/config";
+import { buildPasswordHash } from "../core/security";
 
 // --- Mocks (must be set up before importing the module under test) ---
 
@@ -18,9 +19,23 @@ const mockUploadFile = mock(async (_filePath: string, _opts?: unknown) => ({
   expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
   createdAt: Date.now(),
 } as Attachment));
+const mockUploadStreamAttachment = mock(async (_stream: unknown, filename: string, _contentType?: string, opts?: { size?: number }) => ({
+  id: "att_stream0001",
+  filename,
+  s3Key: "attachments/2025-01-01/att_stream0001/test.txt",
+  bucket: "test-bucket",
+  size: opts?.size ?? 13,
+  contentType: "text/plain",
+  link: "http://localhost:3459/a/share_stream",
+  expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+  createdAt: Date.now(),
+  storageBackend: "s3",
+  status: "ready",
+} as Attachment));
 
 mock.module("../core/upload", () => ({
   uploadFile: mockUploadFile,
+  uploadStreamAttachment: mockUploadStreamAttachment,
 }));
 
 const mockAttachment: Attachment = {
@@ -40,6 +55,24 @@ const mockDbFindAll = mock((_opts?: unknown): Attachment[] => [mockAttachment]);
 const mockDbUpdateLink = mock((_id: string, _link: string, _expiresAt?: number | null) => {});
 const mockDbDelete = mock((_id: string) => {});
 const mockDbClose = mock(() => {});
+const mockDbCreateShareLink = mock((_input: unknown) => ({ shareLink: {}, token: "share_testtoken" }));
+const mockDbFindShareLinksByAttachmentId = mock((_id: string) => []);
+const mockDbMarkReady = mock((_input: unknown) => {});
+const mockShareLink: ShareLink = {
+  id: "share_link_1",
+  attachmentId: "att_test00001",
+  tokenHash: "token_hash",
+  expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+  createdAt: 1700000000000,
+  revokedAt: null,
+  passwordHash: null,
+  maxUses: null,
+  usedCount: 0,
+};
+const mockDbFindShareLinkByToken = mock((_token: string): ShareLink | null => ({ ...mockShareLink }));
+const mockDbConsumeShareLink = mock((_id: string) => true);
+const mockDbReleaseShareLink = mock((_id: string) => true);
+const mockDbIncrementDownloads = mock((_id: string) => {});
 
 const mockDbInsert = mock((_att: unknown) => {});
 
@@ -51,18 +84,35 @@ mock.module("../core/db", () => ({
     delete = mockDbDelete;
     close = mockDbClose;
     insert = mockDbInsert;
+    createShareLink = mockDbCreateShareLink;
+    findShareLinksByAttachmentId = mockDbFindShareLinksByAttachmentId;
+    markReady = mockDbMarkReady;
+    findShareLinkByToken = mockDbFindShareLinkByToken;
+    consumeShareLink = mockDbConsumeShareLink;
+    releaseShareLink = mockDbReleaseShareLink;
+    incrementDownloads = mockDbIncrementDownloads;
   },
 }));
 
 const mockS3Delete = mock(async (_key: string) => {});
 const mockS3Presign = mock(async (_key: string, _expiresIn: number) => "https://s3.amazonaws.com/test-bucket/test.txt?sig=regenerated");
 const mockS3PresignPut = mock(async (_key: string, _contentType: string, _expiresIn: number) => "https://s3.amazonaws.com/test-bucket/upload?sig=put123");
+const mockS3CreateMultipartUpload = mock(async (_key: string, _contentType: string) => "upload_test123");
+const mockS3PresignUploadPart = mock(async (_key: string, _uploadId: string, partNumber: number, _expiresIn: number) => `https://s3.amazonaws.com/test-bucket/part-${partNumber}?sig=part`);
+const mockS3CompleteMultipartUpload = mock(async (_key: string, _uploadId: string, _parts: unknown) => {});
+const mockS3AbortMultipart = mock(async (_key: string, _uploadId: string) => {});
+const mockS3Head = mock(async (_key: string) => ({ contentLength: 13, contentType: "text/plain" }));
 
 mock.module("../core/s3", () => ({
   S3Client: class MockS3Client {
     delete = mockS3Delete;
     presign = mockS3Presign;
     presignPut = mockS3PresignPut;
+    createMultipartUpload = mockS3CreateMultipartUpload;
+    presignUploadPart = mockS3PresignUploadPart;
+    completeMultipartUpload = mockS3CompleteMultipartUpload;
+    abortMultipart = mockS3AbortMultipart;
+    head = mockS3Head;
   },
 }));
 
@@ -73,9 +123,16 @@ const mockConfig = {
     accessKeyId: "AKIATEST",
     secretAccessKey: "secret",
   },
+  storage: {
+    backend: "s3" as const,
+    localDir: "~/.hasna/attachments/test-objects",
+    maxSizeBytes: 10 * 1024 * 1024 * 1024,
+  },
   server: {
     port: 3459,
+    host: "localhost",
     baseUrl: "http://localhost:3459",
+    publicPath: "/a",
   },
   defaults: {
     expiry: "7d",
@@ -97,12 +154,13 @@ const mockGeneratePresignedLink = mock(
     "https://s3.amazonaws.com/test-bucket/test.txt?sig=new"
 );
 const mockGenerateServerLink = mock(
-  (id: string, baseUrl: string) => `${baseUrl}/d/${id}`
+  (id: string, baseUrl: string) => `${baseUrl}/a/${id}`
 );
 
 mock.module("../core/links", () => ({
   generatePresignedLink: mockGeneratePresignedLink,
   generateServerLink: mockGenerateServerLink,
+  generateShareLink: (token: string, baseUrl: string) => `${baseUrl}/a/${token}`,
   getLinkType: (_config: unknown) => "presigned" as const,
 }));
 
@@ -110,9 +168,25 @@ const mockStreamAttachment = mock(async (_id: string) => ({
   buffer: Buffer.from("file contents"),
   attachment: mockAttachment,
 }));
+function testBodyStream(): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("file contents"));
+      controller.close();
+    },
+  });
+}
+const mockOpenAttachmentStream = mock(async () => ({
+  body: testBodyStream(),
+  contentLength: 13,
+  contentType: "text/plain",
+  status: 200,
+}));
 
 mock.module("../core/download", () => ({
   streamAttachment: mockStreamAttachment,
+  openAttachmentStream: mockOpenAttachmentStream,
+  isExpired: (att: Attachment) => att.expiresAt !== null && att.expiresAt <= Date.now(),
 }));
 
 // Import after mocks
@@ -143,20 +217,60 @@ describe("REST API server", () => {
   let app: ReturnType<typeof createApp>;
 
   beforeEach(() => {
+    delete process.env.ATTACHMENTS_API_TOKEN;
+    delete process.env.HASNA_ATTACHMENTS_API_TOKEN;
+    try { rmSync(join(testConfigDir, "config.json"), { force: true }); } catch {}
+    setConfig(mockConfig);
     app = createApp();
     mockUploadFile.mockReset();
     mockUploadFile.mockImplementation(async () => ({ ...mockAttachment }));
+    mockUploadStreamAttachment.mockReset();
+    mockUploadStreamAttachment.mockImplementation(async (_stream: unknown, filename: string, _contentType?: string, opts?: { size?: number }) => ({
+      id: "att_stream0001",
+      filename,
+      s3Key: "attachments/2025-01-01/att_stream0001/test.txt",
+      bucket: "test-bucket",
+      size: opts?.size ?? 13,
+      contentType: "text/plain",
+      link: "http://localhost:3459/a/share_stream",
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      createdAt: Date.now(),
+      storageBackend: "s3",
+      status: "ready",
+    } as Attachment));
     mockDbFindById.mockReset();
     mockDbFindById.mockImplementation(() => ({ ...mockAttachment }));
     mockDbFindAll.mockReset();
     mockDbFindAll.mockImplementation(() => [{ ...mockAttachment }]);
     mockDbUpdateLink.mockReset();
+    mockDbMarkReady.mockReset();
+    mockDbCreateShareLink.mockReset();
+    mockDbCreateShareLink.mockImplementation(() => ({ shareLink: {}, token: "share_testtoken" }));
+    mockDbFindShareLinksByAttachmentId.mockReset();
+    mockDbFindShareLinksByAttachmentId.mockImplementation(() => []);
+    mockDbFindShareLinkByToken.mockReset();
+    mockDbFindShareLinkByToken.mockImplementation(() => ({ ...mockShareLink }));
+    mockDbConsumeShareLink.mockReset();
+    mockDbConsumeShareLink.mockImplementation(() => true);
+    mockDbReleaseShareLink.mockReset();
+    mockDbReleaseShareLink.mockImplementation(() => true);
+    mockDbIncrementDownloads.mockReset();
     mockDbDelete.mockReset();
     mockDbClose.mockReset();
     mockS3Delete.mockReset();
     mockS3Delete.mockImplementation(async () => {});
     mockS3PresignPut.mockReset();
     mockS3PresignPut.mockImplementation(async () => "https://s3.amazonaws.com/test-bucket/upload?sig=put123");
+    mockS3CreateMultipartUpload.mockReset();
+    mockS3CreateMultipartUpload.mockImplementation(async () => "upload_test123");
+    mockS3PresignUploadPart.mockReset();
+    mockS3PresignUploadPart.mockImplementation(async (_key: string, _uploadId: string, partNumber: number) => `https://s3.amazonaws.com/test-bucket/part-${partNumber}?sig=part`);
+    mockS3CompleteMultipartUpload.mockReset();
+    mockS3CompleteMultipartUpload.mockImplementation(async () => {});
+    mockS3AbortMultipart.mockReset();
+    mockS3AbortMultipart.mockImplementation(async () => {});
+    mockS3Head.mockReset();
+    mockS3Head.mockImplementation(async () => ({ contentLength: 13, contentType: "text/plain" }));
     mockDbInsert.mockReset();
     mockGeneratePresignedLink.mockReset();
     mockGeneratePresignedLink.mockImplementation(
@@ -166,6 +280,13 @@ describe("REST API server", () => {
     mockStreamAttachment.mockImplementation(async () => ({
       buffer: Buffer.from("file contents"),
       attachment: mockAttachment,
+    }));
+    mockOpenAttachmentStream.mockReset();
+    mockOpenAttachmentStream.mockImplementation(async () => ({
+      body: testBodyStream(),
+      contentLength: 13,
+      contentType: "text/plain",
+      status: 200,
     }));
   });
 
@@ -189,6 +310,39 @@ describe("REST API server", () => {
       expect(typeof body.timestamp).toBe("string");
       expect(new Date(body.timestamp).getTime()).toBeGreaterThan(0);
     });
+
+    it("sets hardened browser security headers", async () => {
+      const res = await app.request("/api/health");
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(res.headers.get("x-frame-options")).toBe("DENY");
+      expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(res.headers.get("permissions-policy")).toContain("camera=()");
+      expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    });
+  });
+
+  describe("API auth", () => {
+    it("keeps health public when ATTACHMENTS_API_TOKEN is configured", async () => {
+      process.env.ATTACHMENTS_API_TOKEN = "secret-token";
+      const res = await app.request("/api/health");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.api_auth_required).toBe(true);
+    });
+
+    it("rejects operational API requests without the configured token", async () => {
+      process.env.ATTACHMENTS_API_TOKEN = "secret-token";
+      const res = await app.request("/api/attachments");
+      expect(res.status).toBe(401);
+    });
+
+    it("accepts bearer tokens for operational API requests", async () => {
+      process.env.ATTACHMENTS_API_TOKEN = "secret-token";
+      const res = await app.request("/api/attachments", {
+        headers: { authorization: "Bearer secret-token" },
+      });
+      expect(res.status).toBe(200);
+    });
   });
 
   // --- POST /api/attachments ---
@@ -203,10 +357,10 @@ describe("REST API server", () => {
 
       expect(res.status).toBe(201);
       const body = await res.json();
-      expect(body.id).toBe("att_test00001");
+      expect(body.id).toBe("att_stream0001");
       expect(body.filename).toBe("test.txt");
       expect(body.size).toBe(11);
-      expect(body.link).toContain("amazonaws.com");
+      expect(body.link).toContain("/a/");
       expect(body).toHaveProperty("expires_at");
       expect(body).toHaveProperty("created_at");
     });
@@ -231,8 +385,8 @@ describe("REST API server", () => {
         body: fd,
       });
 
-      expect(mockUploadFile).toHaveBeenCalledTimes(1);
-      const [, opts] = mockUploadFile.mock.calls[0] as [string, { expiry?: string }];
+      expect(mockUploadStreamAttachment).toHaveBeenCalledTimes(1);
+      const [, , , opts] = mockUploadStreamAttachment.mock.calls[0] as [unknown, string, string, { expiry?: string }];
       expect(opts?.expiry).toBe("24h");
     });
 
@@ -243,8 +397,8 @@ describe("REST API server", () => {
         body: fd,
       });
 
-      expect(mockUploadFile).toHaveBeenCalledTimes(1);
-      const [, opts] = mockUploadFile.mock.calls[0] as [string, { tag?: string }];
+      expect(mockUploadStreamAttachment).toHaveBeenCalledTimes(1);
+      const [, , , opts] = mockUploadStreamAttachment.mock.calls[0] as [unknown, string, string, { tag?: string }];
       expect(opts?.tag).toBe("important");
     });
 
@@ -264,7 +418,7 @@ describe("REST API server", () => {
     });
 
     it("returns 500 when uploadFile throws", async () => {
-      mockUploadFile.mockImplementation(async () => {
+      mockUploadStreamAttachment.mockImplementation(async () => {
         throw new Error("S3 upload failed");
       });
 
@@ -277,6 +431,43 @@ describe("REST API server", () => {
       expect(res.status).toBe(500);
       const body = await res.json();
       expect(body.error).toContain("S3 upload failed");
+    });
+  });
+
+  // --- PUT /api/attachments ---
+
+  describe("PUT /api/attachments", () => {
+    it("streams the request body through uploadStreamAttachment", async () => {
+      const res = await app.request("/api/attachments?filename=stream.txt&expiry=24h&encrypt=1", {
+        method: "PUT",
+        headers: { "content-type": "text/plain", "content-length": "13", "x-attachments-password": "pw" },
+        body: "file contents",
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.id).toBe("att_stream0001");
+      expect(body.link).toContain("/a/");
+      expect(mockUploadStreamAttachment).toHaveBeenCalledTimes(1);
+      const [, filename, contentType, opts] = mockUploadStreamAttachment.mock.calls[0] as [unknown, string, string, { expiry?: string; password?: string; encrypt?: boolean; size?: number }];
+      expect(filename).toBe("stream.txt");
+      expect(contentType).toBe("text/plain");
+      expect(opts.expiry).toBe("24h");
+      expect(opts.password).toBe("pw");
+      expect(opts.encrypt).toBe(true);
+      expect(opts.size).toBe(13);
+    });
+
+    it("rejects PUT uploads above the configured max by Content-Length", async () => {
+      process.env.ATTACHMENTS_MAX_SIZE = "5";
+      const res = await app.request("/api/attachments?filename=big.txt", {
+        method: "PUT",
+        headers: { "content-type": "text/plain", "content-length": "13" },
+        body: "file contents",
+      });
+      expect(res.status).toBe(413);
+      expect(mockUploadStreamAttachment).not.toHaveBeenCalled();
+      delete process.env.ATTACHMENTS_MAX_SIZE;
     });
   });
 
@@ -400,12 +591,10 @@ describe("REST API server", () => {
   // --- GET /api/attachments/:id/download ---
 
   describe("GET /api/attachments/:id/download", () => {
-    it("redirects to presigned URL when link contains amazonaws.com", async () => {
+    it("streams through the app even when the stored link is presigned", async () => {
       const res = await app.request("/api/attachments/att_test00001/download");
-      // 302 redirect
-      expect(res.status).toBe(302);
-      const location = res.headers.get("location");
-      expect(location).toContain("amazonaws.com");
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-disposition")).toContain("attachment");
     });
 
     it("returns 404 when attachment not found", async () => {
@@ -425,12 +614,12 @@ describe("REST API server", () => {
       expect(res.headers.get("content-disposition")).toContain("attachment");
     });
 
-    it("returns 500 when streamAttachment throws", async () => {
+    it("returns 500 when openAttachmentStream throws", async () => {
       mockDbFindById.mockImplementation(() => ({
         ...mockAttachment,
         link: "http://localhost:3459/d/att_test00001",
       }));
-      mockStreamAttachment.mockImplementation(async () => {
+      mockOpenAttachmentStream.mockImplementation(async () => {
         throw new Error("S3 download failed");
       });
 
@@ -509,13 +698,10 @@ describe("REST API server", () => {
       expect(res.status).toBe(200);
     });
 
-    it("uses generateServerLink when linkType is server", async () => {
+    it("creates a share link when linkType is server", async () => {
       // Temporarily change to server link type using real config
       setConfig({ defaults: { linkType: "server" } });
       mockGenerateServerLink.mockReset();
-      mockGenerateServerLink.mockImplementation(
-        (id: string, baseUrl: string) => `${baseUrl}/d/${id}`
-      );
 
       try {
         const res = await app.request("/api/attachments/att_test00001/link", {
@@ -524,11 +710,86 @@ describe("REST API server", () => {
           body: JSON.stringify({ expiry: "7d" }),
         });
         expect(res.status).toBe(200);
-        expect(mockGenerateServerLink).toHaveBeenCalledTimes(1);
+        expect(mockDbCreateShareLink).toHaveBeenCalledTimes(1);
         expect(mockGeneratePresignedLink).not.toHaveBeenCalled();
       } finally {
         setConfig({ defaults: { linkType: "presigned" } });
       }
+    });
+  });
+
+  // --- POST /api/attachments/multipart ---
+
+  describe("direct multipart upload API", () => {
+    it("creates a pending multipart upload", async () => {
+      const res = await app.request("/api/attachments/multipart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "large.bin", content_type: "application/octet-stream", size: 10 }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.id).toMatch(/^att_/);
+      expect(body.upload_id).toBe("upload_test123");
+      expect(body.part_size).toBe(64 * 1024 * 1024);
+      expect(mockS3CreateMultipartUpload).toHaveBeenCalledTimes(1);
+      expect(mockDbInsert).toHaveBeenCalledTimes(1);
+      const [att] = mockDbInsert.mock.calls[0] as [{ status: string; filename: string }];
+      expect(att.status).toBe("pending");
+      expect(att.filename).toBe("large.bin");
+    });
+
+    it("returns a presigned URL for a multipart part", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+      const res = await app.request("/api/attachments/att_test00001/multipart/part", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id: "upload_test123", part_number: 3 }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.upload_url).toContain("part-3");
+      expect(mockS3PresignUploadPart).toHaveBeenCalledWith(
+        mockAttachment.s3Key,
+        "upload_test123",
+        3,
+        3600
+      );
+    });
+
+    it("completes multipart upload and creates a share link", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+      const res = await app.request("/api/attachments/att_test00001/multipart/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          upload_id: "upload_test123",
+          parts: [{ ETag: "\"abc\"", PartNumber: 1 }],
+          expiry: "24h",
+          password: "pw",
+          max_downloads: 2,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.link).toContain("/a/");
+      expect(mockS3CompleteMultipartUpload).toHaveBeenCalledTimes(1);
+      expect(mockDbCreateShareLink).toHaveBeenCalledWith({
+        attachmentId: "att_test00001",
+        expiresAt: expect.any(Number),
+        password: "pw",
+        maxUses: 2,
+      });
+      expect(mockDbMarkReady).toHaveBeenCalledWith({
+        id: "att_test00001",
+        size: 13,
+        contentType: "text/plain",
+        link: expect.stringContaining("/a/"),
+        expiresAt: expect.any(Number),
+      });
     });
   });
 
@@ -546,7 +807,9 @@ describe("REST API server", () => {
       const body = await res.json();
       expect(body.upload_url).toContain("s3.amazonaws.com");
       expect(body.id).toMatch(/^att_/);
-      expect(body.s3_key).toContain("report.pdf");
+      expect(body.s3_key).toBeUndefined();
+      expect(body.finalize_url).toContain("/presign-upload/complete");
+      expect(body.warning).toContain("Finalize");
       expect(body).toHaveProperty("expires_at");
     });
 
@@ -621,6 +884,70 @@ describe("REST API server", () => {
       const [, , expiresIn] = mockS3PresignPut.mock.calls[0] as [string, string, number];
       expect(expiresIn).toBe(3600);
     });
+
+    it("rejects presigned PUT creation when declared size exceeds the configured max", async () => {
+      const res = await app.request("/api/attachments/presign-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "huge.bin", size: mockConfig.storage.maxSizeBytes + 1 }),
+      });
+
+      expect(res.status).toBe(413);
+      expect(mockS3PresignPut).not.toHaveBeenCalled();
+      expect(mockDbInsert).not.toHaveBeenCalled();
+    });
+
+    it("finalizes a pending presigned upload and creates a server share link", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+      const res = await app.request("/api/attachments/att_test00001/presign-upload/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expiry: "24h", password: "pw", max_downloads: 1 }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.link).toContain("/a/");
+      expect(mockS3Head).toHaveBeenCalledWith(mockAttachment.s3Key);
+      expect(mockDbCreateShareLink).toHaveBeenCalledWith({
+        attachmentId: "att_test00001",
+        expiresAt: expect.any(Number),
+        password: "pw",
+        maxUses: 1,
+      });
+      expect(mockDbMarkReady).toHaveBeenCalledWith({
+        id: "att_test00001",
+        size: 13,
+        contentType: "text/plain",
+        link: expect.stringContaining("/a/"),
+        expiresAt: expect.any(Number),
+      });
+    });
+
+    it("rejects finalize for a non-pending presigned upload", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "ready" }));
+      const res = await app.request("/api/attachments/att_test00001/presign-upload/complete", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(409);
+      expect(mockS3Head).not.toHaveBeenCalled();
+    });
+
+    it("rejects finalize when the uploaded object exceeds the configured max", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+      mockS3Head.mockImplementation(async () => ({
+        contentLength: mockConfig.storage.maxSizeBytes + 1,
+        contentType: "application/octet-stream",
+      }));
+      const res = await app.request("/api/attachments/att_test00001/presign-upload/complete", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(413);
+      expect(mockDbDelete).toHaveBeenCalledWith("att_test00001");
+      expect(mockDbMarkReady).not.toHaveBeenCalled();
+    });
   });
 
   // --- GET /api/report ---
@@ -673,14 +1000,168 @@ describe("REST API server", () => {
     });
   });
 
+  // --- GET /a/:token ---
+
+  describe("GET /a/:token — public share page", () => {
+    it("renders a password prompt without consuming password-protected links", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        passwordHash: buildPasswordHash("passw0rd"),
+      }));
+
+      const res = await app.request("/a/share_testtoken");
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('name="password"');
+      expect(mockDbConsumeShareLink).not.toHaveBeenCalled();
+    });
+
+    it("serves share pages from the configured public path", async () => {
+      setConfig({ server: { publicPath: "/files" } });
+      const customApp = createApp();
+      const res = await customApp.request("/files/share_testtoken");
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("test.txt");
+      expect(mockDbConsumeShareLink).not.toHaveBeenCalled();
+    });
+
+    it("requires the password for public downloads", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        passwordHash: buildPasswordHash("passw0rd"),
+      }));
+
+      const missing = await app.request("/a/share_testtoken/download");
+      expect(missing.status).toBe(401);
+      expect(mockOpenAttachmentStream).not.toHaveBeenCalled();
+
+      const form = new FormData();
+      form.append("password", "passw0rd");
+      const res = await app.request("/a/share_testtoken/download", {
+        method: "POST",
+        body: form,
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockDbConsumeShareLink).toHaveBeenCalledWith("share_link_1");
+      expect(mockOpenAttachmentStream).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not stream when the public download password is wrong", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        passwordHash: buildPasswordHash("passw0rd"),
+      }));
+
+      const form = new FormData();
+      form.append("password", "wrong");
+      const res = await app.request("/a/share_wrongpassword/download", {
+        method: "POST",
+        body: form,
+      });
+
+      expect(res.status).toBe(401);
+      expect(mockDbConsumeShareLink).not.toHaveBeenCalled();
+      expect(mockOpenAttachmentStream).not.toHaveBeenCalled();
+    });
+
+    it("temporarily rate-limits repeated wrong public download passwords", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        passwordHash: buildPasswordHash("passw0rd"),
+      }));
+
+      for (let i = 0; i < 10; i++) {
+        const form = new FormData();
+        form.append("password", "wrong");
+        const res = await app.request("/a/share_ratelimit/download", {
+          method: "POST",
+          headers: { "x-forwarded-for": "203.0.113.10" },
+          body: form,
+        });
+        expect(res.status).toBe(401);
+      }
+
+      const blockedForm = new FormData();
+      blockedForm.append("password", "wrong");
+      const blocked = await app.request("/a/share_ratelimit/download", {
+        method: "POST",
+        headers: { "x-forwarded-for": "203.0.113.10" },
+        body: blockedForm,
+      });
+
+      expect(blocked.status).toBe(429);
+      expect(await blocked.text()).toContain("Too many password attempts");
+      expect(mockOpenAttachmentStream).not.toHaveBeenCalled();
+    });
+
+    it("does not consume limited links for page, HEAD, or unconfirmed direct GET probes", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        maxUses: 2,
+        usedCount: 0,
+      }));
+
+      const page = await app.request("/a/share_testtoken");
+      expect(page.status).toBe(200);
+      expect(await page.text()).toContain("2 of 2 remaining");
+
+      const head = await app.request("/a/share_testtoken/download", { method: "HEAD" });
+      expect(head.status).toBe(200);
+
+      const directGet = await app.request("/a/share_testtoken/download");
+      expect(directGet.status).toBe(303);
+      expect(directGet.headers.get("location")).toBe("/a/share_testtoken");
+
+      expect(mockDbConsumeShareLink).not.toHaveBeenCalled();
+      expect(mockOpenAttachmentStream).not.toHaveBeenCalled();
+    });
+
+    it("allows CLI-confirmed GET downloads for limited links and consumes once", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        maxUses: 2,
+        usedCount: 0,
+      }));
+
+      const res = await app.request("/a/share_testtoken/download", {
+        headers: { "x-attachments-download": "1" },
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockDbConsumeShareLink).toHaveBeenCalledTimes(1);
+      expect(mockOpenAttachmentStream).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders a friendly page for exhausted attachment links", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        maxUses: 1,
+        usedCount: 1,
+      }));
+
+      const page = await app.request("/a/share_testtoken");
+      expect(page.status).toBe(410);
+      expect(page.headers.get("content-type")).toContain("text/html");
+      expect(await page.text()).toContain("This attachment link has already been used");
+
+      const download = await app.request("/a/share_testtoken/download", {
+        method: "POST",
+      });
+      expect(download.status).toBe(410);
+      expect(download.headers.get("content-type")).toContain("text/html");
+      expect(await download.text()).toContain("Ask the sender for a new link");
+      expect(mockOpenAttachmentStream).not.toHaveBeenCalled();
+    });
+  });
+
   // --- GET /d/:id ---
 
   describe("GET /d/:id — public shortlink", () => {
-    it("redirects 302 to presigned URL for presigned link attachments", async () => {
+    it("streams legacy links through the app", async () => {
       const res = await app.request("/d/att_test00001");
-      expect(res.status).toBe(302);
-      const location = res.headers.get("location");
-      expect(location).toContain("amazonaws.com");
+      expect(res.status).toBe(200);
     });
 
     it("returns 404 for unknown id", async () => {
@@ -689,24 +1170,23 @@ describe("REST API server", () => {
       expect(res.status).toBe(404);
     });
 
-    it("generates a presigned URL on-the-fly for server-link attachments", async () => {
+    it("streams server-link attachments without generating S3 URLs", async () => {
       mockDbFindById.mockImplementation(() => ({
         ...mockAttachment,
         link: "http://localhost:3459/d/att_test00001",
       }));
 
       const res = await app.request("/d/att_test00001");
-      expect(res.status).toBe(302);
-      const location = res.headers.get("location");
-      expect(location).toContain("s3.amazonaws.com");
+      expect(res.status).toBe(200);
+      expect(mockGeneratePresignedLink).not.toHaveBeenCalled();
     });
 
-    it("returns 500 when generatePresignedLink throws during shortlink redirect", async () => {
+    it("returns 500 when streaming fails during legacy download", async () => {
       mockDbFindById.mockImplementation(() => ({
         ...mockAttachment,
         link: "http://localhost:3459/d/att_test00001",
       }));
-      mockGeneratePresignedLink.mockImplementation(async () => {
+      mockOpenAttachmentStream.mockImplementation(async () => {
         throw new Error("Presign failed");
       });
 

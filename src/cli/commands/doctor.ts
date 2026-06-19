@@ -6,7 +6,7 @@ import {
   S3Client as AWSS3Client,
   ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
-import { getConfig, CONFIG_PATH } from "../../core/config";
+import { getConfig, hasS3Config, CONFIG_PATH } from "../../core/config";
 import { AttachmentsDB } from "../../core/db";
 
 // ---------------------------------------------------------------------------
@@ -37,14 +37,15 @@ export function checkConfigFile(): CheckResult {
 export function checkS3Configured(): CheckResult {
   const config = getConfig();
   const { bucket, region, accessKeyId, secretAccessKey } = config.s3;
-  const configured =
-    !!bucket && !!region && !!accessKeyId && !!secretAccessKey;
+  const configured = hasS3Config(config);
+  const credentialSource =
+    accessKeyId && secretAccessKey ? "static credentials" : "default credential chain";
   return {
     label: "S3",
     status: configured ? "ok" : "fail",
     message: configured
-      ? `configured (${bucket}, ${region})`
-      : "not configured (missing bucket, region, accessKeyId, or secretAccessKey)",
+      ? `configured (${bucket}, ${region}, ${credentialSource})`
+      : "not configured (missing bucket, region, or a complete static key pair)",
   };
 }
 
@@ -52,7 +53,7 @@ export async function checkS3Connection(): Promise<CheckResult> {
   const config = getConfig();
   const { bucket, region, accessKeyId, secretAccessKey, endpoint } = config.s3;
 
-  if (!bucket || !region || !accessKeyId || !secretAccessKey) {
+  if (!hasS3Config(config)) {
     return {
       label: "S3 connection",
       status: "warn",
@@ -61,20 +62,24 @@ export async function checkS3Connection(): Promise<CheckResult> {
   }
 
   try {
+    const staticCredentials =
+      accessKeyId && secretAccessKey
+        ? { credentials: { accessKeyId, secretAccessKey } }
+        : {};
     const s3 = new AWSS3Client({
       region,
-      credentials: { accessKeyId, secretAccessKey },
+      ...staticCredentials,
       ...(endpoint !== undefined
         ? { endpoint, forcePathStyle: true }
         : {}),
       requestHandler: {
         // 5 second timeout
         requestTimeout: 5000,
-      } as unknown as ConstructorParameters<typeof AWSS3Client>[0]["requestHandler"],
-    });
+      },
+    } as never);
 
     await s3.send(
-      new ListObjectsV2Command({ Bucket: bucket, MaxKeys: 1 })
+      new ListObjectsV2Command({ Bucket: bucket, Prefix: "attachments/", MaxKeys: 1 })
     );
 
     return {
@@ -213,7 +218,7 @@ export async function checkIntegration(name: string, urlEnvVar: string, defaultU
     if (!isSet) {
       return { label: `${name} integration (${urlEnvVar})`, status: "warn", message: `not configured (set ${urlEnvVar} to enable)` };
     }
-    return { label: `${name} integration (${urlEnvVar})`, status: "error", message: `${url} — unreachable` };
+    return { label: `${name} integration (${urlEnvVar})`, status: "fail", message: `${url} — unreachable` };
   }
 }
 

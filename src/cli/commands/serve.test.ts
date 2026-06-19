@@ -38,6 +38,7 @@ const { registerServe } = await import("./serve");
 // Restore all mocks after this file's tests complete so they don't leak into other test files
 afterAll(() => {
   mock.restore();
+  delete process.env["ATTACHMENTS_SERVE_EXIT_AFTER_START"];
   try { rmSync(_serveTestConfigDir, { recursive: true, force: true }); } catch {}
 });
 
@@ -81,6 +82,7 @@ function captureOutput() {
 
 describe("serve command", () => {
   beforeEach(() => {
+    process.env["ATTACHMENTS_SERVE_EXIT_AFTER_START"] = "1";
     mockStartServer.mockReset();
     mockValidateS3Config.mockReset();
     mockValidateS3Config.mockImplementation(() => {});

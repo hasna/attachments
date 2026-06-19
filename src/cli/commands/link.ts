@@ -1,16 +1,19 @@
 import { Command } from "commander";
 import { AttachmentsDB } from "../../core/db";
 import { S3Client } from "../../core/s3";
-import { getConfig, parseExpiry } from "../../core/config";
-import { generatePresignedLink, generateServerLink, getLinkType } from "../../core/links";
+import { getConfig, getPublicBaseUrl, isCloudClientMode, parseExpiryStrict } from "../../core/config";
+import { generatePresignedLink, generateShareLink, getLinkType } from "../../core/links";
+import { getCloudAttachmentLink, regenerateCloudAttachmentLink } from "../../core/api-client";
 import { formatExpiry } from "../utils";
 
 export function linkCommand(): Command {
   const cmd = new Command("link")
     .description("Show or regenerate the link for an attachment")
     .argument("<id>", "Attachment ID")
-    .option("--regenerate", "Generate a fresh presigned URL", false)
+    .option("--regenerate", "Generate a fresh share link", false)
     .option("--expiry <time>", "Expiry duration for regenerated link (e.g. 7d, 24h, 30m, never)")
+    .option("--password <password>", "Require a password for the regenerated link")
+    .option("--max-downloads <count>", "Maximum successful downloads for the regenerated link")
     .option("--format <format>", "Output format: human or json", "human")
     .option("--brief", "Compact one-line output")
     .action(async (id: string, options) => {
@@ -18,6 +21,34 @@ export function linkCommand(): Command {
       if (!["human", "json"].includes(format)) {
         process.stderr.write(`Error: --format must be one of: human, json\n`);
         process.exit(1);
+      }
+
+      const config = getConfig();
+      if (isCloudClientMode(config)) {
+        const maxDownloads = options.maxDownloads ? parseInt(options.maxDownloads as string, 10) : undefined;
+        if (maxDownloads !== undefined && (!Number.isInteger(maxDownloads) || maxDownloads <= 0)) {
+          process.stderr.write("Error: --max-downloads must be a positive integer\n");
+          process.exit(1);
+        }
+        const result = options.regenerate
+          ? await regenerateCloudAttachmentLink(id, {
+              expiry: options.expiry,
+              password: options.password as string | undefined,
+              maxDownloads,
+              linkType: config.defaults.linkType,
+            })
+          : await getCloudAttachmentLink(id);
+
+        if (options.brief) {
+          process.stdout.write(`${result.link ?? "no link"}\n`);
+        } else if (format === "json") {
+          process.stdout.write(JSON.stringify({ id, link: result.link, expiresAt: result.expires_at }, null, 2) + "\n");
+        } else {
+          process.stdout.write(`ID:       ${id}\n`);
+          process.stdout.write(`Link:     ${result.link ?? "(no link)"}\n`);
+          process.stdout.write(`Expiry:   ${formatExpiry(result.expires_at)}\n`);
+        }
+        return;
       }
 
       const db = new AttachmentsDB();
@@ -32,27 +63,36 @@ export function linkCommand(): Command {
         let expiresAt = att.expiresAt;
 
         if (options.regenerate) {
-          const config = getConfig();
           const linkType = getLinkType(config);
 
           let expiryMs: number | null;
-          if (options.expiry) {
-            expiryMs = parseExpiry(options.expiry as string);
-            if (expiryMs === null && options.expiry !== "never") {
-              process.stderr.write(
-                `Error: Invalid expiry format "${options.expiry}". Use e.g. 7d, 24h, 30m, never\n`
-              );
-              process.exit(1);
-            }
-          } else {
-            expiryMs = parseExpiry(config.defaults.expiry);
+          try {
+            expiryMs = parseExpiryStrict(options.expiry ?? config.defaults.expiry).milliseconds;
+          } catch (err) {
+            process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+            process.exit(1);
           }
 
-          if (linkType === "presigned") {
+          const maxDownloads = options.maxDownloads ? parseInt(options.maxDownloads as string, 10) : undefined;
+          if (maxDownloads !== undefined && (!Number.isInteger(maxDownloads) || maxDownloads <= 0)) {
+            process.stderr.write("Error: --max-downloads must be a positive integer\n");
+            process.exit(1);
+          }
+
+          if (linkType === "presigned" && (att.storageBackend ?? "s3") === "s3" && !options.password && !maxDownloads) {
             const s3 = new S3Client(config.s3);
             link = await generatePresignedLink(s3, att.s3Key, expiryMs);
           } else {
-            link = generateServerLink(att.id, config.server.baseUrl);
+            const { token } =
+              "createShareLink" in db
+                ? db.createShareLink({
+                    attachmentId: att.id,
+                    expiresAt: expiryMs !== null ? Date.now() + expiryMs : null,
+                    password: options.password as string | undefined,
+                    maxUses: maxDownloads ?? null,
+                  })
+                : { token: att.id };
+            link = generateShareLink(token, getPublicBaseUrl(config), config.server.publicPath);
           }
 
           expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;

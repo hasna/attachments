@@ -1,17 +1,31 @@
 {
   "name": "@hasna/attachments",
-  "version": "1.0.29",
-  "description": "File transfer for AI agents — S3-backed upload, shareable links, CLI + MCP + REST API",
+  "version": "1.0.45",
+  "description": "Open-source attachment transfer with local or private S3 storage, app-hosted share links, CLI, MCP, and REST API",
   "bin": {
-    "attachments": "./dist/cli/index.js",
-    "attachments-mcp": "./dist/mcp/server.js"
+    "attachments": "dist/cli/index.js",
+    "attachments-mcp": "dist/mcp/server.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "AGENTS.md"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./storage": "./dist/storage.js"
+  },
   "scripts": {
-    "build": "bun build src/index.ts src/cli/index.ts src/mcp/server.ts --outdir dist --target bun",
-    "build:cli": "bun build src/cli/index.ts --outdir dist/cli --target bun",
+    "clean": "rm -rf dist",
+    "build": "bun run clean && bun build src/index.ts src/storage.ts src/cli/index.ts src/mcp/server.ts --outdir dist --target bun && bun run scripts/write-types.ts",
+    "build:cli": "bun run clean && bun build src/cli/index.ts --outdir dist/cli --target bun",
     "prepare": "bun run build",
+    "typecheck": "bunx tsc --noEmit",
     "test": "bash scripts/test.sh",
     "test:coverage": "bash scripts/test.sh --coverage",
     "dev": "bun run src/cli/index.ts",
@@ -26,7 +40,9 @@
   "keywords": [
     "attachments",
     "s3",
+    "local-storage",
     "file-transfer",
+    "share-links",
     "ai-agents",
     "mcp",
     "cli"
@@ -34,8 +50,8 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1007.0",
+    "@aws-sdk/lib-storage": "3.1007.0",
     "@aws-sdk/s3-request-presigner": "^3.1007.0",
-    "@hasna/cloud": "0.1.24",
     "@hasna/events": "^0.1.6",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@types/mime-types": "^3.0.1",
@@ -43,10 +59,12 @@
     "date-fns": "^4.1.0",
     "hono": "^4.12.7",
     "mime-types": "^3.0.2",
-    "nanoid": "^5.1.6"
+    "nanoid": "^5.1.6",
+    "pg": "^8.20.0"
   },
   "devDependencies": {
     "@types/bun": "^1.3.10",
+    "@types/pg": "^8.15.6",
     "typescript": "^5.9.3"
   }
 }

@@ -17,6 +17,9 @@ mock.module("@aws-sdk/client-s3", () => {
     GetObjectCommand: class GetObjectCommand {
       constructor(public input: Record<string, unknown>) {}
     },
+    HeadObjectCommand: class HeadObjectCommand {
+      constructor(public input: Record<string, unknown>) {}
+    },
     DeleteObjectCommand: class DeleteObjectCommand {
       constructor(public input: Record<string, unknown>) {}
     },
@@ -29,6 +32,9 @@ mock.module("@aws-sdk/client-s3", () => {
     CompleteMultipartUploadCommand: class CompleteMultipartUploadCommand {
       constructor(public input: Record<string, unknown>) {}
     },
+    AbortMultipartUploadCommand: class AbortMultipartUploadCommand {
+      constructor(public input: Record<string, unknown>) {}
+    },
   };
 });
 
@@ -36,6 +42,18 @@ const mockGetSignedUrl = mock(async (_client: unknown, _cmd: unknown, _opts: unk
 
 mock.module("@aws-sdk/s3-request-presigner", () => ({
   getSignedUrl: mockGetSignedUrl,
+}));
+
+const mockManagedUploadDone = mock(async () => ({}));
+const mockManagedUploadConstructor = mock((_options: unknown) => undefined);
+
+mock.module("@aws-sdk/lib-storage", () => ({
+  Upload: class MockUpload {
+    constructor(public options: unknown) {
+      mockManagedUploadConstructor(options);
+    }
+    done = mockManagedUploadDone;
+  },
 }));
 
 // Import after mocks are registered
@@ -224,6 +242,38 @@ describe("S3Client.upload (large file — multipart)", () => {
   });
 });
 
+describe("S3Client.uploadStream", () => {
+  beforeEach(() => {
+    mockManagedUploadConstructor.mockReset();
+    mockManagedUploadDone.mockReset();
+    mockManagedUploadDone.mockImplementation(async () => ({}));
+  });
+
+  it("uses AWS managed multipart upload for streams", async () => {
+    const client = makeClient();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("streamed"));
+        controller.close();
+      },
+    });
+
+    await client.uploadStream("files/stream.txt", stream as unknown as NodeJS.ReadableStream, "text/plain");
+
+    expect(mockManagedUploadConstructor).toHaveBeenCalledTimes(1);
+    expect(mockManagedUploadDone).toHaveBeenCalledTimes(1);
+    const [options] = mockManagedUploadConstructor.mock.calls[0] as [Record<string, unknown>];
+    expect(options["queueSize"]).toBe(4);
+    expect(options["partSize"]).toBe(64 * 1024 * 1024);
+    expect(options["leavePartsOnError"]).toBe(false);
+    const params = options["params"] as Record<string, unknown>;
+    expect(params["Bucket"]).toBe("test-bucket");
+    expect(params["Key"]).toBe("files/stream.txt");
+    expect(params["Body"]).toBe(stream);
+    expect(params["ContentType"]).toBe("text/plain");
+  });
+});
+
 describe("S3Client.download", () => {
   beforeEach(() => {
     mockSend.mockReset();
@@ -397,5 +447,67 @@ describe("S3Client.presignPut", () => {
 
     const client = makeClient();
     await expect(client.presignPut("k", "text/plain", 10)).rejects.toThrow("PresignPutFailed");
+  });
+});
+
+describe("S3Client direct multipart helpers", () => {
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockGetSignedUrl.mockReset();
+  });
+
+  it("creates a multipart upload and returns the UploadId", async () => {
+    mockSend.mockImplementation(async () => ({ UploadId: "upload-123" }));
+    const client = makeClient();
+
+    const uploadId = await client.createMultipartUpload("uploads/large.bin", "application/octet-stream");
+
+    expect(uploadId).toBe("upload-123");
+    const [cmd] = mockSend.mock.calls[0] as [{ constructor: { name: string }; input: Record<string, unknown> }];
+    expect(cmd.constructor.name).toBe("CreateMultipartUploadCommand");
+    expect(cmd.input["Bucket"]).toBe("test-bucket");
+    expect(cmd.input["Key"]).toBe("uploads/large.bin");
+    expect(cmd.input["ContentType"]).toBe("application/octet-stream");
+  });
+
+  it("presigns an upload part URL", async () => {
+    mockGetSignedUrl.mockImplementation(async () => "https://presigned.url/part?sig=abc");
+    const client = makeClient();
+
+    const url = await client.presignUploadPart("uploads/large.bin", "upload-123", 7, 900);
+
+    expect(url).toContain("presigned.url");
+    const [, cmd, opts] = mockGetSignedUrl.mock.calls[0] as [unknown, { constructor: { name: string }; input: Record<string, unknown> }, { expiresIn: number }];
+    expect(cmd.constructor.name).toBe("UploadPartCommand");
+    expect(cmd.input["UploadId"]).toBe("upload-123");
+    expect(cmd.input["PartNumber"]).toBe(7);
+    expect(opts.expiresIn).toBe(900);
+  });
+
+  it("completes multipart uploads with sorted parts", async () => {
+    mockSend.mockImplementation(async () => ({}));
+    const client = makeClient();
+
+    await client.completeMultipartUpload("uploads/large.bin", "upload-123", [
+      { ETag: "\"b\"", PartNumber: 2 },
+      { ETag: "\"a\"", PartNumber: 1 },
+    ]);
+
+    const [cmd] = mockSend.mock.calls[0] as [{ constructor: { name: string }; input: Record<string, unknown> }];
+    expect(cmd.constructor.name).toBe("CompleteMultipartUploadCommand");
+    const multipart = cmd.input["MultipartUpload"] as { Parts: Array<{ ETag: string; PartNumber: number }> };
+    expect(multipart.Parts.map((part) => part.PartNumber)).toEqual([1, 2]);
+  });
+
+  it("heads objects for finalize verification", async () => {
+    mockSend.mockImplementation(async () => ({ ContentLength: 123, ContentType: "text/plain" }));
+    const client = makeClient();
+
+    const info = await client.head("uploads/done.txt");
+
+    expect(info).toEqual({ contentLength: 123, contentType: "text/plain" });
+    const [cmd] = mockSend.mock.calls[0] as [{ constructor: { name: string }; input: Record<string, unknown> }];
+    expect(cmd.constructor.name).toBe("HeadObjectCommand");
+    expect(cmd.input["Key"]).toBe("uploads/done.txt");
   });
 });

@@ -34,6 +34,9 @@ function makeMockDB(attachment: Attachment | null = null) {
     updateLink: mock(() => {}),
     delete: mock(() => {}),
     deleteExpired: mock(() => 0),
+    consumeShareLink: mock(() => true),
+    releaseShareLink: mock(() => true),
+    incrementDownloads: mock(() => {}),
   };
 }
 
