@@ -47,6 +47,62 @@ type ApiAttachment = {
   created_at?: number;
 };
 
+export type ApiArtifact = {
+  contract_version: number;
+  id: string;
+  attachment_id: string;
+  name: string;
+  version: string;
+  channel: string;
+  platform: string;
+  arch: string;
+  kind: string;
+  filename: string;
+  size: number;
+  checksum_sha256: string;
+  signature: string | null;
+  signature_type: string | null;
+  app_name: string | null;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  attachment: {
+    id: string;
+    filename: string;
+    size: number;
+    content_type: string;
+    link: string | null;
+    expires_at: number | null;
+    created_at: number;
+  } | null;
+};
+
+export interface CloudArtifactFilters {
+  id?: string;
+  name?: string;
+  version?: string;
+  channel?: string;
+  platform?: string;
+  arch?: string;
+  kind?: string;
+  includeExpired?: boolean;
+  limit?: number;
+}
+
+export interface CloudRegisterArtifactOptions {
+  attachmentId: string;
+  name: string;
+  version: string;
+  channel?: string;
+  platform: string;
+  arch: string;
+  kind: string;
+  checksumSha256: string;
+  signature?: string | null;
+  signatureType?: string | null;
+  appName?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
 const DEFAULT_MULTIPART_THRESHOLD = 64 * 1024 * 1024;
 
 function normalizeBaseUrl(value: string): string {
@@ -358,4 +414,67 @@ export async function downloadFromCloud(
 export async function getCloudHealth(client: CloudClientOptions = {}): Promise<Record<string, unknown>> {
   const response = await fetch(`${requireBaseUrl(client)}/api/health`);
   return readJson(response);
+}
+
+function appendArtifactFilters(url: URL, filters: CloudArtifactFilters): void {
+  if (filters.name) url.searchParams.set("name", filters.name);
+  if (filters.version) url.searchParams.set("version", filters.version);
+  if (filters.channel) url.searchParams.set("channel", filters.channel);
+  if (filters.platform) url.searchParams.set("platform", filters.platform);
+  if (filters.arch) url.searchParams.set("arch", filters.arch);
+  if (filters.kind) url.searchParams.set("kind", filters.kind);
+  if (filters.includeExpired) url.searchParams.set("expired", "true");
+  if (filters.limit) url.searchParams.set("limit", String(filters.limit));
+}
+
+export async function registerCloudArtifact(
+  options: CloudRegisterArtifactOptions,
+  client: CloudClientOptions = {}
+): Promise<ApiArtifact> {
+  const response = await fetch(`${requireBaseUrl(client)}/api/artifacts/register`, {
+    method: "POST",
+    headers: authHeaders(client, { "content-type": "application/json" }),
+    body: JSON.stringify({
+      attachment_id: options.attachmentId,
+      name: options.name,
+      version: options.version,
+      channel: options.channel,
+      platform: options.platform,
+      arch: options.arch,
+      kind: options.kind,
+      checksum_sha256: options.checksumSha256,
+      signature: options.signature,
+      signature_type: options.signatureType,
+      app_name: options.appName,
+      metadata: options.metadata,
+    }),
+  });
+  return readJson<ApiArtifact>(response);
+}
+
+export async function listCloudArtifacts(
+  filters: CloudArtifactFilters = {},
+  client: CloudClientOptions = {}
+): Promise<ApiArtifact[]> {
+  const url = new URL(`${requireBaseUrl(client)}/api/artifacts`);
+  appendArtifactFilters(url, filters);
+  const response = await fetch(url, { headers: authHeaders(client) });
+  return readJson<ApiArtifact[]>(response);
+}
+
+export async function getCloudArtifact(id: string, client: CloudClientOptions = {}): Promise<ApiArtifact> {
+  const response = await fetch(`${requireBaseUrl(client)}/api/artifacts/${encodeURIComponent(id)}`, {
+    headers: authHeaders(client),
+  });
+  return readJson<ApiArtifact>(response);
+}
+
+export async function getCloudLatestArtifact(
+  filters: CloudArtifactFilters,
+  client: CloudClientOptions = {}
+): Promise<ApiArtifact> {
+  const url = new URL(`${requireBaseUrl(client)}/api/artifacts/latest`);
+  appendArtifactFilters(url, filters);
+  const response = await fetch(url, { headers: authHeaders(client) });
+  return readJson<ApiArtifact>(response);
 }

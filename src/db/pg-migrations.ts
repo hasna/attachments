@@ -52,6 +52,29 @@ export const PG_MIGRATIONS: string[] = [
     used_count BIGINT NOT NULL DEFAULT 0
   )`,
 
+  // Migration 4: artifact registry
+  `CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    version TEXT NOT NULL,
+    channel TEXT NOT NULL DEFAULT 'stable',
+    platform TEXT NOT NULL,
+    arch TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    checksum_sha256 TEXT NOT NULL,
+    signature TEXT,
+    signature_type TEXT,
+    app_name TEXT,
+    metadata_json TEXT,
+    created_at BIGINT NOT NULL
+  )`,
+
+  `CREATE INDEX IF NOT EXISTS idx_artifacts_lookup ON artifacts (name, channel, platform, arch, kind, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_artifacts_attachment ON artifacts (attachment_id)`,
+
   `ALTER TABLE attachments ALTER COLUMN size TYPE BIGINT`,
   `ALTER TABLE attachments ADD COLUMN IF NOT EXISTS storage_backend TEXT NOT NULL DEFAULT 's3'`,
   `ALTER TABLE attachments ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ready'`,
@@ -59,4 +82,7 @@ export const PG_MIGRATIONS: string[] = [
   `ALTER TABLE attachments ADD COLUMN IF NOT EXISTS encryption_salt TEXT`,
   `ALTER TABLE attachments ADD COLUMN IF NOT EXISTS encryption_iv TEXT`,
   `ALTER TABLE attachments ADD COLUMN IF NOT EXISTS downloads BIGINT NOT NULL DEFAULT 0`,
+  `ALTER TABLE artifacts ALTER COLUMN size TYPE BIGINT`,
+  `ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS app_name TEXT`,
+  `ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS metadata_json TEXT`,
 ];

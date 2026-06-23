@@ -24,6 +24,25 @@ export interface Attachment {
   downloads?: number;
 }
 
+export interface Artifact {
+  id: string;
+  attachmentId: string;
+  name: string;
+  version: string;
+  channel: string;
+  platform: string;
+  arch: string;
+  kind: string;
+  filename: string;
+  size: number;
+  checksumSha256: string;
+  signature: string | null;
+  signatureType: string | null;
+  appName: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: number;
+}
+
 export interface ShareLink {
   id: string;
   attachmentId: string;
@@ -34,6 +53,17 @@ export interface ShareLink {
   passwordHash: string | null;
   maxUses: number | null;
   usedCount: number;
+}
+
+export interface ArtifactFilters {
+  name?: string;
+  version?: string;
+  channel?: string;
+  platform?: string;
+  arch?: string;
+  kind?: string;
+  includeExpired?: boolean;
+  limit?: number;
 }
 
 interface AttachmentRow {
@@ -56,6 +86,25 @@ interface AttachmentRow {
   downloads?: number;
 }
 
+interface ArtifactRow {
+  id: string;
+  attachment_id: string;
+  name: string;
+  version: string;
+  channel: string;
+  platform: string;
+  arch: string;
+  kind: string;
+  filename: string;
+  size: number;
+  checksum_sha256: string;
+  signature: string | null;
+  signature_type: string | null;
+  app_name: string | null;
+  metadata_json: string | null;
+  created_at: number;
+}
+
 interface ShareLinkRow {
   id: string;
   attachment_id: string;
@@ -66,6 +115,18 @@ interface ShareLinkRow {
   password_hash: string | null;
   max_uses: number | null;
   used_count: number;
+}
+
+function parseArtifactMetadata(value: string | null): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function rowToAttachment(row: AttachmentRow): Attachment {
@@ -87,6 +148,27 @@ function rowToAttachment(row: AttachmentRow): Attachment {
     encryptionIv: row.encryption_iv ?? null,
     encryptionTag: row.encryption_tag ?? null,
     downloads: row.downloads ?? 0,
+  };
+}
+
+function rowToArtifact(row: ArtifactRow): Artifact {
+  return {
+    id: row.id,
+    attachmentId: row.attachment_id,
+    name: row.name,
+    version: row.version,
+    channel: row.channel,
+    platform: row.platform,
+    arch: row.arch,
+    kind: row.kind,
+    filename: row.filename,
+    size: row.size,
+    checksumSha256: row.checksum_sha256,
+    signature: row.signature,
+    signatureType: row.signature_type,
+    appName: row.app_name,
+    metadata: parseArtifactMetadata(row.metadata_json),
+    createdAt: row.created_at,
   };
 }
 
@@ -178,6 +260,30 @@ export class AttachmentsDB {
     this.addColumnIfMissing("attachments", "encryption_iv", "TEXT");
     this.addColumnIfMissing("attachments", "encryption_tag", "TEXT");
     this.addColumnIfMissing("attachments", "downloads", "INTEGER NOT NULL DEFAULT 0");
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS artifacts (
+        id TEXT PRIMARY KEY,
+        attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        version TEXT NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'stable',
+        platform TEXT NOT NULL,
+        arch TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        checksum_sha256 TEXT NOT NULL,
+        signature TEXT,
+        signature_type TEXT,
+        app_name TEXT,
+        metadata_json TEXT,
+        created_at INTEGER NOT NULL
+      );
+    `);
+    this.addColumnIfMissing("artifacts", "app_name", "TEXT");
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_artifacts_lookup ON artifacts (name, channel, platform, arch, kind, created_at DESC);`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_artifacts_attachment ON artifacts (attachment_id);`);
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS share_links (
@@ -334,6 +440,95 @@ export class AttachmentsDB {
       .prepare<AttachmentRow, (number | string)[]>(sql)
       .all(...params);
     return rows.map(rowToAttachment);
+  }
+
+  insertArtifact(artifact: Artifact): void {
+    this.db
+      .prepare(
+        `INSERT INTO artifacts
+          (id, attachment_id, name, version, channel, platform, arch, kind, filename, size,
+           checksum_sha256, signature, signature_type, app_name, metadata_json, created_at)
+         VALUES
+          ($id, $attachment_id, $name, $version, $channel, $platform, $arch, $kind, $filename, $size,
+           $checksum_sha256, $signature, $signature_type, $app_name, $metadata_json, $created_at)`
+      )
+      .run({
+        $id: artifact.id,
+        $attachment_id: artifact.attachmentId,
+        $name: artifact.name,
+        $version: artifact.version,
+        $channel: artifact.channel,
+        $platform: artifact.platform,
+        $arch: artifact.arch,
+        $kind: artifact.kind,
+        $filename: artifact.filename,
+        $size: artifact.size,
+        $checksum_sha256: artifact.checksumSha256,
+        $signature: artifact.signature,
+        $signature_type: artifact.signatureType,
+        $app_name: artifact.appName,
+        $metadata_json: JSON.stringify(artifact.metadata ?? {}),
+        $created_at: artifact.createdAt,
+      });
+  }
+
+  findArtifactById(id: string): Artifact | null {
+    const row = this.db
+      .prepare<ArtifactRow, string>(
+        `SELECT * FROM artifacts WHERE id = ?`
+      )
+      .get(id);
+    return row ? rowToArtifact(row) : null;
+  }
+
+  findArtifacts(opts?: ArtifactFilters): Artifact[] {
+    const includeExpired = opts?.includeExpired ?? false;
+    const now = Date.now();
+    let sql = `
+      SELECT artifacts.*
+      FROM artifacts
+      JOIN attachments ON attachments.id = artifacts.attachment_id
+    `;
+    const params: (number | string)[] = [];
+    const conditions: string[] = [];
+
+    if (!includeExpired) {
+      conditions.push(`(attachments.expires_at IS NULL OR attachments.expires_at > ?)`);
+      params.push(now);
+    }
+
+    const stringFilters: Array<[keyof ArtifactFilters, string]> = [
+      ["name", "artifacts.name"],
+      ["version", "artifacts.version"],
+      ["channel", "artifacts.channel"],
+      ["platform", "artifacts.platform"],
+      ["arch", "artifacts.arch"],
+      ["kind", "artifacts.kind"],
+    ];
+
+    for (const [key, column] of stringFilters) {
+      const value = opts?.[key];
+      if (typeof value === "string" && value.length > 0) {
+        conditions.push(`${column} = ?`);
+        params.push(value);
+      }
+    }
+
+    if (conditions.length > 0) {
+      sql += ` WHERE ${conditions.join(" AND ")}`;
+    }
+
+    sql += ` ORDER BY artifacts.created_at DESC`;
+
+    if (opts?.limit != null) {
+      sql += ` LIMIT ?`;
+      params.push(opts.limit);
+    }
+
+    const rows = this.db
+      .prepare<ArtifactRow, (number | string)[]>(sql)
+      .all(...params);
+    return rows.map(rowToArtifact);
   }
 
   updateLink(id: string, link: string, expiresAt?: number | null): void {

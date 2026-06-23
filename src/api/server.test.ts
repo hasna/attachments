@@ -2,7 +2,7 @@ import { describe, it, expect, mock, beforeAll, beforeEach, afterAll } from "bun
 import { tmpdir } from "os";
 import { join } from "path";
 import { mkdirSync, rmSync } from "fs";
-import type { Attachment, ShareLink } from "../core/db";
+import type { Artifact, Attachment, ShareLink } from "../core/db";
 import { setConfigPath, setConfig } from "../core/config";
 import { buildPasswordHash } from "../core/security";
 
@@ -50,8 +50,30 @@ const mockAttachment: Attachment = {
   createdAt: 1700000000000,
 };
 
+const mockArtifact: Artifact = {
+  id: "art_browserplan",
+  attachmentId: "att_test00001",
+  name: "browserplan",
+  version: "1.0.0",
+  channel: "stable",
+  platform: "darwin",
+  arch: "arm64",
+  kind: "mac-app-zip",
+  filename: "BrowserPlan.zip",
+  size: 11,
+  checksumSha256: "a".repeat(64),
+  signature: null,
+  signatureType: null,
+  appName: "BrowserPlan.app",
+  metadata: {},
+  createdAt: 1700000000000,
+};
+
 const mockDbFindById = mock((_id: string): Attachment | null => mockAttachment);
 const mockDbFindAll = mock((_opts?: unknown): Attachment[] => [mockAttachment]);
+const mockDbFindArtifactById = mock((_id: string): Artifact | null => ({ ...mockArtifact }));
+const mockDbFindArtifacts = mock((_opts?: unknown): Artifact[] => [{ ...mockArtifact }]);
+const mockDbInsertArtifact = mock((_artifact: Artifact) => {});
 const mockDbUpdateLink = mock((_id: string, _link: string, _expiresAt?: number | null) => {});
 const mockDbDelete = mock((_id: string) => {});
 const mockDbClose = mock(() => {});
@@ -80,6 +102,9 @@ mock.module("../core/db", () => ({
   AttachmentsDB: class MockAttachmentsDB {
     findById = mockDbFindById;
     findAll = mockDbFindAll;
+    findArtifactById = mockDbFindArtifactById;
+    findArtifacts = mockDbFindArtifacts;
+    insertArtifact = mockDbInsertArtifact;
     updateLink = mockDbUpdateLink;
     delete = mockDbDelete;
     close = mockDbClose;
@@ -168,6 +193,11 @@ const mockStreamAttachment = mock(async (_id: string) => ({
   buffer: Buffer.from("file contents"),
   attachment: mockAttachment,
 }));
+const mockDownloadAttachment = mock(async () => ({
+  path: "/tmp/BrowserPlan.zip",
+  filename: "BrowserPlan.zip",
+  size: 11,
+}));
 function testBodyStream(): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
@@ -184,6 +214,7 @@ const mockOpenAttachmentStream = mock(async () => ({
 }));
 
 mock.module("../core/download", () => ({
+  downloadAttachment: mockDownloadAttachment,
   streamAttachment: mockStreamAttachment,
   openAttachmentStream: mockOpenAttachmentStream,
   isExpired: (att: Attachment) => att.expiresAt !== null && att.expiresAt <= Date.now(),
@@ -242,6 +273,11 @@ describe("REST API server", () => {
     mockDbFindById.mockImplementation(() => ({ ...mockAttachment }));
     mockDbFindAll.mockReset();
     mockDbFindAll.mockImplementation(() => [{ ...mockAttachment }]);
+    mockDbFindArtifactById.mockReset();
+    mockDbFindArtifactById.mockImplementation(() => ({ ...mockArtifact }));
+    mockDbFindArtifacts.mockReset();
+    mockDbFindArtifacts.mockImplementation(() => [{ ...mockArtifact }]);
+    mockDbInsertArtifact.mockReset();
     mockDbUpdateLink.mockReset();
     mockDbMarkReady.mockReset();
     mockDbCreateShareLink.mockReset();
@@ -280,6 +316,12 @@ describe("REST API server", () => {
     mockStreamAttachment.mockImplementation(async () => ({
       buffer: Buffer.from("file contents"),
       attachment: mockAttachment,
+    }));
+    mockDownloadAttachment.mockReset();
+    mockDownloadAttachment.mockImplementation(async () => ({
+      path: "/tmp/BrowserPlan.zip",
+      filename: "BrowserPlan.zip",
+      size: 11,
     }));
     mockOpenAttachmentStream.mockReset();
     mockOpenAttachmentStream.mockImplementation(async () => ({
@@ -536,6 +578,77 @@ describe("REST API server", () => {
       expect(parsed).toHaveProperty("id");
       expect(parsed).toHaveProperty("filename");
       expect(parsed).not.toHaveProperty("size");
+    });
+  });
+
+  describe("artifact API", () => {
+    it("registers an uploaded attachment as an artifact", async () => {
+      const res = await app.request("/api/artifacts/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          attachment_id: "att_test00001",
+          name: "browserplan",
+          version: "1.2.3",
+          channel: "stable",
+          platform: "darwin",
+          arch: "arm64",
+          kind: "mac-app-zip",
+          checksum_sha256: "b".repeat(64),
+          app_name: "BrowserPlan.app",
+          metadata: { build: "20260623" },
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(mockDbInsertArtifact).toHaveBeenCalledTimes(1);
+      const body = await res.json();
+      expect(body.contract_version).toBe(1);
+      expect(body.name).toBe("browserplan");
+      expect(body.version).toBe("1.2.3");
+      expect(body.checksum_sha256).toBe("b".repeat(64));
+      expect(body.attachment.id).toBe("att_test00001");
+    });
+
+    it("rejects artifact registration with missing required fields", async () => {
+      const res = await app.request("/api/artifacts/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "browserplan" }),
+      });
+      expect(res.status).toBe(400);
+      expect(mockDbInsertArtifact).not.toHaveBeenCalled();
+    });
+
+    it("resolves latest artifacts by semver", async () => {
+      mockDbFindArtifacts.mockImplementation(() => [
+        { ...mockArtifact, id: "art_1_9", version: "1.9.0", createdAt: 1 },
+        { ...mockArtifact, id: "art_1_10", version: "1.10.0", createdAt: 2 },
+      ]);
+
+      const res = await app.request("/api/artifacts/latest?name=browserplan&platform=darwin&arch=arm64&limit=1");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.id).toBe("art_1_10");
+      const [filters] = mockDbFindArtifacts.mock.calls[0] as [{ name?: string; platform?: string; arch?: string; limit?: number }];
+      expect(filters.name).toBe("browserplan");
+      expect(filters.platform).toBe("darwin");
+      expect(filters.arch).toBe("arm64");
+      expect(filters.limit).toBeUndefined();
+    });
+
+    it("returns a BrowserPlan fleet install plan for machine001-machine011", async () => {
+      const res = await app.request(
+        "/api/artifacts/art_browserplan/install-plan?machines=machine001-machine011&app_name=BrowserPlan.app"
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.target_machines).toContain("machine001");
+      expect(body.target_machines).toContain("machine011");
+      expect(body.excluded_machines).toContain("spark01");
+      expect(body.excluded_machines).toContain("spark02");
+      expect(body.install_plan.install_script).toContain("'attachments' download");
+      expect(body.open_machines.commands[0].route_command).toContain("machines ssh");
     });
   });
 

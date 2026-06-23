@@ -3,7 +3,7 @@ import { AttachmentsDB } from "../core/db.js";
 import { PG_MIGRATIONS } from "./pg-migrations.js";
 import { PgAdapterAsync } from "./remote-storage.js";
 
-export const STORAGE_TABLES = ["attachments", "share_links", "feedback"] as const;
+export const STORAGE_TABLES = ["attachments", "artifacts", "share_links", "feedback"] as const;
 
 type StorageTable = (typeof STORAGE_TABLES)[number];
 type Row = Record<string, unknown>;
@@ -21,6 +21,7 @@ const MODE_ENV_NAMES = [
 
 const PRIMARY_KEYS: Record<StorageTable, string[]> = {
   attachments: ["id"],
+  artifacts: ["id"],
   share_links: ["id"],
   feedback: ["id"],
 };

@@ -21,6 +21,15 @@ import { contentDispositionAttachment, createObjectKey, sanitizeFilename } from 
 import { ShareAccessError, resolveShareAccess } from "../core/share";
 import { createObjectStore } from "../core/object-storage";
 import { buildDeploymentPlan } from "../core/deployment";
+import {
+  BROWSERPLAN_DEFAULT_FLEET_EXCLUDES,
+  artifactToJson,
+  buildFleetInstallPlan,
+  buildMacArtifactInstallPlan,
+  chooseLatestArtifact,
+  registerArtifact,
+} from "../core/artifacts";
+import type { ArtifactFilters } from "../core/db";
 
 function maxUploadBytes(): number {
   const config = getConfig();
@@ -360,6 +369,38 @@ function sharePagePath(token: string): string {
   return `${publicPath}/${encodeURIComponent(token)}`;
 }
 
+function artifactFiltersFromQuery(c: Context): ArtifactFilters {
+  const limitParam = c.req.query("limit");
+  const limit = limitParam ? parseInt(limitParam, 10) : undefined;
+  return {
+    name: c.req.query("name") || undefined,
+    version: c.req.query("version") || undefined,
+    channel: c.req.query("channel") || undefined,
+    platform: c.req.query("platform") || undefined,
+    arch: c.req.query("arch") || undefined,
+    kind: c.req.query("kind") || undefined,
+    includeExpired: c.req.query("expired") === "true",
+    limit: limit && Number.isInteger(limit) && limit > 0 ? limit : undefined,
+  };
+}
+
+function bodyString(body: Record<string, unknown>, snake: string, camel?: string): string | undefined {
+  const snakeValue = body[snake];
+  const camelValue = camel ? body[camel] : undefined;
+  return typeof snakeValue === "string"
+    ? snakeValue
+    : typeof camelValue === "string"
+      ? camelValue
+      : undefined;
+}
+
+function bodyRecord(body: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  const value = body[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
 function isConfirmedDownloadRequest(c: Context): boolean {
   return c.req.header("x-attachments-download") === "1" || c.req.query("download") === "1";
 }
@@ -637,6 +678,117 @@ export function createApp(): Hono {
     }
 
     return c.json(items);
+  });
+
+  // POST /api/artifacts/register — attach version/platform/checksum metadata to an uploaded attachment
+  app.post("/api/artifacts/register", async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json() as Record<string, unknown>;
+    } catch {
+      return c.json({ error: "Request body is required" }, 400);
+    }
+
+    const attachmentId = bodyString(body, "attachment_id", "attachmentId");
+    const name = bodyString(body, "name");
+    const version = bodyString(body, "version");
+    const platform = bodyString(body, "platform");
+    const arch = bodyString(body, "arch");
+    const kind = bodyString(body, "kind");
+    const checksumSha256 = bodyString(body, "checksum_sha256", "checksumSha256");
+
+    if (!attachmentId || !name || !version || !platform || !arch || !kind || !checksumSha256) {
+      return c.json({
+        error: "attachment_id, name, version, platform, arch, kind, and checksum_sha256 are required",
+      }, 400);
+    }
+
+    try {
+      const resolved = registerArtifact({
+        attachmentId,
+        name,
+        version,
+        channel: bodyString(body, "channel"),
+        platform,
+        arch,
+        kind,
+        checksumSha256,
+        signature: bodyString(body, "signature") ?? null,
+        signatureType: bodyString(body, "signature_type", "signatureType") ?? null,
+        appName: bodyString(body, "app_name", "appName") ?? null,
+        metadata: bodyRecord(body, "metadata") ?? {},
+      });
+      return c.json(artifactToJson(resolved.artifact, resolved.attachment), 201);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const status = message.includes("not found") ? 404 : 400;
+      return c.json({ error: message }, status);
+    }
+  });
+
+  // GET /api/artifacts — list registered artifacts
+  app.get("/api/artifacts", (c) => {
+    const filters = artifactFiltersFromQuery(c);
+    const db = new AttachmentsDB();
+    try {
+      const artifacts = db.findArtifacts(filters);
+      return c.json(artifacts.map((artifact) => artifactToJson(artifact, db.findById(artifact.attachmentId))));
+    } finally {
+      db.close();
+    }
+  });
+
+  // GET /api/artifacts/latest — semver-aware latest artifact resolution
+  app.get("/api/artifacts/latest", (c) => {
+    const filters = { ...artifactFiltersFromQuery(c), limit: undefined };
+    const db = new AttachmentsDB();
+    try {
+      const artifact = chooseLatestArtifact(db.findArtifacts(filters));
+      if (!artifact) return c.json({ error: "Artifact not found" }, 404);
+      return c.json(artifactToJson(artifact, db.findById(artifact.attachmentId)));
+    } finally {
+      db.close();
+    }
+  });
+
+  // GET /api/artifacts/:id — get artifact metadata and backing attachment link
+  app.get("/api/artifacts/:id", (c) => {
+    const db = new AttachmentsDB();
+    try {
+      const artifact = db.findArtifactById(c.req.param("id"));
+      if (!artifact) return c.json({ error: "Artifact not found" }, 404);
+      return c.json(artifactToJson(artifact, db.findById(artifact.attachmentId)));
+    } finally {
+      db.close();
+    }
+  });
+
+  // GET /api/artifacts/:id/install-plan — generate a macOS/open-machines install plan
+  app.get("/api/artifacts/:id/install-plan", (c) => {
+    const db = new AttachmentsDB();
+    try {
+      const artifact = db.findArtifactById(c.req.param("id"));
+      if (!artifact) return c.json({ error: "Artifact not found" }, 404);
+      const attachment = db.findById(artifact.attachmentId);
+      if (!attachment) return c.json({ error: "Artifact attachment not found" }, 404);
+      const installPlan = buildMacArtifactInstallPlan(
+        { artifact, attachment },
+        {
+          appName: c.req.query("app_name") || undefined,
+          installDir: c.req.query("install_dir") || undefined,
+          attachmentsBin: c.req.query("attachments_bin") || undefined,
+        }
+      );
+      const machines = c.req.query("machines");
+      if (!machines) return c.json(installPlan);
+      const exclude = c.req.query("exclude") || BROWSERPLAN_DEFAULT_FLEET_EXCLUDES.join(",");
+      return c.json(buildFleetInstallPlan(installPlan, { machines, exclude }));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 400);
+    } finally {
+      db.close();
+    }
   });
 
   // GET /api/attachments/:id — get attachment metadata
