@@ -29,6 +29,26 @@ For hosted deployments, keep the bucket private and let the app serve public
 download pages and byte streams from `/a/<token>`. Direct presigned S3 links
 remain available for explicit admin workflows, but server links are the default.
 
+## Versioned Artifacts
+
+Attachments can also register uploaded files as versioned artifacts with
+checksum metadata and generated install plans. This is used by BrowserPlan to
+publish macOS app builds and let machines resolve/download/update consistently.
+
+```bash
+attachments artifact publish ./dist/BrowserPlan.zip \
+  --name browserplan --version 1.2.3 \
+  --platform darwin --arch arm64 --kind mac-app-zip \
+  --app-name BrowserPlan.app --expiry never --format json
+
+attachments artifact latest --name browserplan --platform darwin --arch arm64 --format json
+attachments artifact download art_xxx --output /tmp --format json
+attachments artifact install-plan art_xxx --browserplan-fleet --format json
+```
+
+See [docs/BROWSERPLAN_ARTIFACT_CONTRACT.md](docs/BROWSERPLAN_ARTIFACT_CONTRACT.md)
+for the open-chrome and open-machines facing contract.
+
 ## Storage
 
 ```bash

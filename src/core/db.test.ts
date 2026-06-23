@@ -2,7 +2,7 @@ import { describe, it, expect, mock, beforeAll, beforeEach, afterEach } from "bu
 import { tmpdir } from "os";
 import { join } from "path";
 import { rmSync } from "fs";
-import type { Attachment } from "./db";
+import type { Artifact, Attachment } from "./db";
 
 // AttachmentsDB is dynamically imported after mock.restore() so we always get the real class,
 // even when other test files (upload.test.ts, download.test.ts) have mocked "./db".
@@ -34,6 +34,28 @@ function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
     link: null,
     tag: null,
     expiresAt: null,
+    createdAt: Date.now(),
+    ...overrides,
+  };
+}
+
+function makeArtifact(overrides: Partial<Artifact> = {}): Artifact {
+  return {
+    id: "art_browserplan",
+    attachmentId: "att_test001",
+    name: "browserplan",
+    version: "1.0.0",
+    channel: "stable",
+    platform: "darwin",
+    arch: "arm64",
+    kind: "mac-app-zip",
+    filename: "BrowserPlan.zip",
+    size: 1024,
+    checksumSha256: "a".repeat(64),
+    signature: null,
+    signatureType: null,
+    appName: "BrowserPlan.app",
+    metadata: {},
     createdAt: Date.now(),
     ...overrides,
   };
@@ -176,6 +198,56 @@ describe("AttachmentsDB", () => {
       expect(results[0].id).toBe("att_new");
       expect(results[1].id).toBe("att_mid");
       expect(results[2].id).toBe("att_old");
+    });
+  });
+
+  describe("artifacts", () => {
+    it("inserts and retrieves a versioned artifact record", () => {
+      const attachment = makeAttachment();
+      db.insert(attachment);
+      const artifact = makeArtifact({
+        attachmentId: attachment.id,
+        version: "1.2.3",
+        checksumSha256: "b".repeat(64),
+        metadata: { build: "20260623" },
+      });
+
+      db.insertArtifact(artifact);
+      const found = db.findArtifactById(artifact.id);
+
+      expect(found).not.toBeNull();
+      expect(found!.attachmentId).toBe(attachment.id);
+      expect(found!.version).toBe("1.2.3");
+      expect(found!.checksumSha256).toBe("b".repeat(64));
+      expect(found!.appName).toBe("BrowserPlan.app");
+      expect(found!.metadata.build).toBe("20260623");
+    });
+
+    it("filters artifacts by identity fields and excludes expired backing attachments by default", () => {
+      const now = Date.now();
+      db.insert(makeAttachment({ id: "att_active", createdAt: now }));
+      db.insert(makeAttachment({ id: "att_other_arch", createdAt: now - 1 }));
+      db.insert(makeAttachment({ id: "att_expired", createdAt: now - 2, expiresAt: now - 1000 }));
+      db.insertArtifact(makeArtifact({ id: "art_active", attachmentId: "att_active", arch: "arm64", createdAt: now }));
+      db.insertArtifact(makeArtifact({ id: "art_other_arch", attachmentId: "att_other_arch", arch: "x64", createdAt: now - 1 }));
+      db.insertArtifact(makeArtifact({ id: "art_expired", attachmentId: "att_expired", arch: "arm64", version: "9.0.0", createdAt: now - 2 }));
+
+      const active = db.findArtifacts({
+        name: "browserplan",
+        channel: "stable",
+        platform: "darwin",
+        arch: "arm64",
+      });
+      expect(active.map((artifact) => artifact.id)).toEqual(["art_active"]);
+
+      const withExpired = db.findArtifacts({
+        name: "browserplan",
+        channel: "stable",
+        platform: "darwin",
+        arch: "arm64",
+        includeExpired: true,
+      });
+      expect(withExpired.map((artifact) => artifact.id)).toContain("art_expired");
     });
   });
 

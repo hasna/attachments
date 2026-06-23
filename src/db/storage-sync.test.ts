@@ -60,7 +60,7 @@ describe("attachments storage sync configuration", () => {
   });
 
   it("parses and validates storage table filters", () => {
-    expect(parseStorageTables()).toEqual(["attachments", "share_links", "feedback"]);
+    expect(parseStorageTables()).toEqual(["attachments", "artifacts", "share_links", "feedback"]);
     expect(parseStorageTables([" attachments ", "feedback"])).toEqual(["attachments", "feedback"]);
     expect(() => parseStorageTables(["missing"])).toThrow("Unknown attachments sync table");
   });
@@ -68,7 +68,7 @@ describe("attachments storage sync configuration", () => {
   it("exports the storage sync surface from the storage subpath source", async () => {
     const storage = await import("../storage");
 
-    expect(storage.STORAGE_TABLES).toEqual(["attachments", "share_links", "feedback"]);
+    expect(storage.STORAGE_TABLES).toEqual(["attachments", "artifacts", "share_links", "feedback"]);
     expect(storage.getStorageDatabaseUrl()).toBeNull();
     expect(storage.getStorageMode()).toBe("local");
     expect(storage.PG_MIGRATIONS.length).toBeGreaterThan(0);

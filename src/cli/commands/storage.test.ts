@@ -80,6 +80,6 @@ describe("attachments storage command", () => {
     expect(status.mode).toBe("local");
     expect(status.env).toEqual(["HASNA_ATTACHMENTS_DATABASE_URL", "ATTACHMENTS_DATABASE_URL"]);
     expect("deprecatedEnv" in status).toBe(false);
-    expect(status.tables).toEqual(["attachments", "share_links", "feedback"]);
+    expect(status.tables).toEqual(["attachments", "artifacts", "share_links", "feedback"]);
   });
 });
