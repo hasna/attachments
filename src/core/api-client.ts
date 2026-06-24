@@ -261,6 +261,13 @@ export async function listCloudAttachments(options: { limit?: number; includeExp
   return (await readJson<ApiAttachment[]>(response)).map(toAttachment);
 }
 
+export async function getCloudAttachment(id: string, client: CloudClientOptions = {}): Promise<Attachment> {
+  const response = await fetch(`${requireBaseUrl(client)}/api/attachments/${encodeURIComponent(id)}`, {
+    headers: authHeaders(client),
+  });
+  return toAttachment(await readJson<ApiAttachment>(response));
+}
+
 export async function deleteCloudAttachment(id: string, client: CloudClientOptions = {}): Promise<void> {
   const response = await fetch(`${requireBaseUrl(client)}/api/attachments/${encodeURIComponent(id)}`, {
     method: "DELETE",

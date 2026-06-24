@@ -72,6 +72,15 @@ const mockDelete = mock((_id: string) => {});
 const mockUpdateLink = mock((_id: string, _link: string, _expiresAt?: number | null) => {});
 const mockMarkReady = mock((_input: unknown) => {});
 const mockClose = mock(() => {});
+const mockRawDb = {
+  exec: mock((_sql: string) => {}),
+  prepare: mock((_sql: string) => ({
+    all: mock(() => []),
+    run: mock(() => ({ changes: 0 })),
+    get: mock(() => null),
+  })),
+  transaction: mock((fn: (rows: unknown[]) => void) => fn),
+};
 
 // Use real config module with temp config file — avoids module cache pollution
 let _mcpTestConfigDir: string;
@@ -140,6 +149,9 @@ mock.module("../core/db.js", () => ({
     close = mockClose;
     insert = mockDbInsert;
     createShareLink = mockDbCreateShareLink;
+    get raw() {
+      return mockRawDb;
+    }
   },
 }));
 // Set up real config with test values
@@ -539,6 +551,9 @@ describe("MCP Server — list_attachments", () => {
     // compact string contains the attachment id
     expect(result.content[0]!.text).toContain("att_test001");
     expect(result.content[0]!.text).toContain("test.txt");
+    expect(result.content[0]!.text).toContain("link:expired");
+    expect(result.content[0]!.text).toContain("Links hidden");
+    expect(result.content[0]!.text).not.toContain("https://example.com/link");
   });
 
   it("returns JSON array when format=json", async () => {
@@ -550,6 +565,14 @@ describe("MCP Server — list_attachments", () => {
     const parsed = JSON.parse(result.content[0]!.text);
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed[0].id).toBe("att_test001");
+    expect(parsed[0].link).toBe("https://example.com/link");
+  });
+
+  it("does not apply the compact default limit to JSON output", async () => {
+    const server = createServer();
+    await callTool(server, "list_attachments", { format: "json" });
+
+    expect(mockFindAll).toHaveBeenCalledWith({ limit: undefined, tag: undefined });
   });
 
   it("passes limit to findAll", async () => {
@@ -563,7 +586,7 @@ describe("MCP Server — list_attachments", () => {
     const server = createServer();
     await callTool(server, "list_attachments", { tag: "session-123" });
 
-    expect(mockFindAll).toHaveBeenCalledWith({ limit: undefined, tag: "session-123" });
+    expect(mockFindAll).toHaveBeenCalledWith({ limit: 20, tag: "session-123" });
   });
 });
 
@@ -1358,9 +1381,19 @@ describe("MCP Server — save_session", () => {
 describe("MCP Server — report_stats", () => {
   beforeEach(() => mockFindAll.mockClear());
 
-  it("returns report with correct shape", async () => {
+  it("returns compact text by default", async () => {
     const server = createServer();
     const result = (await callTool(server, "report_stats", {})) as {
+      content: Array<{ text: string }>;
+    };
+
+    expect(result.content[0]!.text).toContain("Last 7 days");
+    expect(result.content[0]!.text).toContain("Use format:'json'");
+  });
+
+  it("returns report with correct shape when format=json", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "report_stats", { format: "json" })) as {
       content: Array<{ text: string }>;
     };
 
@@ -1376,7 +1409,7 @@ describe("MCP Server — report_stats", () => {
 
   it("uses default 7 days when days is not provided", async () => {
     const server = createServer();
-    const result = (await callTool(server, "report_stats", {})) as {
+    const result = (await callTool(server, "report_stats", { format: "json" })) as {
       content: Array<{ text: string }>;
     };
 
@@ -1386,7 +1419,7 @@ describe("MCP Server — report_stats", () => {
 
   it("respects custom days param", async () => {
     const server = createServer();
-    const result = (await callTool(server, "report_stats", { days: 30 })) as {
+    const result = (await callTool(server, "report_stats", { days: 30, format: "json" })) as {
       content: Array<{ text: string }>;
     };
 
@@ -1452,6 +1485,30 @@ describe("MCP Server — get_context", () => {
     expect(parsed).toHaveProperty("expiring_soon");
     expect(parsed).toHaveProperty("summary");
     expect(typeof parsed.attachments).toBe("number");
+  });
+});
+
+describe("MCP Server — storage_status", () => {
+  it("returns compact text by default", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "storage_status", {})) as {
+      content: Array<{ text: string }>;
+    };
+
+    expect(result.content[0]!.text).toContain("Storage:");
+    expect(result.content[0]!.text).toContain("Use format:'json'");
+  });
+
+  it("returns full JSON when format=json", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "storage_status", { format: "json" })) as {
+      content: Array<{ text: string }>;
+    };
+
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed).toHaveProperty("configured");
+    expect(parsed).toHaveProperty("mode");
+    expect(parsed).toHaveProperty("tables");
   });
 });
 

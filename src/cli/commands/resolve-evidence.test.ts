@@ -274,6 +274,20 @@ describe("resolveEvidence", () => {
 
     expect(result[0].link).toBeNull();
   });
+
+  it("carries expiry metadata from DB records for link state", async () => {
+    const expiredAt = Date.now() - 1000;
+    mockFindById.mockImplementation(() => makeDbAttachment({ expiresAt: expiredAt }));
+
+    const task = makeTaskResponse([
+      { id: "att_abc123", link: "https://stale.example.com", filename: "report.pdf", size: 1024 },
+    ]);
+    const fakeFetch = makeFetch(200, task);
+
+    const result = await resolveEvidence("TASK-001", {}, fakeFetch);
+
+    expect(result[0].expiresAt).toBe(expiredAt);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -302,8 +316,74 @@ describe("resolve-evidence CLI command", () => {
       const output = capture.out.join("");
       expect(output).toContain("att_abc123");
       expect(output).toContain("report.pdf");
-      expect(output).toContain("https://s3.example.com/fresh-link/att_abc123");
+      expect(output).toContain("link:ready");
+      expect(output).toContain("Links hidden");
+      expect(output).not.toContain("https://s3.example.com/fresh-link/att_abc123");
       expect(output).toContain("1.2MB");
+    } finally {
+      capture.restore();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("outputs full links when --verbose is passed", async () => {
+    mockFindById.mockImplementation(() => makeDbAttachment());
+
+    const task = makeTaskResponse([
+      { id: "att_abc123", link: "https://stale.example.com", filename: "report.pdf", size: 1258291 },
+    ]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = makeFetch(200, task);
+
+    const capture = captureOutput();
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["resolve-evidence", "TASK-001", "--verbose"], { from: "user" });
+      expect(capture.out.join("")).toContain("https://s3.example.com/fresh-link/att_abc123");
+    } finally {
+      capture.restore();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("shows expired link state in compact output", async () => {
+    mockFindById.mockImplementation(() => makeDbAttachment({ expiresAt: Date.now() - 1000 }));
+
+    const task = makeTaskResponse([
+      { id: "att_abc123", link: "https://stale.example.com", filename: "report.pdf", size: 1258291 },
+    ]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = makeFetch(200, task);
+
+    const capture = captureOutput();
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["resolve-evidence", "TASK-001"], { from: "user" });
+      expect(capture.out.join("")).toContain("link:expired");
+    } finally {
+      capture.restore();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("caps compact output by default and supports --limit", async () => {
+    mockFindById.mockImplementation((id: string) => makeDbAttachment({ id, filename: `${id}.txt`, size: 512 }));
+
+    const task = makeTaskResponse([
+      { id: "att_1", link: "https://one.example.com", filename: "one.txt", size: 512 },
+      { id: "att_2", link: "https://two.example.com", filename: "two.txt", size: 512 },
+    ]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = makeFetch(200, task);
+
+    const capture = captureOutput();
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["resolve-evidence", "TASK-001", "--limit", "1"], { from: "user" });
+      const output = capture.out.join("");
+      expect(output).toContain("att_1");
+      expect(output).not.toContain("att_2");
+      expect(output).toContain("1 more attachment hidden");
     } finally {
       capture.restore();
       globalThis.fetch = originalFetch;
@@ -442,7 +522,7 @@ describe("resolve-evidence CLI command", () => {
     }
   });
 
-  it("shows (no link) in compact output when link is null", async () => {
+  it("shows link:none in compact output when link is null", async () => {
     mockFindById.mockImplementation(() => makeDbAttachment({ link: null }));
 
     const task = makeTaskResponse([
@@ -455,7 +535,7 @@ describe("resolve-evidence CLI command", () => {
     try {
       const program = buildProgram();
       await program.parseAsync(["resolve-evidence", "TASK-001"], { from: "user" });
-      expect(capture.out.join("")).toContain("(no link)");
+      expect(capture.out.join("")).toContain("link:none");
     } finally {
       capture.restore();
       globalThis.fetch = originalFetch;

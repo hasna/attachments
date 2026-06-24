@@ -173,7 +173,12 @@ function formatExpiredAgo(ms: number): string {
   return `${days}d ago`;
 }
 
-function compactOutput(summary: HealthCheckSummary): string {
+export function formatHealthCompact(
+  summary: HealthCheckSummary,
+  options: { limit?: number; verbose?: boolean } = {}
+): string {
+  const limit = options.limit ?? 20;
+  const verbose = !!options.verbose;
   const parts: string[] = [];
   if (summary.healthy > 0) parts.push(`${summary.healthy} healthy`);
   if (summary.expired > 0) parts.push(`${summary.expired} expired`);
@@ -183,18 +188,28 @@ function compactOutput(summary: HealthCheckSummary): string {
   const lines: string[] = [];
   lines.push(`Attachment health: ${parts.join(", ") || "0 attachments"}`);
 
-  for (const r of summary.results) {
+  const issues = summary.results.filter((r) => r.status !== "healthy" || r.fixed);
+  const visibleIssues = verbose ? issues : issues.slice(0, limit);
+
+  for (const r of visibleIssues) {
     if (r.status === "expired" || r.fixed) {
       const ago = r.expiredAgoMs != null ? ` (expired ${formatExpiredAgo(r.expiredAgoMs)})` : "";
       const fixedNote = r.fixed ? " → regenerated" : "";
-      lines.push(`  Expired: ${r.id} ${r.filename}${ago}${fixedNote}`);
+      const linkNote = verbose && r.newLink ? ` new:${r.newLink}` : "";
+      lines.push(`  Expired: ${r.id} ${r.filename}${ago}${fixedNote}${linkNote}`);
     }
     if (r.status === "dead") {
-      lines.push(`  Dead: ${r.id} ${r.filename} (link 404)`);
+      const linkNote = verbose && r.link ? ` ${r.link}` : "(link failed)";
+      lines.push(`  Dead: ${r.id} ${r.filename} ${linkNote}`);
     }
     if (r.status === "no-link") {
       lines.push(`  No link: ${r.id} ${r.filename}`);
     }
+  }
+
+  const hidden = issues.length - visibleIssues.length;
+  if (hidden > 0) {
+    lines.push(`  ... ${hidden} more issue${hidden === 1 ? "" : "s"} hidden; use --limit, --verbose, or --format json for details`);
   }
 
   return lines.join("\n");
@@ -210,12 +225,19 @@ export function registerHealthCheck(program: Command): void {
     .description("Validate attachment links — find expired, dead, or missing links")
     .option("--fix", "Regenerate presigned links for expired attachments", false)
     .option("--format <format>", "Output format: compact or json", "compact")
-    .action(async (options: { fix?: boolean; format?: string }) => {
+    .option("--limit <n>", "Maximum issue rows in compact output", "20")
+    .option("--verbose", "Show all issue rows and regenerated/dead URLs", false)
+    .action(async (options: { fix?: boolean; format?: string; limit?: string; verbose?: boolean }) => {
       const fix = !!options.fix;
       const format = (options.format ?? "compact") as string;
+      const limit = parseInt(options.limit ?? "20", 10);
 
       if (!["compact", "json"].includes(format)) {
         process.stderr.write(`Error: --format must be one of: compact, json\n`);
+        process.exit(1);
+      }
+      if (!Number.isInteger(limit) || limit < 1) {
+        process.stderr.write(`Error: --limit must be a positive integer\n`);
         process.exit(1);
       }
 
@@ -225,7 +247,7 @@ export function registerHealthCheck(program: Command): void {
         if (format === "json") {
           process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
         } else {
-          process.stdout.write(compactOutput(summary) + "\n");
+          process.stdout.write(formatHealthCompact(summary, { limit, verbose: options.verbose }) + "\n");
         }
 
         // Exit with code 1 if there are dead or expired links (unfixed)

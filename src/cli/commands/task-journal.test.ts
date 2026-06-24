@@ -214,7 +214,7 @@ describe("formatMarkdown", () => {
     attachments: [makeAttachment()],
   };
 
-  it("renders full markdown output with task header, history, and attachments", () => {
+  it("renders markdown output with hidden links by default", () => {
     const output = formatMarkdown(journal, true);
     expect(output).toContain("# Task Journal: TASK-001 — Fix auth bug");
     expect(output).toContain("Status: completed");
@@ -226,7 +226,15 @@ describe("formatMarkdown", () => {
     expect(output).toContain("att_abc123");
     expect(output).toContain("fix-report.pdf");
     expect(output).toContain("1.2MB");
+    expect(output).toContain("link:expired");
+    expect(output).toContain("Links hidden");
+    expect(output).not.toContain("https://s3.example.com/att_abc123");
+  });
+
+  it("renders full links in markdown when verbose", () => {
+    const output = formatMarkdown(journal, true, { verbose: true });
     expect(output).toContain("https://s3.example.com/att_abc123");
+    expect(output).toContain("Fix written");
   });
 
   it("shows todos unreachable note when todos is down", () => {
@@ -255,6 +263,22 @@ describe("formatCompact", () => {
     expect(output).toContain("Fix auth bug");
     expect(output).toContain("created");
     expect(output).toContain("att_abc123");
+    expect(output).toContain("link:expired");
+    expect(output).not.toContain("https://s3.example.com/att_abc123");
+  });
+
+  it("caps compact output unless verbose", () => {
+    const journal: TaskJournal = {
+      task: { id: "TASK-001", subject: "Fix auth bug" },
+      history: [
+        { timestamp: "2026-03-14T10:23:00Z", action: "created" },
+        { timestamp: "2026-03-14T10:24:00Z", action: "started" },
+      ],
+      attachments: [makeAttachment(), makeAttachment({ id: "att_def456" })],
+    };
+    const output = formatCompact(journal, true, { limit: 1 });
+    expect(output).toContain("1 more history entries hidden");
+    expect(output).toContain("1 more attachments hidden");
   });
 });
 
@@ -278,7 +302,7 @@ describe("formatJson", () => {
 // ---------------------------------------------------------------------------
 
 describe("task-journal CLI command", () => {
-  it("outputs markdown by default for a task with history and attachments", async () => {
+  it("defaults to compact output for a task with history and attachments", async () => {
     const fakeFetch = mock(async (url: unknown) => {
       const u = String(url);
       if (u.endsWith("/history")) {
@@ -306,7 +330,7 @@ describe("task-journal CLI command", () => {
       const program = buildProgram();
       // This may fail on DB open (fine — we check output partially)
       try {
-        await program.parseAsync(["task-journal", "TASK-001"], { from: "user" });
+      await program.parseAsync(["task-journal", "TASK-001"], { from: "user" });
       } catch {
         // DB open may fail in test env — that's acceptable for smoke test
       }

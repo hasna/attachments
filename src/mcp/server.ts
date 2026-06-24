@@ -10,8 +10,8 @@ import { isStdioMode, resolveMcpHttpPort, startMcpHttpServer } from "./http.js";
 import { nanoid } from "nanoid";
 import { lookup as mimeLookup } from "mime-types";
 import { uploadFile, uploadFromUrl, uploadFromBuffer } from "../core/upload.js";
-import { computeReport } from "../cli/commands/report.js";
-import { runHealthCheck } from "../cli/commands/health-check.js";
+import { computeReport, formatCompact as formatReportCompact } from "../cli/commands/report.js";
+import { formatHealthCompact, runHealthCheck } from "../cli/commands/health-check.js";
 import { downloadAttachment } from "../core/download.js";
 import { AttachmentsDB } from "../core/db.js";
 import { STORAGE_TABLES, getStorageStatus, storagePull, storagePush, storageSync } from "../db/storage-sync.js";
@@ -19,6 +19,7 @@ import { getConfig, getPublicBaseUrl, parseExpiryStrict, setConfig, validateS3Co
 import { generatePresignedLink, generateShareLink, getLinkType } from "../core/links.js";
 import { S3Client } from "../core/s3.js";
 import { createObjectKey, sanitizeFilename } from "../core/security.js";
+import { formatBytes, formatDateShort, linkState, truncateMiddle } from "../cli/utils.js";
 
 // ---------------------------------------------------------------------------
 // In-memory agent registry (attribution for uploads)
@@ -73,11 +74,11 @@ const FULL_SCHEMAS: Record<string, object> = {
   },
   list_attachments: {
     name: "list_attachments",
-    description: "List attachments stored in the local DB.",
+    description: "List attachments stored in the local DB. Compact output is capped and hides full links by default; use format=json for full records.",
     inputSchema: {
       type: "object",
       properties: {
-        limit: { type: "number", description: "Max number of results." },
+        limit: { type: "number", description: "Max number of results (default 20)." },
         format: { type: "string", enum: ["compact", "json"], description: "Output format." },
         tag: { type: "string", description: "Filter by tag." },
       },
@@ -168,12 +169,13 @@ const FULL_SCHEMAS: Record<string, object> = {
   },
   report_stats: {
     name: "report_stats",
-    description: "Return an activity and storage report for a recent time window. Equivalent to the `attachments report` CLI command.",
+    description: "Return an activity and storage report for a recent time window. Defaults to compact text; set format=json for the full object.",
     inputSchema: {
       type: "object",
       properties: {
         days: { type: "number", description: "Number of days to look back (default: 7)." },
         tag: { type: "string", description: "Filter by tag (e.g. project:my-project)." },
+        format: { type: "string", enum: ["compact", "json"], description: "Output format (default compact)." },
       },
     },
   },
@@ -228,11 +230,14 @@ const FULL_SCHEMAS: Record<string, object> = {
   },
   check_attachment_health: {
     name: "check_attachment_health",
-    description: "Check the health of all attachment links — identifies expired (past expiresAt), dead (link 404), and healthy ones. Optionally regenerates presigned links for expired attachments. Returns counts and per-attachment status.",
+    description: "Check attachment link health. Defaults to compact text capped at 20 issue rows; set format=json for full per-attachment results.",
     inputSchema: {
       type: "object",
       properties: {
         fix: { type: "boolean", description: "If true, regenerate presigned links for expired attachments." },
+        limit: { type: "number", description: "Maximum issue rows in compact output (default 20)." },
+        verbose: { type: "boolean", description: "Show all issue rows and regenerated/dead URLs in compact output." },
+        format: { type: "string", enum: ["compact", "json"], description: "Output format (default compact)." },
         todos_url: { type: "string", description: "Unused currently; reserved for future todos-aware health checks." },
       },
     },
@@ -299,7 +304,7 @@ const LEAN_TOOLS = [
   },
   {
     name: "list_attachments",
-    description: "List attachments",
+    description: "List attachments compactly",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -394,12 +399,13 @@ const LEAN_TOOLS = [
   },
   {
     name: "report_stats",
-    description: "Activity/storage report for a time window",
+    description: "Compact activity/storage report",
     inputSchema: {
       type: "object" as const,
       properties: {
         days: { type: "number" },
         tag: { type: "string" },
+        format: { type: "string", enum: ["compact", "json"] },
       },
     },
   },
@@ -469,11 +475,14 @@ const LEAN_TOOLS = [
   },
   {
     name: "check_attachment_health",
-    description: "Check health of all attachment links (expired/dead/healthy). Use fix:true to regenerate expired links.",
+    description: "Compact attachment link health check",
     inputSchema: {
       type: "object" as const,
       properties: {
         fix: { type: "boolean" },
+        limit: { type: "number" },
+        verbose: { type: "boolean" },
+        format: { type: "string", enum: ["compact", "json"] },
         todos_url: { type: "string" },
       },
     },
@@ -546,10 +555,12 @@ const LEAN_TOOLS = [
   },
   {
     name: "storage_status",
-    description: "Show remote storage configuration and sync metadata",
+    description: "Show compact remote storage configuration and sync metadata",
     inputSchema: {
       type: "object" as const,
-      properties: {},
+      properties: {
+        format: { type: "string", enum: ["compact", "json"] },
+      },
     },
   },
   {
@@ -676,28 +687,32 @@ function handleListAttachments(args: {
   format?: "compact" | "json";
   tag?: string;
 }) {
+  const isJson = args.format === "json";
+  const limit = Number.isInteger(args.limit) && args.limit! > 0
+    ? args.limit!
+    : isJson
+      ? undefined
+      : 20;
   const db = new AttachmentsDB();
   let attachments: ReturnType<AttachmentsDB["findAll"]>;
   try {
-    attachments = db.findAll({ limit: args.limit, tag: args.tag });
+    attachments = db.findAll({ limit, tag: args.tag });
   } finally {
     db.close();
   }
 
-  if (args.format === "json") {
+  if (isJson) {
     return attachments;
   }
 
   // compact format
   if (attachments.length === 0) return "no attachments";
-  return attachments
-    .map((a) => {
-      const exp = a.expiresAt
-        ? new Date(a.expiresAt).toISOString().slice(0, 10)
-        : "never";
-      return `${a.id}  ${a.filename}  ${(a.size / 1024).toFixed(1)}KB  exp:${exp}`;
-    })
-    .join("\n");
+  const lines = attachments.map((a) => {
+    const tag = a.tag ? ` tag:${truncateMiddle(a.tag, 24)}` : "";
+    return `${a.id}  ${truncateMiddle(a.filename, 48)}  ${formatBytes(a.size)}  link:${linkState(a.link, a.expiresAt)}  exp:${formatDateShort(a.expiresAt)}${tag}`;
+  });
+  lines.push(`Showing ${attachments.length} attachment${attachments.length === 1 ? "" : "s"} (limit ${limit ?? 20}). Links hidden; call get_link or use format:'json' for details.`);
+  return lines.join("\n");
 }
 
 function handleDeleteAttachment(args: { id: string }) {
@@ -1141,9 +1156,18 @@ async function handleSaveSession(args: {
 
 async function handleCheckAttachmentHealth(args: {
   fix?: boolean;
+  limit?: number;
+  verbose?: boolean;
+  format?: "compact" | "json";
   todos_url?: string;
 }) {
   const summary = await runHealthCheck({ fix: args.fix });
+  if (args.format !== "json") {
+    return formatHealthCompact(summary, {
+      limit: Number.isInteger(args.limit) && args.limit! > 0 ? args.limit : 20,
+      verbose: args.verbose,
+    });
+  }
   return {
     healthy: summary.healthy,
     expired: summary.expired,
@@ -1164,7 +1188,7 @@ async function handleCheckAttachmentHealth(args: {
   };
 }
 
-function handleReportStats(args: { days?: number; tag?: string }) {
+function handleReportStats(args: { days?: number; tag?: string; format?: "compact" | "json" }) {
   const days = args.days ?? 7;
   if (isNaN(days) || days < 1) {
     throw new Error("days must be a positive integer");
@@ -1178,7 +1202,24 @@ function handleReportStats(args: { days?: number; tag?: string }) {
   } finally {
     db.close();
   }
-  return computeReport(all, sinceMs, nowMs);
+  const report = computeReport(all, sinceMs, nowMs);
+  if (args.format === "json") return report;
+  return `${formatReportCompact(report)}\nUse format:'json' for the full report object.`;
+}
+
+function handleStorageStatus(args: { format?: "compact" | "json" }) {
+  const status = getStorageStatus();
+  if (args.format === "json") return status;
+  const syncSummary = status.sync.length === 0
+    ? "none"
+    : status.sync.map((item) => `${item.table_name}:${item.direction}:${item.last_synced_at ?? "never"}`).join(", ");
+  return [
+    `Storage: ${status.mode}${status.configured ? " (remote configured)" : " (local only)"}`,
+    `Env: ${status.activeEnv ?? "none"}`,
+    `Tables: ${status.tables.join(", ")}`,
+    `Sync: ${syncSummary}`,
+    "Use format:'json' for full storage metadata.",
+  ].join("\n");
 }
 
 async function handleGetContext(args: { format?: string }) {
@@ -1360,7 +1401,7 @@ export function buildServer(): Server {
           break;
         }
         case "storage_status": {
-          result = getStorageStatus();
+          result = handleStorageStatus(args as Parameters<typeof handleStorageStatus>[0]);
           break;
         }
         case "storage_push": {

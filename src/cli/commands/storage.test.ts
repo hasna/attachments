@@ -67,8 +67,16 @@ describe("attachments storage command", () => {
     expect(help).not.toMatch(retiredCommandPattern());
   });
 
-  it("reports local storage status with canonical env names", async () => {
+  it("reports compact local storage status by default", async () => {
     const output = await runCommand(["storage", "status"]);
+    expect(output).toContain("Storage: local (local only)");
+    expect(output).toContain("Env: none");
+    expect(output).toContain("Tables: attachments, share_links, feedback");
+    expect(output).toContain("Use --format json");
+  });
+
+  it("reports JSON local storage status when requested", async () => {
+    const output = await runCommand(["storage", "status", "--format", "json"]);
     const status = JSON.parse(output) as {
       configured: boolean;
       mode: string;
