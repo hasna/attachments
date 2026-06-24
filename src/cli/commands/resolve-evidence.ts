@@ -1,9 +1,12 @@
 import { Command } from "commander";
 import { AttachmentsDB } from "../../core/db";
+import { linkState, truncateMiddle } from "../utils";
 
 export interface ResolveEvidenceOptions {
   todosUrl?: string;
   format?: "compact" | "json";
+  verbose?: boolean;
+  limit?: string;
 }
 
 export interface EvidenceAttachmentEntry {
@@ -11,6 +14,8 @@ export interface EvidenceAttachmentEntry {
   link: string | null;
   filename: string;
   size: number;
+  expiresAt?: number | null;
+  expires_at?: number | null;
 }
 
 export interface ResolvedAttachment {
@@ -18,6 +23,7 @@ export interface ResolvedAttachment {
   filename: string;
   link: string | null;
   size: number;
+  expiresAt: number | null;
 }
 
 /**
@@ -75,6 +81,7 @@ export async function resolveEvidence(
           filename: dbRecord.filename,
           link: dbRecord.link,
           size: dbRecord.size,
+          expiresAt: dbRecord.expiresAt,
         });
       } else {
         // Fall back to whatever was stored in the task evidence
@@ -83,6 +90,7 @@ export async function resolveEvidence(
           filename: entry.filename,
           link: entry.link,
           size: entry.size,
+          expiresAt: entry.expiresAt ?? entry.expires_at ?? null,
         });
       }
     }
@@ -114,9 +122,21 @@ export function registerResolveEvidence(program: Command): void {
       "Output format: compact or json",
       "compact"
     )
+    .option("--verbose", "Include full links in compact output", false)
+    .option("--limit <n>", "Maximum attachment rows in compact output", "20")
     .action(async (taskId: string, options: ResolveEvidenceOptions) => {
       const todosUrl = options.todosUrl ?? "http://localhost:3000";
       const format = options.format ?? "compact";
+      const limit = parseInt(options.limit ?? "20", 10);
+
+      if (!["compact", "json"].includes(format)) {
+        process.stderr.write("Error: --format must be one of: compact, json\n");
+        process.exit(1);
+      }
+      if (!Number.isInteger(limit) || limit < 1) {
+        process.stderr.write("Error: --limit must be a positive integer\n");
+        process.exit(1);
+      }
 
       try {
         const resolved = await resolveEvidence(taskId, { todosUrl });
@@ -129,9 +149,17 @@ export function registerResolveEvidence(program: Command): void {
         if (format === "json") {
           process.stdout.write(JSON.stringify(resolved, null, 2) + "\n");
         } else {
-          for (const att of resolved) {
-            const link = att.link ?? "(no link)";
-            process.stdout.write(`${att.id} ${att.filename} ${link} (${formatSize(att.size)})\n`);
+          const visible = resolved.slice(0, limit);
+          for (const att of visible) {
+            const link = options.verbose ? att.link ?? "(no link)" : `link:${linkState(att.link, att.expiresAt)}`;
+            process.stdout.write(`${att.id} ${truncateMiddle(att.filename, options.verbose ? 120 : 48)} ${link} (${formatSize(att.size)})\n`);
+          }
+          const hidden = resolved.length - visible.length;
+          if (hidden > 0) {
+            process.stdout.write(`${hidden} more attachment${hidden === 1 ? "" : "s"} hidden; use --limit or --format json for details.\n`);
+          }
+          if (!options.verbose && resolved.some((att) => att.link)) {
+            process.stdout.write("Links hidden; use --verbose or --format json for full URLs.\n");
           }
         }
       } catch (err: unknown) {

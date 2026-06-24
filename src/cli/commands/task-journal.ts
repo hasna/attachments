@@ -1,10 +1,13 @@
 import { Command } from "commander";
 import { AttachmentsDB } from "../../core/db";
 import type { Attachment } from "../../core/db";
+import { linkState, truncateMiddle } from "../utils";
 
 export interface TaskJournalOptions {
   todosUrl?: string;
   format?: "markdown" | "compact" | "json";
+  limit?: string;
+  verbose?: boolean;
 }
 
 export interface TaskHistoryEntry {
@@ -158,8 +161,21 @@ function formatExpiry(expiresAt: number | null): string {
   return `expires: ${new Date(expiresAt).toISOString().slice(0, 10)}`;
 }
 
-export function formatMarkdown(journal: TaskJournal, todosReachable: boolean): string {
+function takeWithHidden<T>(items: T[], limit: number, verbose: boolean): { visible: T[]; hidden: number } {
+  if (verbose) return { visible: items, hidden: 0 };
+  return { visible: items.slice(0, limit), hidden: Math.max(0, items.length - limit) };
+}
+
+export function formatMarkdown(
+  journal: TaskJournal,
+  todosReachable: boolean,
+  options: { limit?: number; verbose?: boolean } = {}
+): string {
   const { task, history, attachments } = journal;
+  const limit = options.limit ?? 20;
+  const verbose = !!options.verbose;
+  const shownHistory = takeWithHidden(history, limit, verbose);
+  const shownAttachments = takeWithHidden(attachments, limit, verbose);
 
   const title = task.subject ?? task.id;
   const lines: string[] = [];
@@ -180,13 +196,16 @@ export function formatMarkdown(journal: TaskJournal, todosReachable: boolean): s
   if (history.length === 0) {
     lines.push("_(no history available)_");
   } else {
-    for (const entry of history) {
+    for (const entry of shownHistory.visible) {
       const time = formatTimestamp(entry.timestamp);
       let line = `${time} [${entry.action}]`;
       if (entry.actor) line += ` ${entry.actor}`;
-      if (entry.details) line += ` ${entry.details}`;
+      if (verbose && entry.details) line += ` ${entry.details}`;
       if (entry.progress !== undefined) line += ` (${entry.progress}%)`;
       lines.push(line);
+    }
+    if (shownHistory.hidden > 0) {
+      lines.push(`_(${shownHistory.hidden} more history entries hidden; use --limit or --verbose)_`);
     }
   }
 
@@ -194,34 +213,56 @@ export function formatMarkdown(journal: TaskJournal, todosReachable: boolean): s
   if (attachments.length === 0) {
     lines.push("_(no attachments found)_");
   } else {
-    for (const att of attachments) {
-      const link = att.link ?? "(no link)";
+    for (const att of shownAttachments.visible) {
+      const link = verbose ? att.link ?? "(no link)" : `link:${linkState(att.link, att.expiresAt)}`;
       const expiry = formatExpiry(att.expiresAt);
-      lines.push(`${att.id}  ${att.filename}  ${formatSize(att.size)}  ${link}  (${expiry})`);
+      lines.push(`${att.id}  ${truncateMiddle(att.filename, verbose ? 120 : 56)}  ${formatSize(att.size)}  ${link}  (${expiry})`);
+    }
+    if (shownAttachments.hidden > 0) {
+      lines.push(`_(${shownAttachments.hidden} more attachments hidden; use --limit or --verbose)_`);
+    }
+    if (!verbose) {
+      lines.push("_Links hidden; use `attachments link <id>` or `--verbose` for full URLs._");
     }
   }
 
   return lines.join("\n");
 }
 
-export function formatCompact(journal: TaskJournal, todosReachable: boolean): string {
+export function formatCompact(
+  journal: TaskJournal,
+  todosReachable: boolean,
+  options: { limit?: number; verbose?: boolean } = {}
+): string {
   const { task, history, attachments } = journal;
+  const limit = options.limit ?? 20;
+  const verbose = !!options.verbose;
+  const shownHistory = takeWithHidden(history, limit, verbose);
+  const shownAttachments = takeWithHidden(attachments, limit, verbose);
   const lines: string[] = [];
 
   const title = task.subject ?? task.id;
-  lines.push(`[${task.id}] ${title}${task.status ? ` (${task.status})` : ""}`);
+  lines.push(`[${task.id}] ${truncateMiddle(title, 80)}${task.status ? ` (${task.status})` : ""}`);
 
   if (!todosReachable) lines.push("  todos: unreachable");
 
-  for (const entry of history) {
+  for (const entry of shownHistory.visible) {
     const time = formatTimestamp(entry.timestamp);
     let line = `  ${time} ${entry.action}`;
     if (entry.actor) line += ` by ${entry.actor}`;
+    if (verbose && entry.details) line += `: ${truncateMiddle(entry.details, 120)}`;
     lines.push(line);
   }
+  if (shownHistory.hidden > 0) lines.push(`  ... ${shownHistory.hidden} more history entries hidden`);
 
-  for (const att of attachments) {
-    lines.push(`  att: ${att.id} ${att.filename} ${formatSize(att.size)}`);
+  for (const att of shownAttachments.visible) {
+    const link = verbose ? ` ${att.link ?? "(no link)"}` : ` link:${linkState(att.link, att.expiresAt)}`;
+    lines.push(`  att: ${att.id} ${truncateMiddle(att.filename, verbose ? 120 : 48)} ${formatSize(att.size)}${link}`);
+  }
+  if (shownAttachments.hidden > 0) lines.push(`  ... ${shownAttachments.hidden} more attachments hidden`);
+
+  if (!verbose && (history.length > limit || attachments.length > limit || attachments.some((att) => att.link))) {
+    lines.push("  hint: use --limit, --verbose, --format markdown, or --format json for details");
   }
 
   return lines.join("\n");
@@ -248,11 +289,23 @@ export function registerTaskJournal(program: Command): void {
     .option(
       "--format <format>",
       "Output format: markdown, compact, json",
-      "markdown"
+      "compact"
     )
+    .option("--limit <n>", "Maximum history and attachment rows in human output", "20")
+    .option("--verbose", "Include full links and history details in human output", false)
     .action(async (taskId: string, options: TaskJournalOptions) => {
       const todosUrl = options.todosUrl ?? "http://localhost:3000";
-      const format = options.format ?? "markdown";
+      const format = options.format ?? "compact";
+      const limit = parseInt(options.limit ?? "20", 10);
+
+      if (!["markdown", "compact", "json"].includes(format)) {
+        process.stderr.write("Error: --format must be one of: markdown, compact, json\n");
+        process.exit(1);
+      }
+      if (!Number.isInteger(limit) || limit < 1) {
+        process.stderr.write("Error: --limit must be a positive integer\n");
+        process.exit(1);
+      }
 
       try {
         const { journal, todosReachable } = await buildTaskJournal(taskId, { todosUrl });
@@ -276,9 +329,9 @@ export function registerTaskJournal(program: Command): void {
         if (format === "json") {
           output = formatJson(journal);
         } else if (format === "compact") {
-          output = formatCompact(journal, todosReachable);
+          output = formatCompact(journal, todosReachable, { limit, verbose: options.verbose });
         } else {
-          output = formatMarkdown(journal, todosReachable);
+          output = formatMarkdown(journal, todosReachable, { limit, verbose: options.verbose });
         }
 
         process.stdout.write(output + "\n");

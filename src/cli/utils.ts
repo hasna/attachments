@@ -25,6 +25,31 @@ export function formatExpiry(expiresAt: number | null): string {
   return new Date(expiresAt).toLocaleString();
 }
 
+export function formatDateShort(timestamp: number | null | undefined): string {
+  if (timestamp === null || timestamp === undefined) return "Never";
+  return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+export function truncateMiddle(value: string, maxLength = 72): string {
+  if (value.length <= maxLength) return value;
+  if (maxLength <= 3) return value.slice(0, maxLength);
+  const headLength = Math.ceil((maxLength - 3) / 2);
+  const tailLength = Math.floor((maxLength - 3) / 2);
+  return `${value.slice(0, headLength)}...${value.slice(value.length - tailLength)}`;
+}
+
+export function linkState(
+  link: string | null | undefined,
+  expiresAt?: number | null,
+  now = Date.now()
+): "ready" | "expired" | "none" {
+  if (!link) return "none";
+  if (expiresAt !== null && expiresAt !== undefined && expiresAt <= now) {
+    return "expired";
+  }
+  return "ready";
+}
+
 /**
  * Print a red error message to stderr and exit with code 1.
  */

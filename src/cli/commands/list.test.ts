@@ -28,7 +28,7 @@ mock.module("../../core/db", () => ({
 afterAll(() => mock.restore());
 
 // Import the actual listCommand under test
-const { listCommand } = await import("./list");
+const { listCommand, compactLine } = await import("./list");
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -111,32 +111,22 @@ describe("exitError", () => {
 
 // ─── list command output ──────────────────────────────────────────────────────
 
-// We test the core formatting logic rather than invoking the Commander action
-// directly (which would call process.exit). We extract the compact/table/json
-// rendering functions by re-implementing the same logic used in list.ts.
-
-function compactLine(att: ReturnType<typeof makeAttachment>): string {
-  const bytes = formatBytes(att.size);
-  const expiry = formatExpiry(att.expiresAt);
-  const link = att.link ?? "(no link)";
-  return `${att.id}  ${att.filename}  ${bytes}  ${link}  ${expiry}`;
-}
-
 describe("compact format line", () => {
-  it("includes id, filename, size, link, expiry", () => {
+  it("includes id, filename, size, link state, expiry", () => {
     const att = makeAttachment({ id: "att_abc123", filename: "file.txt", size: 1258291 });
     const line = compactLine(att);
     expect(line).toContain("att_abc123");
     expect(line).toContain("file.txt");
     expect(line).toContain("MB");
-    expect(line).toContain("https://example.com/link");
-    expect(line).toContain("Never");
+    expect(line).toContain("link:ready");
+    expect(line).not.toContain("https://example.com/link");
+    expect(line).toContain("exp:Never");
   });
 
-  it("shows (no link) when link is null", () => {
+  it("shows link:none when link is null", () => {
     const att = makeAttachment({ link: null });
     const line = compactLine(att);
-    expect(line).toContain("(no link)");
+    expect(line).toContain("link:none");
   });
 
   it("shows expiry date when expiresAt is set", () => {
@@ -145,6 +135,12 @@ describe("compact format line", () => {
     const line = compactLine(att);
     expect(line).not.toContain("Never");
     expect(typeof line).toBe("string");
+  });
+
+  it("includes the full link only when verbose", () => {
+    const att = makeAttachment({ id: "att_verbose" });
+    const line = compactLine(att, { verbose: true });
+    expect(line).toContain("https://example.com/link");
   });
 });
 
@@ -180,10 +176,18 @@ function captureOutput() {
 }
 
 describe("listCommand", () => {
+  const originalMode = process.env["ATTACHMENTS_CLIENT_MODE"];
+
   beforeEach(() => {
+    process.env["ATTACHMENTS_CLIENT_MODE"] = "local";
     mockFindAll.mockReset();
     mockFindAll.mockImplementation(() => []);
     mockDbClose.mockReset();
+  });
+
+  afterAll(() => {
+    if (originalMode === undefined) delete process.env["ATTACHMENTS_CLIENT_MODE"];
+    else process.env["ATTACHMENTS_CLIENT_MODE"] = originalMode;
   });
 
   it("outputs 'No attachments found.' when list is empty (compact format)", async () => {
@@ -205,8 +209,12 @@ describe("listCommand", () => {
     try {
       const program = buildListCmd();
       await program.parseAsync(["list"], { from: "user" });
-      expect(capture.out.join("")).toContain("att_abc");
-      expect(capture.out.join("")).toContain("test.txt");
+      const output = capture.out.join("");
+      expect(output).toContain("att_abc");
+      expect(output).toContain("test.txt");
+      expect(output).toContain("link:ready");
+      expect(output).toContain("Links hidden");
+      expect(output).not.toContain("https://example.com/link");
     } finally {
       capture.restore();
     }
@@ -224,6 +232,7 @@ describe("listCommand", () => {
       const parsed = JSON.parse(combined);
       expect(Array.isArray(parsed)).toBe(true);
       expect(parsed[0].id).toBe("att_json_test");
+      expect(parsed[0].link).toBe("https://example.com/link");
     } finally {
       capture.restore();
     }
@@ -240,6 +249,22 @@ describe("listCommand", () => {
       const combined = capture.out.join("");
       expect(combined).toContain("att_tbl");
       expect(combined).toContain("table.txt");
+      expect(combined).toContain("ready");
+      expect(combined).not.toContain("https://example.com/link");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("includes full links when --verbose is passed", async () => {
+    mockFindAll.mockImplementation(() => [
+      makeAttachment({ id: "att_verbose", filename: "verbose.txt", size: 512 }),
+    ]);
+    const capture = captureOutput();
+    try {
+      const program = buildListCmd();
+      await program.parseAsync(["list", "--verbose"], { from: "user" });
+      expect(capture.out.join("")).toContain("https://example.com/link");
     } finally {
       capture.restore();
     }

@@ -21,6 +21,36 @@ attachments upload archive.zip --encrypt --password "$ATTACHMENT_PASSWORD" --max
 attachments serve --host 0.0.0.0 --port 3459
 ```
 
+## Compact Output Defaults
+
+Read-style commands are compact by default so agent terminals do not fill with
+large records or long presigned URLs. Defaults show IDs, filenames, sizes,
+expiry/link state, row counts, and a hint for the next detail command.
+
+```bash
+attachments list                 # compact, capped at --limit 20, hides URLs
+attachments list --verbose       # include full links and untruncated fields
+attachments list --format json   # full machine-readable records
+attachments show att_xxx         # full metadata for one attachment
+attachments link att_xxx         # print or regenerate the current link
+
+attachments task-journal TASK-1  # compact task history/evidence, capped
+attachments task-journal TASK-1 --verbose
+attachments task-journal TASK-1 --format json
+
+attachments resolve-evidence TASK-1          # compact link-state summary
+attachments resolve-evidence TASK-1 --limit 50
+attachments resolve-evidence TASK-1 --verbose
+attachments health-check --limit 50
+attachments health-check --format json
+attachments storage status --format json
+```
+
+MCP read tools follow the same progressive disclosure pattern. For example,
+`list_attachments`, `report_stats`, `check_attachment_health`, and
+`storage_status` return compact text by default; pass `format: "json"` for full
+objects. Use `get_link` when an agent needs the actual URL for one attachment.
+
 Fresh installs work without S3. Objects are stored under
 `~/.hasna/attachments/objects`, metadata is stored in local SQLite, and share
 links are app-hosted URLs such as `http://localhost:3459/a/<token>`.

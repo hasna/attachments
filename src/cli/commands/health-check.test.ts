@@ -23,6 +23,7 @@ type MockAttachment = {
 
 const mockFindAll = mock((_opts?: unknown) => [] as MockAttachment[]);
 const mockUpdateLink = mock((_id: string, _link: string, _expiresAt?: number | null) => {});
+const mockCreateShareLink = mock((_input: unknown) => ({ token: "share_health_test" }));
 const mockDbClose = mock(() => {});
 
 mock.module("../../core/db", () => ({
@@ -34,6 +35,7 @@ mock.module("../../core/db", () => ({
     findById = mock((_id: string) => null);
     insert = mock((_att: unknown) => {});
     delete = mock((_id: string) => {});
+    createShareLink = mockCreateShareLink;
     deleteExpired = mock(() => 0);
   },
 }));
@@ -88,7 +90,7 @@ afterAll(() => {
 });
 
 // Import after mocks
-const { checkAttachment, isLinkAlive, runHealthCheck, registerHealthCheck } = await import("./health-check");
+const { checkAttachment, isLinkAlive, runHealthCheck, registerHealthCheck, formatHealthCompact } = await import("./health-check");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -227,6 +229,8 @@ describe("runHealthCheck", () => {
   beforeEach(() => {
     mockFindAll.mockReset();
     mockUpdateLink.mockReset();
+    mockCreateShareLink.mockReset();
+    mockCreateShareLink.mockImplementation(() => ({ token: "share_health_test" }));
     mockDbClose.mockReset();
     mockPresign.mockReset();
     mockPresign.mockImplementation(async () => "https://s3.example.com/new-presigned");
@@ -290,7 +294,7 @@ describe("runHealthCheck", () => {
     expect(mockUpdateLink).toHaveBeenCalledTimes(1);
     expect(mockUpdateLink).toHaveBeenCalledWith(
       "att_expired",
-      expect.stringContaining("https://"),
+      expect.stringContaining("://"),
       expect.any(Number)
     );
   });
@@ -340,6 +344,34 @@ describe("runHealthCheck", () => {
   });
 });
 
+describe("formatHealthCompact", () => {
+  it("caps issue rows unless verbose", () => {
+    const summary = {
+      healthy: 0,
+      expired: 3,
+      dead: 0,
+      noLink: 0,
+      fixed: 0,
+      total: 3,
+      results: [
+        { id: "att_1", filename: "one.pdf", status: "expired", link: "https://one.example.com", expiresAt: Date.now() - 1000, expiredAgoMs: 1000 },
+        { id: "att_2", filename: "two.pdf", status: "expired", link: "https://two.example.com", expiresAt: Date.now() - 1000, expiredAgoMs: 1000 },
+        { id: "att_3", filename: "three.pdf", status: "expired", link: "https://three.example.com", expiresAt: Date.now() - 1000, expiredAgoMs: 1000 },
+      ],
+    };
+
+    const compact = formatHealthCompact(summary, { limit: 2 });
+    expect(compact).toContain("att_1");
+    expect(compact).toContain("att_2");
+    expect(compact).not.toContain("att_3");
+    expect(compact).toContain("1 more issue hidden");
+    expect(compact).not.toContain("https://one.example.com");
+
+    const verbose = formatHealthCompact(summary, { verbose: true });
+    expect(verbose).toContain("att_3");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // CLI command tests
 // ---------------------------------------------------------------------------
@@ -348,6 +380,8 @@ describe("health-check command", () => {
   beforeEach(() => {
     mockFindAll.mockReset();
     mockUpdateLink.mockReset();
+    mockCreateShareLink.mockReset();
+    mockCreateShareLink.mockImplementation(() => ({ token: "share_health_test" }));
     mockDbClose.mockReset();
     fetchMock.mockReset();
     (globalThis as Record<string, unknown>).fetch = fetchMock;
