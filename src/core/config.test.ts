@@ -36,16 +36,18 @@ afterEach(() => {
 });
 
 describe("default config path migration", () => {
-  it("copies ~/.open-attachments into ~/.hasna/attachments before ~/.attachments", async () => {
+  it("merges both legacy dirs into ~/.hasna/attachments without overwriting priority files", async () => {
     const originalHome = process.env["HOME"];
     const originalUserProfile = process.env["USERPROFILE"];
     const home = join(tmpdir(), `attachments-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     try {
       mkdirSync(join(home, ".open-attachments", "nested"), { recursive: true });
-      mkdirSync(join(home, ".attachments"), { recursive: true });
+      mkdirSync(join(home, ".attachments", "objects"), { recursive: true });
       writeFileSync(join(home, ".open-attachments", "config.json"), "{\"source\":\"open\"}");
       writeFileSync(join(home, ".open-attachments", "nested", "note.txt"), "open");
       writeFileSync(join(home, ".attachments", "config.json"), "{\"source\":\"old\"}");
+      writeFileSync(join(home, ".attachments", "attachments.db"), "legacy-db");
+      writeFileSync(join(home, ".attachments", "objects", "old-only.txt"), "old");
       process.env["HOME"] = home;
       delete process.env["USERPROFILE"];
 
@@ -54,6 +56,37 @@ describe("default config path migration", () => {
       expect(CONFIG_PATH).toBe(join(home, ".hasna", "attachments", "config.json"));
       expect(readFileSync(CONFIG_PATH, "utf8")).toBe("{\"source\":\"open\"}");
       expect(readFileSync(join(home, ".hasna", "attachments", "nested", "note.txt"), "utf8")).toBe("open");
+      expect(readFileSync(join(home, ".hasna", "attachments", "attachments.db"), "utf8")).toBe("legacy-db");
+      expect(readFileSync(join(home, ".hasna", "attachments", "objects", "old-only.txt"), "utf8")).toBe("old");
+    } finally {
+      if (originalHome === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = originalHome;
+      if (originalUserProfile === undefined) delete process.env["USERPROFILE"];
+      else process.env["USERPROFILE"] = originalUserProfile;
+      resetConfigPath();
+      setConfigPath(TEST_CONFIG_PATH);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves canonical files while copying missing legacy files", async () => {
+    const originalHome = process.env["HOME"];
+    const originalUserProfile = process.env["USERPROFILE"];
+    const home = join(tmpdir(), `attachments-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    try {
+      mkdirSync(join(home, ".hasna", "attachments"), { recursive: true });
+      mkdirSync(join(home, ".attachments", "objects"), { recursive: true });
+      writeFileSync(join(home, ".hasna", "attachments", "config.json"), "{\"source\":\"canonical\"}");
+      writeFileSync(join(home, ".attachments", "config.json"), "{\"source\":\"old\"}");
+      writeFileSync(join(home, ".attachments", "objects", "legacy.txt"), "legacy");
+      process.env["HOME"] = home;
+      delete process.env["USERPROFILE"];
+
+      resetConfigPath();
+
+      expect(CONFIG_PATH).toBe(join(home, ".hasna", "attachments", "config.json"));
+      expect(readFileSync(CONFIG_PATH, "utf8")).toBe("{\"source\":\"canonical\"}");
+      expect(readFileSync(join(home, ".hasna", "attachments", "objects", "legacy.txt"), "utf8")).toBe("legacy");
     } finally {
       if (originalHome === undefined) delete process.env["HOME"];
       else process.env["HOME"] = originalHome;

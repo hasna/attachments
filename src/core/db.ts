@@ -1,8 +1,8 @@
 import { Database } from "bun:sqlite";
 import { join } from "path";
-import { homedir } from "os";
-import { cpSync, existsSync, mkdirSync, copyFileSync } from "fs";
+import { existsSync, copyFileSync } from "fs";
 import { buildPasswordHash, generateShareToken, hashShareToken } from "./security";
+import { ensureAttachmentsDataDir } from "./paths";
 
 export interface Attachment {
   id: string;
@@ -111,23 +111,7 @@ export class AttachmentsDB {
     const resolvedPath =
       dbPath ??
       (() => {
-        const home = process.env["HOME"] || process.env["USERPROFILE"] || homedir();
-        const newDir = join(home, ".hasna", "attachments");
-        const oldDirs = [join(home, ".open-attachments"), join(home, ".attachments")];
-
-        // Auto-migrate: if a legacy dir exists and new doesn't, copy contents over.
-        for (const oldDir of oldDirs) {
-          if (!existsSync(oldDir) || existsSync(newDir)) continue;
-          try {
-            mkdirSync(join(home, ".hasna"), { recursive: true });
-            cpSync(oldDir, newDir, { recursive: true, force: false });
-            break;
-          } catch {
-            // If we can't read/copy the old directory, continue.
-          }
-        }
-
-        mkdirSync(newDir, { recursive: true });
+        const newDir = ensureAttachmentsDataDir();
         const oldDb = join(newDir, "attachments.db");
         const newDb = join(newDir, "db.sqlite");
         if (existsSync(oldDb) && !existsSync(newDb)) {

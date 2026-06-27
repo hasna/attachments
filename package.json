@@ -1,6 +1,6 @@
 {
   "name": "@hasna/attachments",
-  "version": "1.0.46",
+  "version": "1.0.47",
   "description": "Open-source attachment transfer with local or private S3 storage, app-hosted share links, CLI, MCP, and REST API",
   "bin": {
     "attachments": "dist/cli/index.js",

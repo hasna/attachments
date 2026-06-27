@@ -1,4 +1,5 @@
 import { describe, it, expect, mock, beforeAll, beforeEach, afterEach } from "bun:test";
+import { Database as SqliteDatabase } from "bun:sqlite";
 import { tmpdir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
@@ -277,18 +278,53 @@ describe("AttachmentsDB default path constructor", () => {
     }
   });
 
-  it("copies legacy ~/.open-attachments into ~/.hasna/attachments before opening the default DB", () => {
+  it("merges both legacy dirs into ~/.hasna/attachments before opening the default DB", () => {
     const originalHome = process.env["HOME"];
     const originalUserProfile = process.env["USERPROFILE"];
     const home = join(tmpdir(), `attachments-db-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     let db: import("./db").AttachmentsDB | null = null;
     try {
       mkdirSync(join(home, ".open-attachments", "objects"), { recursive: true });
+      mkdirSync(join(home, ".attachments", "objects"), { recursive: true });
       writeFileSync(join(home, ".open-attachments", "objects", "legacy.txt"), "legacy");
+      writeFileSync(join(home, ".attachments", "objects", "old-only.txt"), "old");
       process.env["HOME"] = home;
       delete process.env["USERPROFILE"];
       db = new DB();
       expect(readFileSync(join(home, ".hasna", "attachments", "objects", "legacy.txt"), "utf8")).toBe("legacy");
+      expect(readFileSync(join(home, ".hasna", "attachments", "objects", "old-only.txt"), "utf8")).toBe("old");
+    } finally {
+      db?.close();
+      if (originalHome === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = originalHome;
+      if (originalUserProfile === undefined) delete process.env["USERPROFILE"];
+      else process.env["USERPROFILE"] = originalUserProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("copies a legacy attachments.db from the secondary legacy dir into db.sqlite", () => {
+    const originalHome = process.env["HOME"];
+    const originalUserProfile = process.env["USERPROFILE"];
+    const home = join(tmpdir(), `attachments-db-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    let db: import("./db").AttachmentsDB | null = null;
+    try {
+      mkdirSync(join(home, ".attachments"), { recursive: true });
+      const legacyDbPath = join(home, ".attachments", "attachments.db");
+      const legacyDb = new SqliteDatabase(legacyDbPath);
+      legacyDb.run("PRAGMA user_version = 47;");
+      legacyDb.close();
+
+      process.env["HOME"] = home;
+      delete process.env["USERPROFILE"];
+      db = new DB();
+      db.close();
+      db = null;
+
+      const migratedDb = new SqliteDatabase(join(home, ".hasna", "attachments", "db.sqlite"));
+      const version = migratedDb.query("PRAGMA user_version;").get() as { user_version: number };
+      migratedDb.close();
+      expect(version.user_version).toBe(47);
     } finally {
       db?.close();
       if (originalHome === undefined) delete process.env["HOME"];

@@ -1,6 +1,6 @@
 import { join } from "path";
-import { homedir } from "os";
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { ensureAttachmentsDataDir } from "./paths";
 
 export interface AttachmentsConfig {
   s3: {
@@ -96,23 +96,7 @@ const DEFAULT_CONFIG: AttachmentsConfig = {
 };
 
 function resolveConfigPath(): string {
-  const home = process.env["HOME"] || process.env["USERPROFILE"] || homedir();
-  const newDir = join(home, ".hasna", "attachments");
-  const oldDirs = [join(home, ".open-attachments"), join(home, ".attachments")];
-
-  // Auto-migrate: if a legacy dir exists and new doesn't, copy contents over.
-  for (const oldDir of oldDirs) {
-    if (!existsSync(oldDir) || existsSync(newDir)) continue;
-    try {
-      mkdirSync(join(home, ".hasna"), { recursive: true });
-      cpSync(oldDir, newDir, { recursive: true, force: false });
-      break;
-    } catch {
-      // If we can't read/copy the old directory, continue with new.
-    }
-  }
-
-  mkdirSync(newDir, { recursive: true });
+  const newDir = ensureAttachmentsDataDir();
   return join(newDir, "config.json");
 }
 
