@@ -243,8 +243,8 @@ describe("checkDatabase", () => {
     // Since we mock AttachmentsDB, we also need to mock existsSync for the db path.
     // Instead, test through the full path knowing existsSync may fail: the mock constructor doesn't throw,
     // so we just need the db file to "exist" in existsSync. We can create a fake db file.
-    const dbPath = join(tmpdir(), ".attachments", "db.sqlite");
-    mkdirSync(join(tmpdir(), ".attachments"), { recursive: true });
+    const dbPath = join(tmpdir(), ".hasna", "attachments", "db.sqlite");
+    mkdirSync(join(tmpdir(), ".hasna", "attachments"), { recursive: true });
     writeFileSync(dbPath, "");
 
     const result = checkDatabase();
@@ -262,13 +262,13 @@ describe("checkDatabase", () => {
     // To reach the throw branch, existsSync must return true.
     // We can verify this indirectly: if existsSync passes and db throws, we get fail.
     const result = checkDatabase();
-    // If the real ~/.attachments/db.sqlite doesn't exist, we get fail for "not found" — still fail.
+    // If the real ~/.hasna/attachments/db.sqlite doesn't exist, we get fail for "not found" — still fail.
     expect(result.status).toBe("fail");
   });
 
   it("returns ok message with attachment count", () => {
     // We test checkDatabase logic via the exported function.
-    // Since the DB path is hard-coded to ~/.attachments/db.sqlite,
+    // Since the DB path is hard-coded to ~/.hasna/attachments/db.sqlite,
     // we verify that when the mock is used and the file exists we get the count.
     // This is a unit test of the message format using the mock path.
     mockAttachments = [

@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { join } from "path";
 import { homedir } from "os";
-import { mkdirSync, existsSync, readdirSync, copyFileSync } from "fs";
+import { cpSync, existsSync, mkdirSync, copyFileSync } from "fs";
 import { buildPasswordHash, generateShareToken, hashShareToken } from "./security";
 
 export interface Attachment {
@@ -113,26 +113,17 @@ export class AttachmentsDB {
       (() => {
         const home = process.env["HOME"] || process.env["USERPROFILE"] || homedir();
         const newDir = join(home, ".hasna", "attachments");
-        const oldDir = join(home, ".attachments");
+        const oldDirs = [join(home, ".open-attachments"), join(home, ".attachments")];
 
-        // Auto-migrate: if old dir exists and new doesn't, copy files over
-        if (existsSync(oldDir) && !existsSync(newDir)) {
-          mkdirSync(newDir, { recursive: true });
+        // Auto-migrate: if a legacy dir exists and new doesn't, copy contents over.
+        for (const oldDir of oldDirs) {
+          if (!existsSync(oldDir) || existsSync(newDir)) continue;
           try {
-            for (const file of readdirSync(oldDir)) {
-              const oldPath = join(oldDir, file);
-              const newPath = join(newDir, file);
-              try {
-                const stat = require("fs").statSync(oldPath);
-                if (stat.isFile()) {
-                  copyFileSync(oldPath, newPath);
-                }
-              } catch {
-                // Skip files that can't be copied
-              }
-            }
+            mkdirSync(join(home, ".hasna"), { recursive: true });
+            cpSync(oldDir, newDir, { recursive: true, force: false });
+            break;
           } catch {
-            // If we can't read the old directory, continue
+            // If we can't read/copy the old directory, continue.
           }
         }
 

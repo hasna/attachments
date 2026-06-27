@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, beforeAll, beforeEach, afterEach } from "bun:test";
 import { tmpdir } from "os";
 import { join } from "path";
-import { rmSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import type { Attachment } from "./db";
 
 // AttachmentsDB is dynamically imported after mock.restore() so we always get the real class,
@@ -252,13 +252,50 @@ describe("AttachmentsDB", () => {
 });
 
 describe("AttachmentsDB default path constructor", () => {
-  it("creates a DB at the default ~/.attachments/db.sqlite path when no path given", () => {
+  it("creates a DB at the default ~/.hasna/attachments/db.sqlite path when no path given", () => {
+    const originalHome = process.env["HOME"];
+    const originalUserProfile = process.env["USERPROFILE"];
+    const home = join(tmpdir(), `attachments-db-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     let db: import("./db").AttachmentsDB | null = null;
-    expect(() => {
+    try {
+      mkdirSync(home, { recursive: true });
+      process.env["HOME"] = home;
+      delete process.env["USERPROFILE"];
+      expect(() => {
+        db = new DB();
+      }).not.toThrow();
+      expect(db).not.toBeNull();
+      expect(existsSync(join(home, ".hasna", "attachments", "db.sqlite"))).toBe(true);
+      expect(() => (db as import("./db").AttachmentsDB).findAll()).not.toThrow();
+    } finally {
+      db?.close();
+      if (originalHome === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = originalHome;
+      if (originalUserProfile === undefined) delete process.env["USERPROFILE"];
+      else process.env["USERPROFILE"] = originalUserProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("copies legacy ~/.open-attachments into ~/.hasna/attachments before opening the default DB", () => {
+    const originalHome = process.env["HOME"];
+    const originalUserProfile = process.env["USERPROFILE"];
+    const home = join(tmpdir(), `attachments-db-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    let db: import("./db").AttachmentsDB | null = null;
+    try {
+      mkdirSync(join(home, ".open-attachments", "objects"), { recursive: true });
+      writeFileSync(join(home, ".open-attachments", "objects", "legacy.txt"), "legacy");
+      process.env["HOME"] = home;
+      delete process.env["USERPROFILE"];
       db = new DB();
-    }).not.toThrow();
-    expect(db).not.toBeNull();
-    expect(() => (db as import("./db").AttachmentsDB).findAll()).not.toThrow();
-    (db as import("./db").AttachmentsDB).close();
+      expect(readFileSync(join(home, ".hasna", "attachments", "objects", "legacy.txt"), "utf8")).toBe("legacy");
+    } finally {
+      db?.close();
+      if (originalHome === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = originalHome;
+      if (originalUserProfile === undefined) delete process.env["USERPROFILE"];
+      else process.env["USERPROFILE"] = originalUserProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

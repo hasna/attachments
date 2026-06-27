@@ -150,7 +150,7 @@ src/
   mcp/        — MCP server (stub tools)
   api/        — Hono REST API
   s3/         — S3 client wrapper
-  config/     — Config file management (~/.attachments/config.json)
+  config/     — Config file management (~/.hasna/attachments/config.json)
   types/      — Shared TypeScript types
 sdk/          — @hasna/attachments-sdk (standalone, zero-dep)
 dashboard/    — Web UI (Bun + Vite)
@@ -162,7 +162,9 @@ dist/         — Build output
 
 ## Config File
 
-Stored at `~/.attachments/config.json`. Managed via `attachments config set/get/reset`.
+Stored at `~/.hasna/attachments/config.json`. Existing `~/.open-attachments/`
+or `~/.attachments/` data is copied forward on first use. Managed via
+`attachments config set/get/reset`.
 
 ```json
 {

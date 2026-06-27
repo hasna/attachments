@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, existsSync, writeFileSync } from "fs";
+import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -11,6 +11,8 @@ import {
   validateS3Config,
   parseExpiry,
   setConfigPath,
+  resetConfigPath,
+  CONFIG_PATH,
   type AttachmentsConfig,
 } from "./config";
 
@@ -31,6 +33,37 @@ afterEach(() => {
   if (existsSync(TEST_DIR)) {
     rmSync(TEST_DIR, { recursive: true, force: true });
   }
+});
+
+describe("default config path migration", () => {
+  it("copies ~/.open-attachments into ~/.hasna/attachments before ~/.attachments", async () => {
+    const originalHome = process.env["HOME"];
+    const originalUserProfile = process.env["USERPROFILE"];
+    const home = join(tmpdir(), `attachments-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    try {
+      mkdirSync(join(home, ".open-attachments", "nested"), { recursive: true });
+      mkdirSync(join(home, ".attachments"), { recursive: true });
+      writeFileSync(join(home, ".open-attachments", "config.json"), "{\"source\":\"open\"}");
+      writeFileSync(join(home, ".open-attachments", "nested", "note.txt"), "open");
+      writeFileSync(join(home, ".attachments", "config.json"), "{\"source\":\"old\"}");
+      process.env["HOME"] = home;
+      delete process.env["USERPROFILE"];
+
+      resetConfigPath();
+
+      expect(CONFIG_PATH).toBe(join(home, ".hasna", "attachments", "config.json"));
+      expect(readFileSync(CONFIG_PATH, "utf8")).toBe("{\"source\":\"open\"}");
+      expect(readFileSync(join(home, ".hasna", "attachments", "nested", "note.txt"), "utf8")).toBe("open");
+    } finally {
+      if (originalHome === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = originalHome;
+      if (originalUserProfile === undefined) delete process.env["USERPROFILE"];
+      else process.env["USERPROFILE"] = originalUserProfile;
+      resetConfigPath();
+      setConfigPath(TEST_CONFIG_PATH);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── getConfig ─────────────────────────────────────────────────────────────────
