@@ -34,6 +34,20 @@ export interface ShareLink {
   passwordHash: string | null;
   maxUses: number | null;
   usedCount: number;
+  /** When true, a visitor must enter an email and click an emailed access link before downloading. */
+  requireEmail: boolean;
+  /** Optional allowlist of emails permitted to request access. null = any email allowed. */
+  allowedEmails: string[] | null;
+}
+
+export interface AccessGrant {
+  id: string;
+  shareLinkId: string;
+  email: string;
+  tokenHash: string;
+  createdAt: number;
+  expiresAt: number;
+  consumedAt: number | null;
 }
 
 interface AttachmentRow {
@@ -66,6 +80,18 @@ interface ShareLinkRow {
   password_hash: string | null;
   max_uses: number | null;
   used_count: number;
+  require_email?: number | null;
+  allowed_emails?: string | null;
+}
+
+interface AccessGrantRow {
+  id: string;
+  share_link_id: string;
+  email: string;
+  token_hash: string;
+  created_at: number;
+  expires_at: number;
+  consumed_at: number | null;
 }
 
 function rowToAttachment(row: AttachmentRow): Attachment {
@@ -101,6 +127,33 @@ function rowToShareLink(row: ShareLinkRow): ShareLink {
     passwordHash: row.password_hash,
     maxUses: row.max_uses,
     usedCount: row.used_count,
+    requireEmail: row.require_email === 1,
+    allowedEmails: parseAllowedEmails(row.allowed_emails ?? null),
+  };
+}
+
+function parseAllowedEmails(raw: string | null): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed.map((e) => String(e));
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function rowToAccessGrant(row: AccessGrantRow): AccessGrant {
+  return {
+    id: row.id,
+    shareLinkId: row.share_link_id,
+    email: row.email,
+    tokenHash: row.token_hash,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    consumedAt: row.consumed_at,
   };
 }
 
@@ -164,9 +217,31 @@ export class AttachmentsDB {
         revoked_at INTEGER,
         password_hash TEXT,
         max_uses INTEGER,
-        used_count INTEGER NOT NULL DEFAULT 0
+        used_count INTEGER NOT NULL DEFAULT 0,
+        require_email INTEGER NOT NULL DEFAULT 0,
+        allowed_emails TEXT
       );
     `);
+
+    this.addColumnIfMissing("share_links", "require_email", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumnIfMissing("share_links", "allowed_emails", "TEXT");
+
+    // Email-gated access grants: a visitor enters their email, receives a
+    // one-time access link, and that grant must be valid to download.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS access_grants (
+        id TEXT PRIMARY KEY,
+        share_link_id TEXT NOT NULL REFERENCES share_links(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        consumed_at INTEGER
+      );
+    `);
+    this.db.run(
+      `CREATE INDEX IF NOT EXISTS idx_access_grants_share_link ON access_grants(share_link_id)`
+    );
 
     // Feedback table
     this.db.run(`
@@ -332,9 +407,13 @@ export class AttachmentsDB {
     expiresAt: number | null;
     password?: string;
     maxUses?: number | null;
+    requireEmail?: boolean;
+    allowedEmails?: string[] | null;
   }): { shareLink: ShareLink; token: string } {
     const token = generateShareToken();
     const now = Date.now();
+    const allowedEmails =
+      input.allowedEmails && input.allowedEmails.length > 0 ? input.allowedEmails : null;
     const shareLink: ShareLink = {
       id: `share_${generateShareToken().slice(0, 16)}`,
       attachmentId: input.attachmentId,
@@ -345,14 +424,16 @@ export class AttachmentsDB {
       passwordHash: input.password ? buildPasswordHash(input.password) : null,
       maxUses: input.maxUses ?? null,
       usedCount: 0,
+      requireEmail: input.requireEmail === true,
+      allowedEmails,
     };
 
     this.db
       .prepare(
         `INSERT INTO share_links
-          (id, attachment_id, token_hash, expires_at, created_at, revoked_at, password_hash, max_uses, used_count)
+          (id, attachment_id, token_hash, expires_at, created_at, revoked_at, password_hash, max_uses, used_count, require_email, allowed_emails)
          VALUES
-          ($id, $attachment_id, $token_hash, $expires_at, $created_at, $revoked_at, $password_hash, $max_uses, $used_count)`
+          ($id, $attachment_id, $token_hash, $expires_at, $created_at, $revoked_at, $password_hash, $max_uses, $used_count, $require_email, $allowed_emails)`
       )
       .run({
         $id: shareLink.id,
@@ -364,9 +445,65 @@ export class AttachmentsDB {
         $password_hash: shareLink.passwordHash,
         $max_uses: shareLink.maxUses,
         $used_count: shareLink.usedCount,
+        $require_email: shareLink.requireEmail ? 1 : 0,
+        $allowed_emails: allowedEmails ? JSON.stringify(allowedEmails) : null,
       });
 
     return { shareLink, token };
+  }
+
+  /** Create an email-gated access grant for a share link. Returns the plaintext grant token. */
+  createAccessGrant(input: {
+    shareLinkId: string;
+    email: string;
+    ttlMs?: number;
+  }): { grant: AccessGrant; token: string } {
+    const token = generateShareToken();
+    const now = Date.now();
+    const grant: AccessGrant = {
+      id: `grant_${generateShareToken().slice(0, 16)}`,
+      shareLinkId: input.shareLinkId,
+      email: input.email,
+      tokenHash: hashShareToken(token),
+      createdAt: now,
+      expiresAt: now + (input.ttlMs ?? 30 * 60 * 1000),
+      consumedAt: null,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO access_grants
+          (id, share_link_id, email, token_hash, created_at, expires_at, consumed_at)
+         VALUES
+          ($id, $share_link_id, $email, $token_hash, $created_at, $expires_at, $consumed_at)`
+      )
+      .run({
+        $id: grant.id,
+        $share_link_id: grant.shareLinkId,
+        $email: grant.email,
+        $token_hash: grant.tokenHash,
+        $created_at: grant.createdAt,
+        $expires_at: grant.expiresAt,
+        $consumed_at: null,
+      });
+    return { grant, token };
+  }
+
+  findAccessGrantByToken(token: string): AccessGrant | null {
+    const row = this.db
+      .prepare<AccessGrantRow, string>(`SELECT * FROM access_grants WHERE token_hash = ?`)
+      .get(hashShareToken(token));
+    return row ? rowToAccessGrant(row) : null;
+  }
+
+  /** Mark a grant consumed; returns false if already consumed or expired. */
+  consumeAccessGrant(id: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE access_grants SET consumed_at = ?
+         WHERE id = ? AND consumed_at IS NULL AND expires_at > ?`
+      )
+      .run(Date.now(), id, Date.now());
+    return result.changes > 0;
   }
 
   findShareLinkByToken(token: string): ShareLink | null {

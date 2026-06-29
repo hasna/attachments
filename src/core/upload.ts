@@ -26,6 +26,8 @@ export interface UploadOptions {
   password?: string;
   encrypt?: boolean;
   maxDownloads?: number;
+  requireEmail?: boolean;
+  allowedEmails?: string[] | null;
   baseUrl?: string;
 }
 
@@ -154,7 +156,7 @@ export async function uploadFile(
 
   // 5. Resolve link type
   let resolvedLinkType = opts.linkType ?? getLinkType(config);
-  if (storageBackend === "local" || opts.password || opts.encrypt || opts.maxDownloads) {
+  if (storageBackend === "local" || opts.password || opts.encrypt || opts.maxDownloads || opts.requireEmail) {
     resolvedLinkType = "server";
   }
 
@@ -213,6 +215,8 @@ export async function uploadFile(
               expiresAt,
               password: opts.password,
               maxUses: opts.maxDownloads ?? null,
+              requireEmail: opts.requireEmail,
+              allowedEmails: opts.allowedEmails ?? null,
             })
           : { token: id };
       link = generateShareLink(token, opts.baseUrl ?? getPublicBaseUrl(config), config.server.publicPath);
@@ -252,7 +256,7 @@ export async function uploadStreamAttachment(
   const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
 
   let resolvedLinkType = opts.linkType ?? getLinkType(config);
-  if (storageBackend === "local" || opts.password || opts.encrypt || opts.maxDownloads) {
+  if (storageBackend === "local" || opts.password || opts.encrypt || opts.maxDownloads || opts.requireEmail) {
     resolvedLinkType = "server";
   }
   if (opts.encrypt && !opts.password) {
@@ -310,6 +314,8 @@ export async function uploadStreamAttachment(
         expiresAt,
         password: opts.password,
         maxUses: opts.maxDownloads ?? null,
+        requireEmail: opts.requireEmail,
+        allowedEmails: opts.allowedEmails ?? null,
       });
       link = generateShareLink(token, opts.baseUrl ?? getPublicBaseUrl(config), config.server.publicPath);
       db.updateLink(id, link, expiresAt);

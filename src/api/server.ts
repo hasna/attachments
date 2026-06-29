@@ -21,6 +21,12 @@ import { contentDispositionAttachment, createObjectKey, sanitizeFilename } from 
 import { ShareAccessError, resolveShareAccess } from "../core/share";
 import { createObjectStore } from "../core/object-storage";
 import { buildDeploymentPlan } from "../core/deployment";
+import {
+  EmailGateError,
+  requestAccessGrant,
+  verifyAccessGrant,
+} from "../core/email-gate";
+import { resolveEmailSender } from "../core/email-sender";
 
 function maxUploadBytes(): number {
   const config = getConfig();
@@ -197,6 +203,9 @@ function renderDownloadPage(input: {
   size: number;
   expiresAt: number | null;
   requiresPassword: boolean;
+  requiresEmail?: boolean;
+  grantToken?: string;
+  notice?: string;
   maxUses?: number | null;
   usedCount?: number;
   error?: string;
@@ -230,6 +239,7 @@ function renderDownloadPage(input: {
     input { min-height: 42px; border: 1px solid #b9c3ca; border-radius: 6px; padding: 0 12px; font: inherit; }
     button { min-height: 44px; border: 0; border-radius: 6px; background: #1e6f5c; color: white; font: inherit; font-weight: 700; cursor: pointer; }
     .error { margin: 0 0 14px; color: #9f1d1d; font-weight: 650; }
+    .notice { margin: 0 0 14px; color: #1e6f5c; font-weight: 650; }
     @media (prefers-color-scheme: dark) {
       body { background: #101417; color: #f4f7f8; }
       main { background: #171d21; border-color: #2b363d; box-shadow: none; }
@@ -242,15 +252,25 @@ function renderDownloadPage(input: {
   <main>
     <h1>${htmlEscape(input.filename)}</h1>
     ${input.error ? `<p class="error">${htmlEscape(input.error)}</p>` : ""}
+    ${input.notice ? `<p class="notice">${htmlEscape(input.notice)}</p>` : ""}
     <dl>
       <dt>Size</dt><dd>${input.size.toLocaleString()} bytes</dd>
       <dt>Expires</dt><dd>${htmlEscape(expiry)}</dd>
       ${downloadsRow}
     </dl>
-    <form method="post" action="${htmlEscape(publicPath)}/${encodeURIComponent(input.token)}/download">
+    ${
+      input.requiresEmail && !input.grantToken
+        ? `<form method="post" action="${htmlEscape(publicPath)}/${encodeURIComponent(input.token)}/request-access">
+      <label for="email">Enter your email to receive an access link</label>
+      <input id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+      <button type="submit">Email me an access link</button>
+    </form>`
+        : `<form method="post" action="${htmlEscape(publicPath)}/${encodeURIComponent(input.token)}/download">
       ${input.requiresPassword ? `<label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>` : ""}
+      ${input.grantToken ? `<input type="hidden" name="grant" value="${htmlEscape(input.grantToken)}">` : ""}
       <button type="submit">Download</button>
-    </form>
+    </form>`
+    }
   </main>
 </body>
 </html>`;
@@ -466,6 +486,12 @@ export function createApp(): Hono {
         body["link_type"] === "presigned" || body["link_type"] === "server"
           ? body["link_type"]
           : undefined;
+      const allowedEmails =
+        typeof body["allowed_emails"] === "string" && body["allowed_emails"].trim()
+          ? body["allowed_emails"].split(",").map((e) => e.trim()).filter(Boolean)
+          : null;
+      const requireEmail =
+        body["require_email"] === "true" || body["require_email"] === "1" || (allowedEmails !== null && allowedEmails.length > 0);
 
       const fileObj = file as File;
       const filename = sanitizeFilename(fileObj.name || `upload_${nanoid(8)}`);
@@ -474,7 +500,7 @@ export function createApp(): Hono {
         Readable.fromWeb(fileObj.stream() as never),
         filename,
         typeof contentType === "string" ? contentType : "application/octet-stream",
-        { expiry, tag, password, encrypt, maxDownloads, linkType, size: fileSize }
+        { expiry, tag, password, encrypt, maxDownloads, linkType, requireEmail, allowedEmails, size: fileSize }
       );
 
       return c.json(
@@ -1220,12 +1246,28 @@ export function createApp(): Hono {
     const db = new AttachmentsDB();
     try {
       const access = resolveShareAccess(db, token, { consume: false });
+      // Email-gated links: only show the download form once the visitor presents
+      // a valid grant token (delivered to their email). Otherwise show the email form.
+      let validGrant: string | undefined;
+      if (access.shareLink.requireEmail) {
+        const grantToken = c.req.query("grant");
+        if (grantToken) {
+          try {
+            verifyAccessGrant(db, token, grantToken);
+            validGrant = grantToken;
+          } catch {
+            validGrant = undefined;
+          }
+        }
+      }
       return c.html(renderDownloadPage({
         token,
         filename: access.attachment.filename,
         size: access.attachment.size,
         expiresAt: access.shareLink.expiresAt ?? access.attachment.expiresAt,
         requiresPassword: !!access.shareLink.passwordHash,
+        requiresEmail: access.shareLink.requireEmail,
+        grantToken: validGrant,
         maxUses: access.shareLink.maxUses,
         usedCount: access.shareLink.usedCount,
       }));
@@ -1240,8 +1282,93 @@ export function createApp(): Hono {
     }
   };
 
-  async function serveShareDownload(c: Context, password?: string) {
+  const requestAccessHandler = async (c: Context) => {
     const token = c.req.param("token")!;
+    let email = "";
+    try {
+      const body = await c.req.parseBody();
+      email = typeof body["email"] === "string" ? body["email"] : "";
+    } catch {
+      email = "";
+    }
+    const sender = resolveEmailSender();
+    const db = new AttachmentsDB();
+    try {
+      if (!sender) {
+        return c.html(renderPublicErrorPage({
+          title: "Email access unavailable",
+          message: "This link requires email access, but the server is not configured to send email.",
+          detail: "Ask the sender to share the file another way.",
+          status: 503,
+          actionHref: sharePagePath(token),
+          actionLabel: "Back to Attachment",
+        }), 503);
+      }
+      const access = resolveShareAccess(db, token, { consume: false });
+      await requestAccessGrant({
+        db,
+        token,
+        email,
+        sender,
+        filename: access.attachment.filename,
+        buildAccessUrl: (grant) =>
+          `${getPublicBaseUrl(getConfig())}${sharePagePath(token)}?grant=${encodeURIComponent(grant)}`,
+      });
+      return c.html(renderDownloadPage({
+        token,
+        filename: access.attachment.filename,
+        size: access.attachment.size,
+        expiresAt: access.shareLink.expiresAt ?? access.attachment.expiresAt,
+        requiresPassword: !!access.shareLink.passwordHash,
+        requiresEmail: true,
+        notice: "Check your inbox — we emailed you an access link.",
+      }));
+    } catch (err) {
+      if (err instanceof EmailGateError || err instanceof ShareAccessError) {
+        try {
+          const access = resolveShareAccess(db, token, { consume: false });
+          return c.html(renderDownloadPage({
+            token,
+            filename: access.attachment.filename,
+            size: access.attachment.size,
+            expiresAt: access.shareLink.expiresAt ?? access.attachment.expiresAt,
+            requiresPassword: !!access.shareLink.passwordHash,
+            requiresEmail: true,
+            error: err.message,
+          }), err.status);
+        } catch {
+          return c.html(renderShareAccessError(token, err as ShareAccessError), (err as ShareAccessError).status ?? 400);
+        }
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    } finally {
+      db.close();
+    }
+  };
+
+  async function serveShareDownload(c: Context, password?: string, grantToken?: string) {
+    const token = c.req.param("token")!;
+    // Enforce email gate before anything else when the link requires it.
+    {
+      const gateDb = new AttachmentsDB();
+      try {
+        const link = gateDb.findShareLinkByToken(token);
+        if (link?.requireEmail) {
+          if (!grantToken) {
+            return c.redirect(sharePagePath(token), 303);
+          }
+          try {
+            verifyAccessGrant(gateDb, token, grantToken);
+          } catch (err) {
+            const status = err instanceof EmailGateError ? err.status : 401;
+            return c.html(renderShareAccessError(token, new ShareAccessError("Invalid or expired access link", status as 401 | 404 | 410)), status);
+          }
+        }
+      } finally {
+        gateDb.close();
+      }
+    }
     if (isPasswordLimited(c, token)) {
       return c.html(renderPublicErrorPage({
         title: "Too many password attempts",
@@ -1373,18 +1500,20 @@ export function createApp(): Hono {
     } finally {
       db.close();
     }
-    return serveShareDownload(c);
+    return serveShareDownload(c, undefined, c.req.query("grant"));
   };
 
   const shareDownloadPostHandler = async (c: Context) => {
     let password: string | undefined;
+    let grantToken: string | undefined;
     try {
       const body = await c.req.parseBody();
       password = typeof body["password"] === "string" ? body["password"] : undefined;
+      grantToken = typeof body["grant"] === "string" ? body["grant"] : undefined;
     } catch {
       password = undefined;
     }
-    return serveShareDownload(c, password);
+    return serveShareDownload(c, password, grantToken ?? c.req.query("grant"));
   };
 
   for (const prefix of publicRoutePrefixes) {
@@ -1393,6 +1522,7 @@ export function createApp(): Hono {
     app.on("HEAD", `${prefix}/:token/download`, shareDownloadHeadHandler);
     app.get(`${prefix}/:token/download`, shareDownloadGetHandler);
     app.post(`${prefix}/:token/download`, shareDownloadPostHandler);
+    app.post(`${prefix}/:token/request-access`, requestAccessHandler);
   }
 
   // GET /d/:id — legacy public route for old server links.

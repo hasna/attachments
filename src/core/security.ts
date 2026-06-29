@@ -44,3 +44,15 @@ export function contentDispositionAttachment(filename: string): string {
   const encoded = encodeURIComponent(safe).replace(/['()]/g, escape);
   return `attachment; filename="${safe}"; filename*=UTF-8''${encoded}`;
 }
+
+/** Lowercase + trim an email for consistent comparison/storage. */
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+/** Pragmatic RFC-5322-ish email validation: one @, non-empty local part, dotted domain. */
+export function isValidEmail(email: string): boolean {
+  const value = email.trim();
+  if (value.length === 0 || value.length > 254) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}

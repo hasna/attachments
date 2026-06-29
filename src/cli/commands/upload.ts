@@ -4,6 +4,7 @@ import { uploadFile, uploadFromUrl, uploadStreamAttachment } from "../../core/up
 import { getConfig, isCloudClientMode, validateStorageConfig } from "../../core/config";
 import { uploadFileToCloudApi, uploadStreamToCloudApi, uploadUrlToCloudApi } from "../../core/api-client";
 import { resolveInternalBaseUrl } from "../../core/internal-link";
+import { isValidEmail } from "../../core/security";
 import { formatBytes, formatExpiry, exitError } from "../utils";
 
 /**
@@ -41,6 +42,8 @@ export function registerUpload(program: Command): void {
     .option("--password <password>", "Require a password before download")
     .option("--encrypt", "Encrypt stored bytes with the provided password")
     .option("--max-downloads <count>", "Maximum successful downloads for the generated link")
+    .option("--require-email", "Gate the link: visitors enter their email and receive a one-time access link")
+    .option("--allowed-email <email...>", "Restrict email-gated access to these address(es)")
     .option("--format <fmt>", "Output format: human or json", "human")
     .option("--copy", "Copy the link to clipboard after upload")
     .option("--brief", "Compact one-line output")
@@ -48,7 +51,7 @@ export function registerUpload(program: Command): void {
     .option("--filename <name>", "Filename to use when uploading from stdin")
     .option("--client-mode <mode>", "Override client mode for this upload: local or cloud")
     .option("--internal", "Generate a local-network/Tailscale server link")
-    .action(async (files: string[], options: { expiry?: string; linkType?: "presigned" | "server"; tag?: string; password?: string; encrypt?: boolean; maxDownloads?: string; format?: string; copy?: boolean; brief?: boolean; stdin?: boolean; filename?: string; clientMode?: string; internal?: boolean }) => {
+    .action(async (files: string[], options: { expiry?: string; linkType?: "presigned" | "server"; tag?: string; password?: string; encrypt?: boolean; maxDownloads?: string; requireEmail?: boolean; allowedEmail?: string[]; format?: string; copy?: boolean; brief?: boolean; stdin?: boolean; filename?: string; clientMode?: string; internal?: boolean }) => {
       const config = getConfig();
       if (options.clientMode && options.clientMode !== "local" && options.clientMode !== "cloud") {
         exitError("--client-mode must be local or cloud");
@@ -68,6 +71,12 @@ export function registerUpload(program: Command): void {
       }
       if (options.encrypt && !options.password) {
         exitError("--encrypt requires --password");
+      }
+      const allowedEmails = options.allowedEmail && options.allowedEmail.length > 0 ? options.allowedEmail : null;
+      const requireEmail = options.requireEmail === true || allowedEmails !== null;
+      if (allowedEmails) {
+        const bad = allowedEmails.filter((e) => !isValidEmail(e));
+        if (bad.length > 0) exitError(`Invalid --allowed-email value(s): ${bad.join(", ")}`);
       }
       if (options.internal && cloudMode) {
         exitError("--internal requires local client mode. Use --client-mode local or set client.mode to local.");
@@ -99,6 +108,8 @@ export function registerUpload(program: Command): void {
               password: options.password,
               encrypt: options.encrypt,
               maxDownloads,
+              requireEmail,
+              allowedEmails,
               baseUrl: internalBaseUrl,
             });
         } else if (!file) {
@@ -114,6 +125,8 @@ export function registerUpload(program: Command): void {
             password: options.password,
             encrypt: options.encrypt,
             maxDownloads,
+            requireEmail,
+            allowedEmails,
             baseUrl: internalBaseUrl,
           };
           attachment = cloudMode
