@@ -1,7 +1,15 @@
 {
   "name": "@hasna/attachments",
-  "version": "1.0.48",
+  "version": "1.0.49",
   "description": "Open-source attachment transfer with local or private S3 storage, app-hosted share links, CLI, MCP, and REST API",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hasna/attachments.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hasna/attachments/issues"
+  },
+  "homepage": "https://github.com/hasna/attachments#readme",
   "bin": {
     "attachments": "dist/cli/index.js",
     "attachments-mcp": "dist/mcp/server.js"
@@ -28,6 +36,8 @@
     "typecheck": "bunx tsc --noEmit",
     "test": "bash scripts/test.sh",
     "test:coverage": "bash scripts/test.sh --coverage",
+    "verify:release": "bun run typecheck && bun run test && bun run build",
+    "prepublishOnly": "bun run verify:release",
     "dev": "bun run src/cli/index.ts",
     "dashboard": "cd dashboard && bun run dev",
     "dashboard:build": "cd dashboard && bun run build",
