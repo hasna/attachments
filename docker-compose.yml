@@ -1,0 +1,35 @@
+# Local end-to-end stack for attachments-serve: Postgres + the service.
+# PURE REMOTE parity — the service reads/writes Postgres directly. Object bytes
+# use the in-container local store here (set ATTACHMENTS_S3_* for real S3).
+#
+#   docker compose up --build
+#   curl localhost:8080/health
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: attachments
+      POSTGRES_PASSWORD: attachments
+      POSTGRES_DB: attachments
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U attachments"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  attachments-serve:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      HASNA_ATTACHMENTS_STORAGE_MODE: cloud
+      HASNA_ATTACHMENTS_DATABASE_URL: postgres://attachments:attachments@postgres:5432/attachments
+      HASNA_ATTACHMENTS_API_SIGNING_KEY: local-dev-signing-secret-change-me
+      ATTACHMENTS_PUBLIC_BASE_URL: http://localhost:8080
+      ATTACHMENTS_VERSION: local
+    ports:
+      - "8080:8080"
