@@ -3,9 +3,13 @@
   "name": "attachments",
   "class": "cli-with-store",
   "contractVersion": "v1",
-  "kitVersion": "0.4.1",
+  "kitVersion": "0.4.2",
   "description": "Open-source attachment transfer with local or private S3 storage, app-hosted share links, CLI, MCP, REST API (attachments-serve), and a generated SDK. Cloud service is PURE REMOTE (Amendment A1): reads/writes RDS Postgres and S3 directly.",
-  "bins": ["attachments", "attachments-mcp", "attachments-serve"],
+  "bins": [
+    "attachments",
+    "attachments-mcp",
+    "attachments-serve"
+  ],
   "storage": {
     "mode": "cloud",
     "envPrefix": "HASNA_ATTACHMENTS_",
@@ -22,7 +26,11 @@
     },
     "serve": {
       "port": 8080,
-      "probes": ["/health", "/ready", "/version"],
+      "probes": [
+        "/health",
+        "/ready",
+        "/version"
+      ],
       "openapi": "/openapi.json",
       "apiVersion": "v1",
       "auth": "api-key (@hasna/contracts)"
