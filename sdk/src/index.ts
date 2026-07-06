@@ -4,6 +4,23 @@
  * Works in Node.js, Bun, Deno, and browser environments.
  */
 
+// ── Generated client ─────────────────────────────────────────────────────────
+// Typed fetch client generated from the serve OpenAPI (src/serve/openapi.ts).
+// This is the canonical client for the versioned /v1 API with API-key auth.
+// Regenerate: `bun run sdk:generate` in the repo root.
+export {
+  AttachmentsApiClient,
+  ApiError,
+  type AttachmentsApiClientOptions,
+  type CreateAttachmentRequest,
+  type LinkResponse,
+  type RegenerateLinkRequest,
+  type DeleteResponse,
+  type HealthStatus,
+  type ReadyStatus,
+  type VersionInfo,
+} from "./generated.js";
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface Attachment {
