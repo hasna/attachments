@@ -71,6 +71,93 @@ mock.module("../../core/upload", () => ({
   uploadStreamAttachment: mockUploadStreamAttachment,
 }));
 
+const mockV1Store = {
+  uploadStream: mock(async (_stream: unknown, filename: string, _opts: unknown) => ({
+    id: "att_v1stream",
+    filename,
+    s3Key: "",
+    bucket: "cloud",
+    size: 10,
+    contentType: "application/octet-stream",
+    link: "https://v1.example/stream",
+    expiresAt: null,
+    createdAt: Date.now(),
+  })),
+  uploadUrl: mock(async (_url: string, _opts: unknown) => ({
+    id: "att_v1url",
+    filename: "v1-url.txt",
+    s3Key: "",
+    bucket: "cloud",
+    size: 20,
+    contentType: "text/plain",
+    link: "https://v1.example/url",
+    expiresAt: null,
+    createdAt: Date.now(),
+  })),
+  uploadFile: mock(async (_path: string, _opts: unknown) => ({
+    id: "att_v1file",
+    filename: "v1-file.txt",
+    s3Key: "",
+    bucket: "cloud",
+    size: 30,
+    contentType: "text/plain",
+    link: "https://v1.example/file",
+    expiresAt: null,
+    createdAt: Date.now(),
+  })),
+};
+const mockResolveAttachmentsV1 = mock(() => ({ transport: "local" as const, store: null }));
+
+mock.module("../../core/cloud-v1", () => ({
+  resolveAttachmentsV1: mockResolveAttachmentsV1,
+}));
+
+const mockUploadStreamToCloudApi = mock(async (_stream: unknown, filename: string, _contentType: string, _opts: unknown) => ({
+  id: "att_cloudstream",
+  filename,
+  s3Key: "",
+  bucket: "cloud",
+  size: 40,
+  contentType: "application/octet-stream",
+  link: "https://cloud.example/stream",
+  expiresAt: null,
+  createdAt: Date.now(),
+}));
+const mockUploadUrlToCloudApi = mock(async (_url: string, _opts: unknown) => ({
+  id: "att_cloudurl",
+  filename: "cloud-url.txt",
+  s3Key: "",
+  bucket: "cloud",
+  size: 50,
+  contentType: "text/plain",
+  link: "https://cloud.example/url",
+  expiresAt: null,
+  createdAt: Date.now(),
+}));
+const mockUploadFileToCloudApi = mock(async (_path: string, _opts: unknown) => ({
+  id: "att_cloudfile",
+  filename: "cloud-file.txt",
+  s3Key: "",
+  bucket: "cloud",
+  size: 60,
+  contentType: "text/plain",
+  link: "https://cloud.example/file",
+  expiresAt: null,
+  createdAt: Date.now(),
+}));
+
+mock.module("../../core/api-client", () => ({
+  uploadStreamToCloudApi: mockUploadStreamToCloudApi,
+  uploadUrlToCloudApi: mockUploadUrlToCloudApi,
+  uploadFileToCloudApi: mockUploadFileToCloudApi,
+}));
+
+const mockResolveInternalBaseUrl = mock(async (_config: unknown) => ({ baseUrl: "http://internal.local:3459" }));
+
+mock.module("../../core/internal-link", () => ({
+  resolveInternalBaseUrl: mockResolveInternalBaseUrl,
+}));
+
 // spyOn validateStorageConfig to avoid mock.module cache pollution
 const mockGetConfig = spyOn(configModule, "getConfig").mockImplementation(() => testConfig);
 const mockIsCloudClientMode = spyOn(configModule, "isCloudClientMode").mockImplementation(() => false);
@@ -190,6 +277,13 @@ describe("upload command", () => {
     mockValidateStorageConfig.mockImplementation(() => {});
     mockExecSync.mockReset();
     mockExecSync.mockImplementation(() => Buffer.from(""));
+    mockResolveAttachmentsV1.mockReset();
+    mockResolveAttachmentsV1.mockImplementation(() => ({ transport: "local" as const, store: null }));
+    for (const fn of [mockV1Store.uploadStream, mockV1Store.uploadUrl, mockV1Store.uploadFile]) fn.mockClear();
+    mockUploadStreamToCloudApi.mockClear();
+    mockUploadUrlToCloudApi.mockClear();
+    mockUploadFileToCloudApi.mockClear();
+    mockResolveInternalBaseUrl.mockClear();
   });
 
   it("calls uploadFile with the given file path", async () => {
@@ -460,6 +554,121 @@ describe("upload command", () => {
       expect(capture.err.join("")).toContain("--filename is required when using --stdin");
     } finally {
       capture.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("exits with an error when no file path is provided", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildProgram();
+      await expect(program.parseAsync(["upload"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("A file path is required");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("validates client mode, max downloads, encryption, and allowed emails", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildProgram();
+      await expect(program.parseAsync(["upload", "file.txt", "--client-mode", "remote"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--client-mode");
+
+      capture.err.length = 0;
+      await expect(program.parseAsync(["upload", "file.txt", "--max-downloads", "0"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--max-downloads");
+
+      capture.err.length = 0;
+      await expect(program.parseAsync(["upload", "file.txt", "--encrypt"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--encrypt requires --password");
+
+      capture.err.length = 0;
+      await expect(program.parseAsync(["upload", "file.txt", "--allowed-email", "not-an-email"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("Invalid --allowed-email");
+
+      capture.err.length = 0;
+      await expect(program.parseAsync(["upload", "file.txt", "--internal", "--client-mode", "cloud"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--internal requires local client mode");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("routes stdin and internal local uploads through local storage", async () => {
+    const capture = captureOutput();
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["upload", "--stdin", "--filename", "stdin.bin"], { from: "user" });
+      expect(mockUploadStreamAttachment).toHaveBeenCalledWith(process.stdin, "stdin.bin", "application/octet-stream", expect.any(Object));
+
+      await program.parseAsync(["upload", "file.txt", "--internal", "--allowed-email", "person@example.com"], { from: "user" });
+      const [, opts] = mockUploadFile.mock.calls.at(-1) as [string, { baseUrl?: string; allowedEmails?: string[]; requireEmail?: boolean }];
+      expect(opts.baseUrl).toBe("http://internal.local:3459");
+      expect(opts.allowedEmails).toEqual(["person@example.com"]);
+      expect(opts.requireEmail).toBe(true);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("routes uploads through legacy cloud API mode", async () => {
+    const capture = captureOutput();
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["upload", "file.txt", "--client-mode", "cloud"], { from: "user" });
+      await program.parseAsync(["upload", "https://example.com/file.txt", "--client-mode", "cloud"], { from: "user" });
+      await program.parseAsync(["upload", "--stdin", "--filename", "stdin.bin", "--client-mode", "cloud"], { from: "user" });
+      expect(mockUploadFileToCloudApi).toHaveBeenCalledWith("file.txt", expect.any(Object));
+      expect(mockUploadUrlToCloudApi).toHaveBeenCalledWith("https://example.com/file.txt", expect.any(Object));
+      expect(mockUploadStreamToCloudApi).toHaveBeenCalledWith(process.stdin, "stdin.bin", "application/octet-stream", expect.any(Object));
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("routes uploads through self-hosted v1 mode and rejects unsupported encrypted v1 uploads", async () => {
+    mockResolveAttachmentsV1.mockImplementation(() => ({
+      transport: "cloud-http" as const,
+      store: mockV1Store,
+    }));
+
+    const capture = captureOutput();
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["upload", "file.txt"], { from: "user" });
+      await program.parseAsync(["upload", "https://example.com/file.txt"], { from: "user" });
+      await program.parseAsync(["upload", "--stdin", "--filename", "stdin.bin"], { from: "user" });
+      expect(mockV1Store.uploadFile).toHaveBeenCalledWith("file.txt", expect.any(Object));
+      expect(mockV1Store.uploadUrl).toHaveBeenCalledWith("https://example.com/file.txt", expect.any(Object));
+      expect(mockV1Store.uploadStream).toHaveBeenCalledWith(process.stdin, "stdin.bin", expect.any(Object));
+    } finally {
+      capture.restore();
+    }
+
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const errorCapture = captureOutput();
+    try {
+      const program = buildProgram();
+      await expect(
+        program.parseAsync(["upload", "file.txt", "--encrypt", "--password", "pw"], { from: "user" })
+      ).rejects.toThrow("process.exit called");
+      expect(errorCapture.err.join("")).toContain("not supported in self_hosted");
+    } finally {
+      errorCapture.restore();
       exitSpy.mockRestore();
     }
   });

@@ -6,6 +6,8 @@ import { deleteCloudAttachment } from "../../core/api-client";
 import { resolveAttachmentsV1 } from "../../core/cloud-v1";
 import { LocalObjectStore } from "../../core/object-storage";
 
+function abortDelete(): never { process.stdout.write("Aborted.\n"); return process.exit(0); }
+
 export function deleteCommand(): Command {
   const cmd = new Command("delete")
     .description("Delete an attachment by ID")
@@ -18,10 +20,7 @@ export function deleteCommand(): Command {
         if (!options.yes) {
           process.stdout.write(`Delete ${id}? This cannot be undone. [y/N] `);
           const answer = await readLine();
-          if (answer.trim().toLowerCase() !== "y") {
-            process.stdout.write("Aborted.\n");
-            process.exit(0);
-          }
+          if (answer.trim().toLowerCase() !== "y") return abortDelete();
         }
         await v1.store.delete(id);
         process.stdout.write(options.brief ? `deleted ${id}\n` : `✓ Deleted ${id}\n`);
@@ -31,10 +30,7 @@ export function deleteCommand(): Command {
         if (!options.yes) {
           process.stdout.write(`Delete ${id}? This cannot be undone. [y/N] `);
           const answer = await readLine();
-          if (answer.trim().toLowerCase() !== "y") {
-            process.stdout.write("Aborted.\n");
-            process.exit(0);
-          }
+          if (answer.trim().toLowerCase() !== "y") return abortDelete();
         }
         await deleteCloudAttachment(id);
         process.stdout.write(options.brief ? `deleted ${id}\n` : `✓ Deleted ${id}\n`);

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mintApiKey } from "@hasna/contracts/auth";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -6,6 +6,7 @@ import { join } from "path";
 import { createServeApp } from "./app.js";
 import { buildOpenApiDocument } from "./openapi.js";
 import { normalizeConfig } from "../core/config.js";
+import { S3Client } from "../core/s3.js";
 import type { PoolQueryClient } from "../generated/storage-kit/query.js";
 import { PgAttachmentsStore } from "../db/pg-store.js";
 import type { Attachment } from "../core/db.js";
@@ -135,6 +136,23 @@ function makeV1App(options: { store?: ReturnType<typeof makeStore>; maxSizeBytes
     signingSecret: SIGNING,
   });
   return { app, store, dir };
+}
+
+function makeS3V1App(store = makeStore([])) {
+  const app = createServeApp({
+    client: stubClient(),
+    store: store as unknown as PgAttachmentsStore,
+    config: normalizeConfig({
+      s3: { bucket: "test-bucket", region: "us-east-1", accessKeyId: "K", secretAccessKey: "S" },
+      storage: { backend: "s3", maxSizeBytes: 1024 },
+      server: { baseUrl: "https://files.example.test", publicPath: "/a" },
+      defaults: { expiry: "24h", linkType: "presigned" },
+    }),
+    version: "test",
+    mode: "cloud",
+    signingSecret: SIGNING,
+  });
+  return { app, store };
 }
 
 afterEach(() => {
@@ -268,6 +286,39 @@ describe("attachments serve app", () => {
     });
   });
 
+  test("POST /v1/attachments stores S3 uploads and creates presigned links", async () => {
+    const uploadSpy = spyOn(S3Client.prototype, "upload").mockImplementation(async () => {});
+    const presignSpy = spyOn(S3Client.prototype, "presign").mockImplementation(
+      async () => "https://s3.example.test/object?X-Amz-Signature=test",
+    );
+    const store = makeStore([]);
+    const { app } = makeS3V1App(store);
+
+    try {
+      const res = await app.request("/v1/attachments", {
+        method: "POST",
+        headers: { ...authHeaders(["attachments:write"]), "content-type": "application/json" },
+        body: JSON.stringify({
+          filename: "s3.txt",
+          content_base64: Buffer.from("s3 body").toString("base64"),
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.link).toBe("https://s3.example.test/object?X-Amz-Signature=test");
+      expect(uploadSpy).toHaveBeenCalled();
+      expect(presignSpy).toHaveBeenCalled();
+      expect(store.rows[0]).toMatchObject({
+        bucket: "test-bucket",
+        storageBackend: "s3",
+      });
+    } finally {
+      uploadSpy.mockRestore();
+      presignSpy.mockRestore();
+    }
+  });
+
   test("POST /v1/attachments rejects raw uploads above configured max size", async () => {
     const { app } = makeV1App({ maxSizeBytes: 2 });
 
@@ -296,6 +347,30 @@ describe("attachments serve app", () => {
     });
     expect(linkRes.status).toBe(200);
     await expect(linkRes.json()).resolves.toEqual(expect.objectContaining({ link: "https://files.example.test/a/share_token" }));
+
+    const s3Store = makeStore([attachment({ bucket: "test-bucket", storageBackend: "s3", s3Key: "objects/s3.txt" })]);
+    const { app: s3App } = makeS3V1App(s3Store);
+    const presignSpy = spyOn(S3Client.prototype, "presign").mockImplementation(
+      async () => "https://s3.example.test/object?X-Amz-Signature=regen",
+    );
+    try {
+      const presignedLink = await s3App.request("/v1/attachments/att_1/link", {
+        method: "POST",
+        headers: { ...authHeaders(["attachments:write"]), "content-type": "application/json" },
+        body: JSON.stringify({ expiry: "30m", link_type: "presigned" }),
+      });
+      expect(presignedLink.status).toBe(200);
+      await expect(presignedLink.json()).resolves.toEqual(expect.objectContaining({
+        link: "https://s3.example.test/object?X-Amz-Signature=regen",
+      }));
+    } finally {
+      presignSpy.mockRestore();
+    }
+
+    const missingLink = await app.request("/v1/attachments/att_missing/link", {
+      headers: authHeaders(["attachments:read"]),
+    });
+    expect(missingLink.status).toBe(404);
 
     const deleteRes = await app.request("/v1/attachments/att_1", {
       method: "DELETE",

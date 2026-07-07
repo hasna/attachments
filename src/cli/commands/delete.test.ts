@@ -55,6 +55,19 @@ mock.module("../../core/object-storage", () => ({
   },
 }));
 
+const mockV1Delete = mock(async (_id: string) => {});
+const mockResolveAttachmentsV1 = mock(() => ({ transport: "local" as const, store: null }));
+
+mock.module("../../core/cloud-v1", () => ({
+  resolveAttachmentsV1: mockResolveAttachmentsV1,
+}));
+
+const mockDeleteCloudAttachment = mock(async (_id: string) => {});
+
+mock.module("../../core/api-client", () => ({
+  deleteCloudAttachment: mockDeleteCloudAttachment,
+}));
+
 // Use real config module — avoids module cache pollution
 let _deleteTestConfigDir: string;
 beforeAll(() => {
@@ -142,6 +155,12 @@ describe("deleteCommand", () => {
     mockLocalConstructor.mockReset();
     mockLocalDelete.mockReset();
     mockLocalDelete.mockImplementation(async () => {});
+    mockV1Delete.mockReset();
+    mockV1Delete.mockImplementation(async () => {});
+    mockResolveAttachmentsV1.mockReset();
+    mockResolveAttachmentsV1.mockImplementation(() => ({ transport: "local" as const, store: null }));
+    mockDeleteCloudAttachment.mockReset();
+    mockDeleteCloudAttachment.mockImplementation(async () => {});
   });
 
   it("deletes attachment by id when --yes is passed", async () => {
@@ -307,6 +326,117 @@ describe("deleteCommand", () => {
       expect(combined).toBe("deleted att_brief_del\n");
     } finally {
       capture.restore();
+    }
+  });
+
+  it("deletes through self-hosted v1 mode", async () => {
+    mockResolveAttachmentsV1.mockImplementation(() => ({
+      transport: "cloud-http" as const,
+      store: { delete: mockV1Delete },
+    }));
+
+    const capture = captureOutput();
+    try {
+      const program = buildDeleteCmd();
+      await program.parseAsync(["delete", "att_v1", "--yes", "--brief"], { from: "user" });
+      expect(mockV1Delete).toHaveBeenCalledWith("att_v1");
+      expect(mockFindById).not.toHaveBeenCalled();
+      expect(capture.out.join("")).toBe("deleted att_v1\n");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("aborts self-hosted v1 deletion when prompt is declined", async () => {
+    mockResolveAttachmentsV1.mockImplementation(() => ({
+      transport: "cloud-http" as const,
+      store: { delete: mockV1Delete },
+    }));
+    const stdinSpy = spyOn(process.stdin, "once").mockImplementation(
+      (event: string, listener: (...args: unknown[]) => void) => {
+        if (event === "data") setTimeout(() => listener("n\n"), 0);
+        return process.stdin;
+      }
+    );
+    const stdinResumeSpy = spyOn(process.stdin, "resume").mockImplementation(() => process.stdin);
+    const stdinPauseSpy = spyOn(process.stdin, "pause").mockImplementation(() => process.stdin);
+    const stdinEncodingSpy = spyOn(process.stdin, "setEncoding").mockImplementation(() => process.stdin);
+    let exitCode: number | undefined;
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      exitCode = code;
+      return undefined as never;
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildDeleteCmd();
+      await program.parseAsync(["delete", "att_v1_prompt"], { from: "user" });
+      expect(exitCode).toBe(0);
+      expect(capture.out.join("")).toContain("Aborted");
+      expect(mockV1Delete).not.toHaveBeenCalled();
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+      stdinSpy.mockRestore();
+      stdinResumeSpy.mockRestore();
+      stdinPauseSpy.mockRestore();
+      stdinEncodingSpy.mockRestore();
+    }
+  });
+
+  it("deletes through legacy cloud API mode", async () => {
+    const previousMode = process.env["ATTACHMENTS_CLIENT_MODE"];
+    delete process.env["ATTACHMENTS_CLIENT_MODE"];
+    setConfig({ client: { mode: "cloud", apiBaseUrl: "https://attachments.example", apiToken: "token" } });
+
+    const capture = captureOutput();
+    try {
+      const program = buildDeleteCmd();
+      await program.parseAsync(["delete", "att_cloud", "--yes"], { from: "user" });
+      expect(mockDeleteCloudAttachment).toHaveBeenCalledWith("att_cloud");
+      expect(capture.out.join("")).toContain("Deleted att_cloud");
+    } finally {
+      capture.restore();
+      if (previousMode === undefined) delete process.env["ATTACHMENTS_CLIENT_MODE"];
+      else process.env["ATTACHMENTS_CLIENT_MODE"] = previousMode;
+    }
+  });
+
+  it("aborts legacy cloud deletion when prompt is declined", async () => {
+    const previousMode = process.env["ATTACHMENTS_CLIENT_MODE"];
+    delete process.env["ATTACHMENTS_CLIENT_MODE"];
+    setConfig({ client: { mode: "cloud", apiBaseUrl: "https://attachments.example", apiToken: "token" } });
+    const stdinSpy = spyOn(process.stdin, "once").mockImplementation(
+      (event: string, listener: (...args: unknown[]) => void) => {
+        if (event === "data") setTimeout(() => listener("n\n"), 0);
+        return process.stdin;
+      }
+    );
+    const stdinResumeSpy = spyOn(process.stdin, "resume").mockImplementation(() => process.stdin);
+    const stdinPauseSpy = spyOn(process.stdin, "pause").mockImplementation(() => process.stdin);
+    const stdinEncodingSpy = spyOn(process.stdin, "setEncoding").mockImplementation(() => process.stdin);
+    let exitCode: number | undefined;
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      exitCode = code;
+      return undefined as never;
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildDeleteCmd();
+      await program.parseAsync(["delete", "att_cloud_prompt"], { from: "user" });
+      expect(exitCode).toBe(0);
+      expect(capture.out.join("")).toContain("Aborted");
+      expect(mockDeleteCloudAttachment).not.toHaveBeenCalled();
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+      stdinSpy.mockRestore();
+      stdinResumeSpy.mockRestore();
+      stdinPauseSpy.mockRestore();
+      stdinEncodingSpy.mockRestore();
+      if (previousMode === undefined) delete process.env["ATTACHMENTS_CLIENT_MODE"];
+      else process.env["ATTACHMENTS_CLIENT_MODE"] = previousMode;
     }
   });
 });

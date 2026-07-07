@@ -19,6 +19,11 @@ describe("mcp http transport", () => {
     expect(resolveMcpHttpPort(["node"], { MCP_HTTP_PORT: "9002" })).toBe(9002);
   });
 
+  test("rejects invalid explicit ports", () => {
+    expect(() => resolveMcpHttpPort(["node", "--port", "bad"], {})).toThrow("Invalid --port");
+    expect(() => resolveMcpHttpPort(["node"], { MCP_HTTP_PORT: "70000" })).toThrow("Invalid MCP_HTTP_PORT");
+  });
+
   test("isHttpMode detects flag and env", () => {
     expect(isHttpMode(["node"], {})).toBe(false);
     expect(isHttpMode(["node", "--http"], {})).toBe(true);
@@ -69,6 +74,12 @@ describe("mcp streamable http server", () => {
     expect(await res.json()).toEqual({ status: "ok", name: "attachments" });
   });
 
+  test("unknown HTTP paths return 404", async () => {
+    const res = await fetch(`http://${handle.host}:${handle.port}/missing`);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("Not Found");
+  });
+
   test("initialize and call describe_tools over streamable HTTP", async () => {
     const transport = new StreamableHTTPClientTransport(
       new URL(`http://${handle.host}:${handle.port}/mcp`),
@@ -110,5 +121,33 @@ describe("mcp streamable http server", () => {
     const currentRssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
     expect(idleRssMb).toBeGreaterThan(0);
     expect(Math.abs(currentRssMb - idleRssMb)).toBeLessThan(100);
+  });
+
+  test("bad JSON-RPC bodies return JSON-RPC internal errors", async () => {
+    const res = await fetch(`http://${handle.host}:${handle.port}/mcp`, {
+      method: "POST",
+      body: "{not json",
+    });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({
+      jsonrpc: "2.0",
+      error: { code: -32603, message: "Internal server error" },
+      id: null,
+    });
+  });
+
+  test("server construction failures return JSON-RPC internal errors", async () => {
+    const failingHandle = await startMcpHttpServer(() => {
+      throw new Error("boom");
+    }, { port: 0, serviceName: "failing-attachments" });
+    try {
+      const res = await fetch(`http://${failingHandle.host}:${failingHandle.port}/mcp`);
+      expect(res.status).toBe(500);
+      expect(await res.json()).toMatchObject({
+        error: { message: "Internal server error" },
+      });
+    } finally {
+      await failingHandle.close();
+    }
   });
 });

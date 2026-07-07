@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterAll, beforeAll, spyOn } fr
 import { tmpdir } from "os";
 import { join } from "path";
 import { mkdirSync, rmSync } from "fs";
+import { Command } from "commander";
 import { setConfigPath, setConfig } from "../../core/config";
 
 // ---------------------------------------------------------------------------
@@ -64,6 +65,51 @@ let fetchMock = mock(async (_url: unknown, _opts?: unknown): Promise<Response> =
   return new Response(null, { status: 200 });
 });
 
+describe("watch command", () => {
+  it("builds the SSE URL and removes signal handlers on shutdown", async () => {
+    const urls: string[] = [];
+    const previousFetch = globalThis.fetch;
+    const out: string[] = [];
+    const stdoutSpy = spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+      out.push(String(chunk));
+      return true;
+    });
+    (globalThis as Record<string, unknown>).fetch = mock(async (input: unknown): Promise<Response> => {
+      urls.push(String(input));
+      const stream = new ReadableStream<Uint8Array>({
+        start(ctrl) {
+          setTimeout(() => {
+            process.emit("SIGINT");
+            ctrl.enqueue(new TextEncoder().encode("event: message\ndata: {}\n\n"));
+            ctrl.close();
+          }, 0);
+        },
+      });
+      return new Response(stream, { status: 200 });
+    });
+
+    try {
+      const program = new Command();
+      program.exitOverride();
+      registerWatch(program);
+      await program.parseAsync([
+        "watch",
+        "--todos-url",
+        "http://todos.local",
+        "--events",
+        "task.completed,task.updated",
+        "--verbose",
+      ], { from: "user" });
+
+      expect(urls[0]).toBe("http://todos.local/api/tasks/stream?events=task.completed%2Ctask.updated");
+      expect(out.join("")).toContain("[watch] Shutting down");
+    } finally {
+      stdoutSpy.mockRestore();
+      globalThis.fetch = previousFetch;
+    }
+  });
+});
+
 (globalThis as Record<string, unknown>).fetch = fetchMock;
 
 // ---------------------------------------------------------------------------
@@ -88,7 +134,7 @@ afterAll(() => {
 });
 
 // Import after mocks
-const { handleTaskEvent, parseSseBlock, connectAndWatch, registerWatch } = await import("./watch");
+const { handleTaskEvent, parseSseBlock, connectAndWatch, registerWatch, defaultWatchSleep } = await import("./watch");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -147,6 +193,14 @@ describe("parseSseBlock", () => {
   it("returns null for empty block", () => {
     expect(parseSseBlock("")).toBeNull();
     expect(parseSseBlock("   ")).toBeNull();
+  });
+});
+
+describe("defaultWatchSleep", () => {
+  it("resolves after the requested delay", async () => {
+    const before = Date.now();
+    await defaultWatchSleep(0);
+    expect(Date.now()).toBeGreaterThanOrEqual(before);
   });
 });
 
@@ -239,6 +293,50 @@ describe("handleTaskEvent", () => {
     expect(result!.regenerated).toBe(1);
   });
 
+  it("logs regenerated links in verbose mode", async () => {
+    const att = makeAttachment({ id: "att_verbose_expired", expiresAt: Date.now() - 5000 });
+    const out: string[] = [];
+    const stdoutSpy = spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+      out.push(String(chunk));
+      return true;
+    });
+    try {
+      const result = await handleTaskEvent({
+        type: "task.completed",
+        task_id: "TASK-VERBOSE",
+        metadata: { _evidence: { attachments: ["att_verbose_expired"] } },
+      }, { verbose: true }, makeDbFactory({ att_verbose_expired: att }));
+      expect(result!.regenerated).toBe(1);
+      expect(out.join("")).toContain("Regenerated link");
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+  });
+
+  it("logs regenerate failures and continues", async () => {
+    const att = makeAttachment({ id: "att_fail_regen", expiresAt: Date.now() - 5000 });
+    mockPresign.mockImplementationOnce(async () => {
+      throw new Error("presign failed");
+    });
+    const err: string[] = [];
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      err.push(String(chunk));
+      return true;
+    });
+    try {
+      const result = await handleTaskEvent({
+        type: "task.completed",
+        task_id: "TASK-FAIL",
+        metadata: { _evidence: { attachments: ["att_fail_regen"] } },
+      }, {}, makeDbFactory({ att_fail_regen: att }));
+      expect(result!.checked).toBe(1);
+      expect(result!.regenerated).toBe(0);
+      expect(err.join("")).toContain("Failed to regenerate link");
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
   it("skips attachment IDs not found in local DB", async () => {
     const event = {
       type: "task.completed",
@@ -250,6 +348,26 @@ describe("handleTaskEvent", () => {
     expect(result).not.toBeNull();
     expect(result!.checked).toBe(0);
     expect(result!.regenerated).toBe(0);
+  });
+
+  it("logs skipped attachment IDs in verbose mode", async () => {
+    const out: string[] = [];
+    const stdoutSpy = spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+      out.push(String(chunk));
+      return true;
+    });
+    try {
+      const event = {
+        type: "task.completed",
+        task_id: "TASK-006V",
+        metadata: { _evidence: { attachments: ["att_missing"] } },
+      };
+      const result = await handleTaskEvent(event, { verbose: true }, makeDbFactory({}));
+      expect(result!.checked).toBe(0);
+      expect(out.join("")).toContain("not found in local DB");
+    } finally {
+      stdoutSpy.mockRestore();
+    }
   });
 
   it("handles multiple attachments: mixed healthy and expired", async () => {
@@ -377,6 +495,36 @@ describe("connectAndWatch reconnect logic", () => {
     expect(sleepCalls[0]).toBe(5000);
     const errOutput = err.join("");
     expect(errOutput).toContain("reconnecting in 5s");
+  });
+
+  it("reconnects after non-OK SSE responses", async () => {
+    let callCount = 0;
+    const controller = new AbortController();
+    const sleepCalls: number[] = [];
+    const mockFetch = mock(async (): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) return new Response(null, { status: 503 });
+      controller.abort();
+      throw new Error("aborted");
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    const stdoutSpy = spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      await connectAndWatch(
+        "http://localhost:3000/api/tasks/stream",
+        {},
+        controller.signal,
+        mockFetch as unknown as typeof fetch,
+        makeDbFactory(),
+        async (ms) => { sleepCalls.push(ms); },
+      );
+    } finally {
+      stderrSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    }
+
+    expect(sleepCalls).toEqual([5000]);
   });
 
   it("doubles backoff on repeated failures (capped at 60s)", async () => {
@@ -541,5 +689,70 @@ describe("connectAndWatch reconnect logic", () => {
     // No task output since we only got a non-completed event
     const output = out.join("");
     expect(output).not.toContain("TASK-ASSIGN-001");
+  });
+
+  it("logs parse errors for malformed task.completed events", async () => {
+    const controller = new AbortController();
+    const stream = new ReadableStream({
+      start(ctrl) {
+        ctrl.enqueue(new TextEncoder().encode("event: task.completed\ndata: {not-json}\n\n"));
+        ctrl.close();
+      },
+    });
+    let callCount = 0;
+    const customFetch = mock(async () => {
+      callCount++;
+      if (callCount === 1) return new Response(stream, { status: 200 });
+      controller.abort();
+      throw new Error("aborted");
+    });
+    const err: string[] = [];
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      err.push(String(chunk));
+      return true;
+    });
+    const stdoutSpy = spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await connectAndWatch(
+        "http://localhost:3000/api/tasks/stream",
+        {},
+        controller.signal,
+        customFetch as unknown as typeof fetch,
+        makeDbFactory(),
+        async () => {}
+      );
+    } finally {
+      stderrSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    }
+    expect(err.join("")).toContain("Failed to parse event data");
+  });
+
+  it("reconnects when the SSE response has no body", async () => {
+    const controller = new AbortController();
+    let callCount = 0;
+    const sleeps: number[] = [];
+    const customFetch = mock(async () => {
+      callCount++;
+      if (callCount === 1) return new Response(null, { status: 200 });
+      controller.abort();
+      throw new Error("aborted");
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    const stdoutSpy = spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await connectAndWatch(
+        "http://localhost:3000/api/tasks/stream",
+        {},
+        controller.signal,
+        customFetch as unknown as typeof fetch,
+        makeDbFactory(),
+        async (ms) => { sleeps.push(ms); }
+      );
+    } finally {
+      stderrSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    }
+    expect(sleeps[0]).toBe(5000);
   });
 });

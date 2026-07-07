@@ -307,8 +307,7 @@ function filenameFromDisposition(value: string | null): string | null {
 
 function resolveDownloadPath(output: string | undefined, filename: string): string {
   if (!output) return join(process.cwd(), filename);
-  if (existsSync(output) && statSync(output).isDirectory()) return join(output, filename);
-  if (output.endsWith("/") || output.endsWith("\\")) return join(output, filename);
+  if ((existsSync(output) && statSync(output).isDirectory()) || output.endsWith("/") || output.endsWith("\\")) return join(output, filename);
   return output;
 }
 

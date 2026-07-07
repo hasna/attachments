@@ -70,6 +70,22 @@ mock.module("../../core/links", () => ({
   getLinkType: mockGetLinkType,
 }));
 
+const mockV1GetLink = mock(async (_id: string) => ({ link: "https://v1.example/link", expires_at: 111 }));
+const mockV1RegenerateLink = mock(async (_id: string, _options: unknown) => ({ link: "https://v1.example/new", expires_at: 222 }));
+const mockResolveAttachmentsV1 = mock(() => ({ transport: "local" as const, store: null }));
+
+mock.module("../../core/cloud-v1", () => ({
+  resolveAttachmentsV1: mockResolveAttachmentsV1,
+}));
+
+const mockGetCloudAttachmentLink = mock(async (_id: string) => ({ link: "https://cloud.example/link", expires_at: 333 }));
+const mockRegenerateCloudAttachmentLink = mock(async (_id: string, _options: unknown) => ({ link: "https://cloud.example/new", expires_at: 444 }));
+
+mock.module("../../core/api-client", () => ({
+  getCloudAttachmentLink: mockGetCloudAttachmentLink,
+  regenerateCloudAttachmentLink: mockRegenerateCloudAttachmentLink,
+}));
+
 // Restore mocks after tests
 afterAll(() => {
   mock.restore();
@@ -205,6 +221,16 @@ describe("linkCommand", () => {
     mockGenerateShareLink.mockReset();
     mockGenerateShareLink.mockImplementation((token: string, baseUrl: string) => `${baseUrl}/a/${token}`);
     mockGetLinkType.mockImplementation(() => "presigned" as const);
+    mockV1GetLink.mockReset();
+    mockV1GetLink.mockImplementation(async () => ({ link: "https://v1.example/link", expires_at: 111 }));
+    mockV1RegenerateLink.mockReset();
+    mockV1RegenerateLink.mockImplementation(async () => ({ link: "https://v1.example/new", expires_at: 222 }));
+    mockResolveAttachmentsV1.mockReset();
+    mockResolveAttachmentsV1.mockImplementation(() => ({ transport: "local" as const, store: null }));
+    mockGetCloudAttachmentLink.mockReset();
+    mockGetCloudAttachmentLink.mockImplementation(async () => ({ link: "https://cloud.example/link", expires_at: 333 }));
+    mockRegenerateCloudAttachmentLink.mockReset();
+    mockRegenerateCloudAttachmentLink.mockImplementation(async () => ({ link: "https://cloud.example/new", expires_at: 444 }));
   });
 
   it("shows existing link in human format by default", async () => {
@@ -349,6 +375,27 @@ describe("linkCommand", () => {
     }
   });
 
+  it("exits with error for invalid local max downloads", async () => {
+    const att = makeAttachment({ id: "att_bad_max" });
+    mockFindById.mockImplementation(() => att);
+
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildLinkCmd();
+      await expect(
+        program.parseAsync(["link", "att_bad_max", "--regenerate", "--max-downloads", "0"], { from: "user" })
+      ).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--max-downloads must be a positive integer");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
   it("shows (no link) in human format when link is null", async () => {
     const att = makeAttachment({ id: "att_nolink", link: null });
     mockFindById.mockImplementation(() => att);
@@ -404,6 +451,75 @@ describe("linkCommand", () => {
       expect(mockDbClose).toHaveBeenCalled();
     } finally {
       capture.restore();
+    }
+  });
+
+  it("shows and regenerates self-hosted v1 links", async () => {
+    mockResolveAttachmentsV1.mockImplementation(() => ({
+      transport: "cloud-http" as const,
+      store: { getLink: mockV1GetLink, regenerateLink: mockV1RegenerateLink },
+    }));
+
+    const capture = captureOutput();
+    try {
+      const program = buildLinkCmd();
+      await program.parseAsync(["link", "att_v1", "--brief"], { from: "user" });
+      expect(capture.out.join("")).toBe("https://v1.example/link\n");
+
+      capture.out.length = 0;
+      await program.parseAsync(["link", "att_v1", "--regenerate", "--expiry", "24h", "--password", "pw", "--max-downloads", "2", "--format", "json"], { from: "user" });
+      const parsed = JSON.parse(capture.out.join(""));
+      expect(parsed.link).toBe("https://v1.example/new");
+      expect(mockV1RegenerateLink).toHaveBeenCalledWith("att_v1", expect.objectContaining({
+        expiry: "24h",
+        password: "pw",
+        maxDownloads: 2,
+      }));
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("shows and regenerates legacy cloud API links", async () => {
+    const previousMode = process.env["ATTACHMENTS_CLIENT_MODE"];
+    delete process.env["ATTACHMENTS_CLIENT_MODE"];
+    setConfig({ client: { mode: "cloud", apiBaseUrl: "https://attachments.example", apiToken: "token" } });
+
+    const capture = captureOutput();
+    try {
+      const program = buildLinkCmd();
+      await program.parseAsync(["link", "att_cloud", "--brief"], { from: "user" });
+      expect(capture.out.join("")).toBe("https://cloud.example/link\n");
+
+      capture.out.length = 0;
+      await program.parseAsync(["link", "att_cloud", "--regenerate"], { from: "user" });
+      expect(capture.out.join("")).toContain("https://cloud.example/new");
+      expect(mockRegenerateCloudAttachmentLink).toHaveBeenCalledWith("att_cloud", expect.any(Object));
+    } finally {
+      capture.restore();
+      if (previousMode === undefined) delete process.env["ATTACHMENTS_CLIENT_MODE"];
+      else process.env["ATTACHMENTS_CLIENT_MODE"] = previousMode;
+    }
+  });
+
+  it("rejects invalid max downloads in cloud mode", async () => {
+    mockResolveAttachmentsV1.mockImplementation(() => ({
+      transport: "cloud-http" as const,
+      store: { getLink: mockV1GetLink, regenerateLink: mockV1RegenerateLink },
+    }));
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+    try {
+      const program = buildLinkCmd();
+      await expect(
+        program.parseAsync(["link", "att_v1", "--max-downloads", "0"], { from: "user" })
+      ).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--max-downloads");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
     }
   });
 });

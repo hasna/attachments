@@ -41,6 +41,32 @@ async function runDomainCommand(args: string[]): Promise<string> {
   return chunks.join("");
 }
 
+async function captureDomainCommand(args: string[]): Promise<{ out: string; err: string }> {
+  const program = new Command();
+  program.exitOverride();
+  program.addCommand(domainCommand());
+
+  const out: string[] = [];
+  const err: string[] = [];
+  const stdout = spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+    out.push(String(chunk));
+    return true;
+  });
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => {
+    err.push(String(chunk));
+    return true;
+  });
+
+  try {
+    await program.parseAsync(["domain", ...args], { from: "user" });
+  } finally {
+    stdout.mockRestore();
+    stderr.mockRestore();
+  }
+
+  return { out: out.join(""), err: err.join("") };
+}
+
 describe("domain command", () => {
   it("stores path-routing origins and prints a Cloudflare route plan", async () => {
     await runDomainCommand([
@@ -74,6 +100,38 @@ describe("domain command", () => {
       origin: "https://shortlinks-origin.example.com",
     });
     expect(plan.missing).toEqual([]);
+  });
+
+  it("stores DNS metadata and prints an opendomains plan", async () => {
+    await runDomainCommand([
+      "configure",
+      "--hostname",
+      "files.example.com",
+      "--path-prefix",
+      "files/",
+      "--provider",
+      "cloudflare",
+      "--managed-by",
+      "opendomains",
+      "--zone",
+      "example.com",
+      "--record",
+      "CNAME",
+      "--name",
+      "files",
+      "--target",
+      "lb.example.com",
+      "--proxied",
+      "--shortlinks-origin",
+      "https://short.example.com/",
+    ]);
+
+    const output = await runDomainCommand(["plan", "--format", "opendomains"]);
+    const plan = JSON.parse(output);
+    expect(plan.tool).toBe("opendomains");
+    expect(plan.health_url).toBe("https://files.example.com/api/health");
+    expect(plan.public_route).toBe("https://files.example.com/files/:token");
+    expect(plan.records[0]).toMatchObject({ recordType: "CNAME", name: "files", target: "lb.example.com", proxied: true });
   });
 
   it("reports a missing attachments origin when only the domain is configured", async () => {
@@ -151,6 +209,70 @@ describe("domain command", () => {
 
       expect(result.ok).toBe(true);
       expect(result.service).toBe("attachments");
+      expect(process.exitCode).toBe(0);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("rejects invalid plan and verify options", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    try {
+      await expect(captureDomainCommand(["plan", "--format", "yaml"])).rejects.toThrow("process.exit called");
+    } finally {
+      exitSpy.mockRestore();
+    }
+
+    const timeoutResult = await captureDomainCommand(["verify", "--timeout", "0"]);
+    expect(timeoutResult.err).toContain("--timeout");
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+
+    const formatResult = await captureDomainCommand(["verify", "--format", "xml"]);
+    expect(formatResult.err).toContain("--format must be human or json");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("verify reports probe failures in human output", async () => {
+    await runDomainCommand([
+      "configure",
+      "--hostname",
+      "has.na",
+      "--base-url",
+      "https://has.na",
+      "--path-prefix",
+      "/a",
+      "--provider",
+      "cloudflare",
+    ]);
+
+    const fetchMock = spyOn(globalThis, "fetch").mockImplementation(mock(async () => {
+      throw new Error("network down");
+    }));
+
+    try {
+      const output = await runDomainCommand(["verify"]);
+      expect(output).toContain("FAIL: Probe failed: network down");
+      expect(output).toContain("Required route:");
+      expect(process.exitCode).toBe(1);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("verify prints ok human output", async () => {
+    await runDomainCommand(["configure", "--hostname", "has.na"]);
+
+    const fetchMock = spyOn(globalThis, "fetch").mockImplementation(mock(async () => new Response(
+      "<html><h1>Attachment unavailable</h1></html>",
+      { status: 404, headers: { "content-type": "text/html" } },
+    )));
+
+    try {
+      const output = await runDomainCommand(["verify"]);
+      expect(output).toContain("OK:");
       expect(process.exitCode).toBe(0);
     } finally {
       fetchMock.mockRestore();

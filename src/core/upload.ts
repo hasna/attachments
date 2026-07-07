@@ -359,9 +359,7 @@ function extractFilenameFromUrl(url: string, contentDisposition?: string | null)
   // Try Content-Disposition header first
   if (contentDisposition) {
     const match = contentDisposition.match(/filename[*]?=(?:UTF-8''|"?)([^";]+)"?/i);
-    if (match?.[1]) {
-      return decodeURIComponent(match[1].trim());
-    }
+    if (match?.[1]) return decodeURIComponent(match[1].trim());
   }
 
   // Fall back to last path segment from URL

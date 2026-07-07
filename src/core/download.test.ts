@@ -3,6 +3,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { mkdirSync, rmSync, readFileSync, existsSync } from "fs";
 import { Readable } from "stream";
+import { createCipheriv, randomBytes, scryptSync } from "crypto";
 
 // Import real modules — no mock.module needed thanks to deps injection
 import {
@@ -14,7 +15,7 @@ import {
   streamAttachment,
 } from "./download";
 import type { DownloadDeps } from "./download";
-import type { Attachment, ShareLink } from "./db";
+import { AttachmentsDB, type Attachment, type ShareLink } from "./db";
 
 // --- Helpers ---
 
@@ -44,6 +45,8 @@ function makeMockDB(attachment: Attachment | null = null) {
     passwordHash: null,
     maxUses: null,
     usedCount: 0,
+    requireEmail: false,
+    allowedEmails: null,
   };
   return {
     findById: mock((_id: string) => attachment),
@@ -166,6 +169,34 @@ describe("downloadAttachment", () => {
     await expect(downloadAttachment("att_test001", undefined, deps)).rejects.toThrow("Attachment has expired");
   });
 
+  it("closes an internally owned DB when opening the object stream fails", async () => {
+    const previousHome = process.env.HOME;
+    const home = makeTempDir();
+    process.env.HOME = home;
+    const db = new AttachmentsDB();
+    db.insert(makeFakeAttachment({
+      id: "att_owned_db",
+      filename: "owned.txt",
+      bucket: "local",
+      storageBackend: "local",
+    }));
+    db.close();
+
+    try {
+      await expect(downloadAttachment("att_owned_db", makeTempDir(), {
+        objectStore: {
+          getStream: mock(() => {
+            throw new Error("stream open failed");
+          }),
+        } as never,
+        config: { storage: { localDir: makeTempDir() } } as never,
+      })).rejects.toThrow("stream open failed");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   it("extracts ID from URL before looking up", async () => {
     const att = makeFakeAttachment();
     const mockDb = makeMockDB(att);
@@ -280,6 +311,60 @@ describe("downloadAttachment", () => {
       config: { storage: { localDir: makeTempDir() } } as any,
     })).rejects.toThrow("Share link is no longer available");
   });
+
+  it("rejects encrypted downloads with incomplete GCM metadata", async () => {
+    const att = makeFakeAttachment({
+      storageBackend: "s3",
+      encryptionAlgorithm: "aes-256-gcm",
+      encryptionSalt: Buffer.alloc(16).toString("hex"),
+      encryptionIv: Buffer.alloc(12).toString("hex"),
+      encryptionTag: null,
+    });
+
+    await expect(openAttachmentStream(att, {
+      password: "pw",
+      s3: {
+        downloadStream: mock(async () => ({
+          body: Readable.from(["encrypted"]),
+          status: 200 as const,
+        })),
+      } as any,
+      config: { storage: { backend: "s3" }, s3: {} } as any,
+    })).rejects.toThrow("encryption metadata is incomplete");
+  });
+
+  it("decrypts AES-GCM attachment streams with complete metadata", async () => {
+    const password = "pw";
+    const salt = randomBytes(16);
+    const iv = randomBytes(12);
+    const key = scryptSync(password, salt, 32);
+    const cipher = createCipheriv("aes-256-gcm", key, iv);
+    const encrypted = Buffer.concat([cipher.update("plain text"), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    const att = makeFakeAttachment({
+      storageBackend: "s3",
+      size: "plain text".length,
+      encryptionAlgorithm: "aes-256-gcm",
+      encryptionSalt: salt.toString("hex"),
+      encryptionIv: iv.toString("hex"),
+      encryptionTag: tag.toString("hex"),
+    });
+
+    const stream = await openAttachmentStream(att, {
+      password,
+      s3: {
+        downloadStream: mock(async () => ({
+          body: Readable.from([encrypted]),
+          status: 200 as const,
+        })),
+      } as any,
+      config: { storage: { backend: "s3" }, s3: {} } as any,
+    });
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream.body as Readable) chunks.push(Buffer.from(chunk));
+
+    expect(Buffer.concat(chunks).toString("utf8")).toBe("plain text");
+  });
 });
 
 // --- streamAttachment ---
@@ -326,6 +411,10 @@ describe("streamAttachment", () => {
 });
 
 describe("openAttachmentStream", () => {
+  it("rejects expired attachments before opening storage", async () => {
+    await expect(openAttachmentStream(makeFakeAttachment({ expiresAt: Date.now() - 1 }))).rejects.toThrow("Attachment has expired");
+  });
+
   it("uses injected local object stores with parsed ranges", async () => {
     const att = makeFakeAttachment({ bucket: "local", storageBackend: "local", size: 6 });
     const getStream = mock((_key: string, _type: string, range: unknown) => ({

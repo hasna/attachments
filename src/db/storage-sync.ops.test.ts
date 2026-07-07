@@ -174,6 +174,33 @@ describe("storage sync operations", () => {
     expect(localStatementRuns.some((args) => args[0] === "attachments" && args[2] === "pull")).toBe(true);
   });
 
+  it("coerces Date, buffer, object, and symbol values for SQLite pulls", async () => {
+    process.env["ATTACHMENTS_DATABASE_URL"] = "postgres://remote";
+    const when = new Date("2026-07-07T12:00:00.000Z");
+    const bytes = Buffer.from("bytes");
+    remoteRows.attachments = [{
+      id: "att_coerce",
+      filename: "coerce.txt",
+      created_at: when,
+      raw: bytes,
+      metadata: { nested: true },
+      marker: Symbol("marker"),
+    }];
+    localColumns.attachments = ["id", "filename", "created_at", "raw", "metadata", "marker"];
+    remoteColumns.attachments = ["id", "filename", "created_at", "raw", "metadata", "marker"];
+
+    await storage.storagePull({ tables: ["attachments"] });
+
+    expect(localStatementRuns).toContainEqual([
+      "att_coerce",
+      "coerce.txt",
+      "2026-07-07T12:00:00.000Z",
+      bytes,
+      JSON.stringify({ nested: true }),
+      "Symbol(marker)",
+    ]);
+  });
+
   it("runs push then pull for full sync", async () => {
     process.env["ATTACHMENTS_DATABASE_URL"] = "postgres://remote";
 

@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { Readable } from "stream";
 import { resolveAttachmentsV1 } from "./cloud-v1";
 
 const BASE = "https://attachments.hasna.xyz";
@@ -45,6 +49,11 @@ describe("resolveAttachmentsV1", () => {
 
   test("explicit STORAGE_MODE=local forces local even with URL+KEY", () => {
     const r = resolveAttachmentsV1({ ...cloudEnv, HASNA_ATTACHMENTS_STORAGE_MODE: "local" } as NodeJS.ProcessEnv);
+    expect(r.transport).toBe("local");
+  });
+
+  test("ATTACHMENTS_CLIENT_MODE=local forces local even with URL+KEY", () => {
+    const r = resolveAttachmentsV1({ ...cloudEnv, ATTACHMENTS_CLIENT_MODE: "local" } as NodeJS.ProcessEnv);
     expect(r.transport).toBe("local");
   });
 
@@ -99,5 +108,133 @@ describe("resolveAttachmentsV1", () => {
     await r.store.delete("att_x");
     expect(calls[0]!.method).toBe("DELETE");
     expect(calls[0]!.url).toBe(`${BASE}/v1/attachments/att_x`);
+  });
+
+  test("uploads files and streams through the /v1 JSON envelope", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "attachments-v1-upload-"));
+    try {
+      const filePath = join(dir, "disk.txt");
+      writeFileSync(filePath, "from disk");
+      const { calls, fetchImpl } = mockFetch((c) => {
+        const body = JSON.parse(c.body!);
+        return { status: 201, body: { id: `att_${body.filename}`, filename: body.filename, size: 9, link: null } };
+      });
+      const r = resolveAttachmentsV1(cloudEnv, { fetchImpl });
+      if (r.transport !== "cloud-http") throw new Error("expected cloud");
+
+      await r.store.uploadFile(filePath);
+      await r.store.uploadFile(filePath, { filename: "override.txt" });
+      await r.store.uploadStream(Readable.from(["from stream"]), "stream.txt", { filename: "named.txt" });
+
+      const bodies = calls.map((call) => JSON.parse(call.body!));
+      expect(bodies.map((body) => body.filename)).toEqual(["disk.txt", "override.txt", "named.txt"]);
+      expect(Buffer.from(bodies[0]!.content_base64, "base64").toString()).toBe("from disk");
+      expect(Buffer.from(bodies[2]!.content_base64, "base64").toString()).toBe("from stream");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("uploads URLs and surfaces remote fetch failures", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("missing")) return new Response("missing", { status: 404 });
+        return new Response("remote bytes", { status: 200 });
+      }) as typeof fetch;
+      const { calls, fetchImpl } = mockFetch((c) => {
+        const body = JSON.parse(c.body!);
+        return { status: 201, body: { id: "att_url", filename: body.filename, size: 12, link: null } };
+      });
+      const r = resolveAttachmentsV1(cloudEnv, { fetchImpl });
+      if (r.transport !== "cloud-http") throw new Error("expected cloud");
+
+      await r.store.uploadUrl("https://example.com/files/remote%20name.txt");
+      await r.store.uploadUrl("https://example.com/files/ignored.txt", { filename: "chosen.txt" });
+
+      const bodies = calls.map((call) => JSON.parse(call.body!));
+      expect(bodies.map((body) => body.filename)).toEqual(["remote name.txt", "chosen.txt"]);
+      expect(Buffer.from(bodies[0]!.content_base64, "base64").toString()).toBe("remote bytes");
+      await expect(r.store.uploadUrl("https://example.com/missing.txt")).rejects.toThrow("HTTP 404");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("gets and regenerates links through transport helpers", async () => {
+    const { calls, fetchImpl } = mockFetch((c) => ({
+      status: 200,
+      body: c.method === "POST"
+        ? { link: "https://x/new", expires_at: 456 }
+        : { link: "https://x/old", expires_at: 123 },
+    }));
+    const r = resolveAttachmentsV1(cloudEnv, { fetchImpl });
+    if (r.transport !== "cloud-http") throw new Error("expected cloud");
+
+    expect(await r.store.getLink("att/link id")).toEqual({ link: "https://x/old", expires_at: 123 });
+    expect(await r.store.regenerateLink("att/link id", {
+      expiry: "24h",
+      password: "pw",
+      maxDownloads: 2,
+      linkType: "server",
+    })).toEqual({ link: "https://x/new", expires_at: 456 });
+    expect(calls[0]!.url).toBe(`${BASE}/v1/attachments/att%2Flink%20id/link`);
+    expect(JSON.parse(calls[1]!.body!)).toEqual({
+      expiry: "24h",
+      password: "pw",
+      max_downloads: 2,
+      link_type: "server",
+    });
+  });
+
+  test("downloads binary responses to files, directories, cwd, and trailing slash outputs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "attachments-v1-download-"));
+    mkdirSync(join(dir, "nested"));
+    const originalFetch = globalThis.fetch;
+    const seenHeaders: HeadersInit[] = [];
+    try {
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        seenHeaders.push(init?.headers ?? {});
+        return new Response("downloaded", {
+          status: 200,
+          headers: {
+            "content-disposition": "attachment; filename=\"served.txt\"",
+            "content-length": "10",
+          },
+        });
+      }) as typeof fetch;
+      const r = resolveAttachmentsV1(cloudEnv);
+      if (r.transport !== "cloud-http") throw new Error("expected cloud");
+
+      const explicit = join(dir, "explicit.txt");
+      expect((await r.store.download("att_dl", explicit, { password: "pw" })).path).toBe(explicit);
+      expect(readFileSync(explicit, "utf8")).toBe("downloaded");
+
+      expect((await r.store.download("att_dl", dir)).path).toBe(join(dir, "served.txt"));
+      const trailing = join(dir, "nested") + "/";
+      expect((await r.store.download("att_dl", trailing)).path).toBe(join(dir, "nested", "served.txt"));
+      expect((await r.store.download("att_dl", undefined)).filename).toBe("served.txt");
+      expect(String((seenHeaders[0] as Record<string, string>)["x-attachments-password"])).toBe("pw");
+    } finally {
+      globalThis.fetch = originalFetch;
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(join(process.cwd(), "served.txt"), { force: true });
+    }
+  });
+
+  test("download surfaces response text or status for failed binary responses", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => new Response("gone", { status: 410 })) as typeof fetch;
+      const r = resolveAttachmentsV1(cloudEnv);
+      if (r.transport !== "cloud-http") throw new Error("expected cloud");
+      await expect(r.store.download("att_missing", undefined)).rejects.toThrow("gone");
+
+      globalThis.fetch = (async () => new Response(null, { status: 500 })) as typeof fetch;
+      await expect(r.store.download("att_missing", undefined)).rejects.toThrow("HTTP 500");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

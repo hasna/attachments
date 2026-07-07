@@ -23,6 +23,7 @@ type MockAttachment = {
 
 const mockFindAll = mock((_opts?: unknown) => [] as MockAttachment[]);
 const mockUpdateLink = mock((_id: string, _link: string, _expiresAt?: number | null) => {});
+const mockCreateShareLink = mock((_input: unknown) => ({ shareLink: {}, token: "share_health" }));
 const mockDbClose = mock(() => {});
 
 mock.module("../../core/db", () => ({
@@ -30,6 +31,7 @@ mock.module("../../core/db", () => ({
     constructor(_path?: string) {}
     findAll = mockFindAll;
     updateLink = mockUpdateLink;
+    createShareLink = mockCreateShareLink;
     close = mockDbClose;
     findById = mock((_id: string) => null);
     insert = mock((_att: unknown) => {});
@@ -88,7 +90,7 @@ afterAll(() => {
 });
 
 // Import after mocks
-const { checkAttachment, isLinkAlive, runHealthCheck, registerHealthCheck } = await import("./health-check");
+const { checkAttachment, isLinkAlive, runHealthCheck, registerHealthCheck, regenerateLink } = await import("./health-check");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -225,9 +227,16 @@ describe("checkAttachment", () => {
 
 describe("runHealthCheck", () => {
   beforeEach(() => {
+    setConfig({
+      s3: { bucket: "test-bucket", region: "us-east-1", accessKeyId: "K", secretAccessKey: "S" },
+      server: { port: 3459, baseUrl: "http://localhost:3459" },
+      defaults: { expiry: "7d", linkType: "presigned" },
+    });
     mockFindAll.mockReset();
     mockUpdateLink.mockReset();
     mockDbClose.mockReset();
+    mockCreateShareLink.mockReset();
+    mockCreateShareLink.mockImplementation(() => ({ shareLink: {}, token: "share_health" }));
     mockPresign.mockReset();
     mockPresign.mockImplementation(async () => "https://s3.example.com/new-presigned");
     fetchMock.mockReset();
@@ -338,6 +347,33 @@ describe("runHealthCheck", () => {
     expect(summary.healthy).toBe(0);
     expect(summary.results).toHaveLength(0);
   });
+
+  it("closes the database when the attachment query fails", async () => {
+    mockFindAll.mockImplementation(() => {
+      throw new Error("db unavailable");
+    });
+
+    await expect(runHealthCheck()).rejects.toThrow("db unavailable");
+    expect(mockDbClose).toHaveBeenCalled();
+  });
+
+  it("regenerates server links when configured for server links", async () => {
+    setConfig({
+      s3: { bucket: "test-bucket", region: "us-east-1", accessKeyId: "K", secretAccessKey: "S" },
+      server: { port: 3459, baseUrl: "http://localhost:3459", publicPath: "/a" },
+      defaults: { expiry: "7d", linkType: "server" },
+    });
+
+    const link = await regenerateLink(makeAttachment({ id: "att_server_regen" }) as never, {
+      createShareLink: mockCreateShareLink,
+      updateLink: mockUpdateLink,
+    } as never);
+
+    expect(link).toBe("http://localhost:3459/a/share_health");
+    expect(mockCreateShareLink).toHaveBeenCalledWith(expect.objectContaining({
+      attachmentId: "att_server_regen",
+    }));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -346,9 +382,15 @@ describe("runHealthCheck", () => {
 
 describe("health-check command", () => {
   beforeEach(() => {
+    setConfig({
+      s3: { bucket: "test-bucket", region: "us-east-1", accessKeyId: "K", secretAccessKey: "S" },
+      server: { port: 3459, baseUrl: "http://localhost:3459" },
+      defaults: { expiry: "7d", linkType: "presigned" },
+    });
     mockFindAll.mockReset();
     mockUpdateLink.mockReset();
     mockDbClose.mockReset();
+    mockCreateShareLink.mockReset();
     fetchMock.mockReset();
     (globalThis as Record<string, unknown>).fetch = fetchMock;
     fetchMock.mockImplementation(async () => new Response(null, { status: 200 }));
@@ -492,6 +534,48 @@ describe("health-check command", () => {
       const program = buildHealthCheckCmd();
       await program.parseAsync(["health-check", "--fix"], { from: "user" }).catch(() => {});
       expect(mockUpdateLink).toHaveBeenCalled();
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("prints day-aged expired and no-link compact rows", async () => {
+    const now = Date.now();
+    mockFindAll.mockImplementation(() => [
+      makeAttachment({ id: "att_old", filename: "old.pdf", expiresAt: now - 3 * 24 * 60 * 60 * 1000 }),
+      makeAttachment({ id: "att_missing_link", filename: "missing-link.txt", link: null }),
+    ]);
+
+    const capture = captureOutput();
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error(`process.exit(${_code})`);
+    });
+
+    try {
+      const program = buildHealthCheckCmd();
+      await program.parseAsync(["health-check"], { from: "user" }).catch(() => {});
+      const output = capture.out.join("");
+      expect(output).toContain("expired 3d ago");
+      expect(output).toContain("No link: att_missing_link missing-link.txt");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("exits for unsupported output formats", async () => {
+    const capture = captureOutput();
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+
+    try {
+      const program = buildHealthCheckCmd();
+      await expect(
+        program.parseAsync(["health-check", "--format", "xml"], { from: "user" })
+      ).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--format must be one of");
     } finally {
       capture.restore();
       exitSpy.mockRestore();

@@ -232,6 +232,23 @@ describe("uploadFile", () => {
     expect(result.encryptionTag).toBeTruthy();
   });
 
+  it("stores encrypted uploads with a null auth tag if the transform was not drained", async () => {
+    const filePath = createTempFile("undrained-encrypted.txt", "secret");
+    const objectStore = {
+      uploadFile: mock(async () => {
+        // Intentionally do not consume the transform stream so getAuthTag throws.
+      }),
+    };
+
+    const result = await uploadFile(filePath, { encrypt: true, password: "pw" }, {
+      ...deps,
+      objectStore: objectStore as any,
+    });
+
+    expect(result.encryptionAlgorithm).toBe("aes-256-gcm");
+    expect(result.encryptionTag).toBeNull();
+  });
+
   it("uses S3 uploadFile when the injected S3 client supports it", async () => {
     const filePath = createTempFile("direct-file.txt", "direct");
     const s3WithUploadFile = {
@@ -296,6 +313,26 @@ describe("uploadStreamAttachment", () => {
     expect(objectStore.uploadStream).toHaveBeenCalledTimes(1);
   });
 
+  it("detects stream upload content type and default expiry when omitted", async () => {
+    const objectStore = {
+      uploadStream: mock(async (_key: string, stream: NodeJS.ReadableStream, _type: string) => {
+        for await (const _chunk of stream) {
+          // drain
+        }
+      }),
+    };
+
+    const before = Date.now();
+    const result = await uploadStreamAttachment(Readable.from(["stream"]), "stream.pdf", undefined, {}, {
+      ...deps,
+      objectStore: objectStore as any,
+    });
+
+    expect(result.contentType).toBe("application/pdf");
+    expect(result.expiresAt).toBeGreaterThanOrEqual(before + 7 * 24 * 60 * 60 * 1000);
+    expect(result.s3Key).toContain(result.id);
+  });
+
   it("rejects declared stream sizes above the configured max", async () => {
     await expect(uploadStreamAttachment(Readable.from(["abc"]), "too-big.txt", "text/plain", { size: 5 }, {
       ...deps,
@@ -319,6 +356,25 @@ describe("uploadStreamAttachment", () => {
   it("requires a password for encrypted streams", async () => {
     await expect(uploadStreamAttachment(Readable.from(["secret"]), "secret.txt", "text/plain", { encrypt: true }, deps))
       .rejects.toThrow("--encrypt requires a password");
+  });
+
+  it("uses local object storage for stream uploads when configured", async () => {
+    const dir = join(tmpdir(), `attachments-upload-stream-local-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    try {
+      const result = await uploadStreamAttachment(Readable.from(["local-stream"]), "stream-local.txt", "text/plain", {}, {
+        db: mockDb as any,
+        config: {
+          ...mockConfig,
+          storage: { backend: "local" as const, localDir: dir, maxSizeBytes: 1024 },
+        },
+      });
+
+      expect(result.bucket).toBe("local");
+      expect(result.storageBackend).toBe("local");
+      expect(readFileSync(join(dir, result.s3Key), "utf8")).toBe("local-stream");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

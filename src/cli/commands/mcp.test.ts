@@ -297,6 +297,28 @@ describe("mcp command", () => {
         exitSpy.mockRestore();
       }
     });
+
+    it("exits with error when settings.json contains invalid JSON for uninstallGemini", async () => {
+      const configPath = getGeminiPath();
+      mkdirSync(join(tempHome, ".gemini"), { recursive: true });
+      require("fs").writeFileSync(configPath, "{ this is not valid json }", "utf-8");
+
+      const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+        throw new Error("process.exit called");
+      });
+      const capture = captureOutput();
+
+      try {
+        const program = buildProgram();
+        await expect(
+          program.parseAsync(["mcp", "--gemini", "--uninstall"], { from: "user" })
+        ).rejects.toThrow("process.exit called");
+        expect(capture.err.join("")).toContain("invalid JSON");
+      } finally {
+        capture.restore();
+        exitSpy.mockRestore();
+      }
+    });
   });
 
   // ---- --all --------------------------------------------------------------

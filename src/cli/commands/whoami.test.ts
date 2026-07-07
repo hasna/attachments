@@ -19,11 +19,13 @@ let mockAttachments: Array<{
   expiresAt: number | null;
   createdAt: number;
 }> = [];
+let mockDbThrows = false;
 
 mock.module("../../core/db", () => ({
   AttachmentsDB: class MockAttachmentsDB {
     constructor(_path?: string) {}
     findAll(_opts?: { includeExpired?: boolean }) {
+      if (mockDbThrows) throw new Error("db unavailable");
       return mockAttachments;
     }
     close() {}
@@ -33,7 +35,7 @@ mock.module("../../core/db", () => ({
 afterAll(() => mock.restore());
 
 // Import after mocks
-const { registerWhoami } = await import("./whoami");
+const { registerWhoami, resolveWhoamiPackageVersion } = await import("./whoami");
 const { version: pkgVersion } = require("../../../package.json") as { version: string };
 
 // ─── test-scoped config path ──────────────────────────────────────────────────
@@ -48,6 +50,7 @@ beforeEach(() => {
     rmSync(TEST_CONFIG_PATH);
   }
   mockAttachments = [];
+  mockDbThrows = false;
 });
 
 afterEach(() => {
@@ -88,6 +91,19 @@ function captureOutput() {
 }
 
 // ─── tests ───────────────────────────────────────────────────────────────────
+
+describe("resolveWhoamiPackageVersion", () => {
+  it("falls back to npm_package_version when package loading fails", () => {
+    const version = resolveWhoamiPackageVersion(
+      () => {
+        throw new Error("missing package");
+      },
+      { npm_package_version: "4.5.6" } as NodeJS.ProcessEnv,
+    );
+
+    expect(version).toBe("4.5.6");
+  });
+});
 
 describe("whoami — full output with valid config", () => {
   it("shows version, config path, S3, server, link type, and attachment counts", async () => {
@@ -216,6 +232,22 @@ describe("whoami — attachment counts", () => {
       const output = capture.out.join("");
 
       expect(output).toContain("Attachments: 0 total, 0 expired");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("reports when the attachment database cannot be read", async () => {
+    setConfig({
+      s3: { bucket: "b", region: "r", accessKeyId: "k", secretAccessKey: "s" },
+    });
+    mockDbThrows = true;
+
+    const capture = captureOutput();
+    try {
+      const program = buildWhoamiCmd();
+      await program.parseAsync(["whoami"], { from: "user" });
+      expect(capture.out.join("")).toContain("Attachments: unable to read database");
     } finally {
       capture.restore();
     }

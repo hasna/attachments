@@ -7,8 +7,8 @@
 // JSON in/out, per-request timeout, retries with backoff, and create idempotency.
 //
 // The toggle is the presence of the two env vars (that is what the fleet flip
-// tool writes): both set -> cloud; either unset -> local. An explicit
-// `HASNA_ATTACHMENTS_STORAGE_MODE=local` forces local even when the vars are set.
+// tool writes): both set -> cloud; either unset -> local. An explicit local mode
+// override forces local even when the vars are set.
 //
 // SAFETY: the API key never appears in logs or return values. It lives only
 // inside the contracts transport (and, for the binary download stream that the
@@ -108,7 +108,18 @@ function toAttachment(input: ApiAttachment): Attachment {
 function deriveEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const url = env.HASNA_ATTACHMENTS_API_URL || env.ATTACHMENTS_API_URL;
   const key = env.HASNA_ATTACHMENTS_API_KEY || env.ATTACHMENTS_API_KEY;
-  const explicitMode = (env.HASNA_ATTACHMENTS_STORAGE_MODE || env.HASNA_ATTACHMENTS_MODE || "").toLowerCase();
+  const modeValues = [
+    env.HASNA_ATTACHMENTS_STORAGE_MODE,
+    env.HASNA_ATTACHMENTS_MODE,
+    env.ATTACHMENTS_CLIENT_MODE,
+    env.ATTACHMENTS_MODE,
+  ]
+    .filter((mode): mode is string => !!mode)
+    .map((mode) => mode.toLowerCase());
+  if (modeValues.includes("local")) {
+    return { ...env, HASNA_ATTACHMENTS_STORAGE_MODE: "local" };
+  }
+  const explicitMode = modeValues[0] ?? "";
   if (url && key && explicitMode !== "local") {
     return { ...env, HASNA_ATTACHMENTS_STORAGE_MODE: "self_hosted" };
   }

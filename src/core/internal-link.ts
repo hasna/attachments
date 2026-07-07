@@ -50,16 +50,12 @@ async function fromMachines(config: AttachmentsConfig, port: number): Promise<In
     const machines = await import(pkg) as MachinesConsumer;
     if (config.client.internalMachineId && machines.resolveMachineRoute) {
       const route = machines.resolveMachineRoute(config.client.internalMachineId, { includeTailscale: true });
-      if (route.ok && route.target && route.target !== "localhost" && isTailscaleTarget(route.target)) {
-        return { baseUrl: baseUrlForTarget(route.target, port), source: "open-machines", target: route.target };
-      }
+      if (route.ok && route.target && route.target !== "localhost" && isTailscaleTarget(route.target)) return { baseUrl: baseUrlForTarget(route.target, port), source: "open-machines", target: route.target };
     }
     if (machines.getLocalMachineTopology) {
       const local = machines.getLocalMachineTopology({ includeTailscale: true });
       const target = local.tailscale?.dns_name || local.tailscale?.ips?.[0] || local.hostname;
-      if (target && target !== "localhost" && isTailscaleTarget(target)) {
-        return { baseUrl: baseUrlForTarget(target, port), source: "open-machines", target };
-      }
+      if (target && target !== "localhost" && isTailscaleTarget(target)) return { baseUrl: baseUrlForTarget(target, port), source: "open-machines", target };
     }
   } catch {
     // @hasna/machines is optional for open-source users.

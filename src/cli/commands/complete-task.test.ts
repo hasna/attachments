@@ -308,6 +308,21 @@ describe("complete-task CLI command", () => {
     }));
   });
 
+  it("exits when no --file option is provided", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+    try {
+      const program = buildProgram();
+      await expect(program.parseAsync(["complete-task", "TASK-001"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("at least one --file");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
   it("outputs success message on completing task with one file", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = makeFetch(200);

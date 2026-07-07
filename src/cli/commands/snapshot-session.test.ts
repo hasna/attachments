@@ -269,4 +269,64 @@ describe("snapshot-session command", () => {
       capture.restore();
     }
   });
+
+  it("handles wrapped { data: [...] } response shape", async () => {
+    mockFetch.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [{ role: "user", content: "From data wrapper" }],
+      }),
+    }));
+
+    const capture = captureOutput();
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["snapshot-session", "data99"], { from: "user" });
+      const [_buf] = mockUploadFromBuffer.mock.calls[0] as [Buffer, string, unknown];
+      expect(_buf.toString("utf-8")).toContain("From data wrapper");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("records raw JSON when the messages endpoint returns an unexpected shape", async () => {
+    mockFetch.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ transcript: "raw body" }),
+    }));
+
+    const capture = captureOutput();
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["snapshot-session", "raw99"], { from: "user" });
+      const [_buf] = mockUploadFromBuffer.mock.calls[0] as [Buffer, string, unknown];
+      expect(_buf.toString("utf-8")).toContain("raw body");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("exits with error when uploading the snapshot fails", async () => {
+    mockUploadFromBuffer.mockImplementation(async () => {
+      throw new Error("upload failed");
+    });
+
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildProgram();
+      await expect(
+        program.parseAsync(["snapshot-session", "upload-fail"], { from: "user" })
+      ).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("upload failed");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+    }
+  });
 });

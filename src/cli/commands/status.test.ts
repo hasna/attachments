@@ -39,6 +39,23 @@ mock.module("@aws-sdk/client-s3", () => ({
   },
 }));
 
+const mockV1List = mock(async (_options?: unknown) => [] as unknown[]);
+const mockResolveAttachmentsV1 = mock(() => ({ transport: "local" as const, store: null }));
+
+mock.module("../../core/cloud-v1", () => ({
+  resolveAttachmentsV1: mockResolveAttachmentsV1,
+}));
+
+const mockGetCloudHealth = mock(async () => ({
+  status: "ok",
+  storage_backend: "s3",
+  attachments: 7,
+}));
+
+mock.module("../../core/api-client", () => ({
+  getCloudHealth: mockGetCloudHealth,
+}));
+
 afterAll(() => mock.restore());
 
 // ---------------------------------------------------------------------------
@@ -118,6 +135,16 @@ describe("status command", () => {
     mockDbClose.mockReset();
     mockS3Send.mockReset();
     mockS3Send.mockImplementation(async () => ({ Contents: [] }));
+    mockV1List.mockReset();
+    mockV1List.mockImplementation(async () => []);
+    mockResolveAttachmentsV1.mockReset();
+    mockResolveAttachmentsV1.mockImplementation(() => ({ transport: "local" as const, store: null }));
+    mockGetCloudHealth.mockReset();
+    mockGetCloudHealth.mockImplementation(async () => ({
+      status: "ok",
+      storage_backend: "s3",
+      attachments: 7,
+    }));
     // Reset config to configured state
     setConfig({
       s3: {
@@ -280,6 +307,79 @@ describe("status command", () => {
       expect(mockDbClose).toHaveBeenCalled();
     } finally {
       capture.restore();
+    }
+  });
+
+  it("shows self-hosted v1 status when the v1 store is reachable", async () => {
+    mockResolveAttachmentsV1.mockImplementation(() => ({
+      transport: "cloud-http" as const,
+      store: { baseUrl: "https://attachments.example/v1", list: mockV1List },
+    }));
+
+    const capture = captureOutput();
+    try {
+      const program = buildStatusCmd();
+      await program.parseAsync(["status"], { from: "user" });
+      const output = capture.out.join("");
+      expect(output).toContain("Mode: self_hosted (/v1)");
+      expect(output).toContain("API: https://attachments.example/v1");
+      expect(output).toContain("Health: reachable");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("shows self-hosted v1 connection failures", async () => {
+    mockV1List.mockImplementation(async () => {
+      throw new Error("v1 unavailable");
+    });
+    mockResolveAttachmentsV1.mockImplementation(() => ({
+      transport: "cloud-http" as const,
+      store: { baseUrl: "https://attachments.example/v1", list: mockV1List },
+    }));
+
+    const capture = captureOutput();
+    try {
+      const program = buildStatusCmd();
+      await program.parseAsync(["status"], { from: "user" });
+      const output = capture.out.join("");
+      expect(output).toContain("Mode: self_hosted (/v1)");
+      expect(output).toContain("Health: connection failed (v1 unavailable)");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("shows legacy cloud API status and failures", async () => {
+    const previousMode = process.env["ATTACHMENTS_CLIENT_MODE"];
+    delete process.env["ATTACHMENTS_CLIENT_MODE"];
+    setConfig({ client: { mode: "cloud", apiBaseUrl: "https://api.example", apiToken: "token" } });
+
+    const capture = captureOutput();
+    try {
+      const program = buildStatusCmd();
+      await program.parseAsync(["status"], { from: "user" });
+      expect(capture.out.join("")).toContain("Mode: cloud API");
+      expect(capture.out.join("")).toContain("Attachments: 7");
+    } finally {
+      capture.restore();
+      if (previousMode === undefined) delete process.env["ATTACHMENTS_CLIENT_MODE"];
+      else process.env["ATTACHMENTS_CLIENT_MODE"] = previousMode;
+    }
+
+    delete process.env["ATTACHMENTS_CLIENT_MODE"];
+    mockGetCloudHealth.mockImplementationOnce(async () => {
+      throw new Error("cloud unavailable");
+    });
+    const failureCapture = captureOutput();
+    try {
+      const program = buildStatusCmd();
+      await program.parseAsync(["status"], { from: "user" });
+      expect(failureCapture.out.join("")).toContain("Health: connection failed (cloud unavailable)");
+    } finally {
+      failureCapture.restore();
+      if (previousMode === undefined) delete process.env["ATTACHMENTS_CLIENT_MODE"];
+      else process.env["ATTACHMENTS_CLIENT_MODE"] = previousMode;
     }
   });
 });

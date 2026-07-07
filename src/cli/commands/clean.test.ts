@@ -113,6 +113,11 @@ function captureOutput() {
 
 describe("clean command", () => {
   beforeEach(() => {
+    setConfig({
+      s3: { bucket: "test-bucket", region: "us-east-1", accessKeyId: "K", secretAccessKey: "S" },
+      server: { port: 3459, baseUrl: "http://localhost:3459" },
+      defaults: { expiry: "7d", linkType: "presigned" },
+    });
     mockFindAll.mockReset();
     mockDeleteDb.mockReset();
     mockDbClose.mockReset();
@@ -153,6 +158,25 @@ describe("clean command", () => {
       expect(output).toContain("freed");
     } finally {
       capture.restore();
+    }
+  });
+
+  it("exits when S3 configuration is invalid", async () => {
+    setConfig({
+      s3: { bucket: "", region: "", accessKeyId: "", secretAccessKey: "" },
+    });
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildCleanCmd();
+      await expect(program.parseAsync(["clean"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("S3 configuration incomplete");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
     }
   });
 

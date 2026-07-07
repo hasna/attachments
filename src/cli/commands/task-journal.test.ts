@@ -1,4 +1,7 @@
-import { describe, it, expect, mock, spyOn } from "bun:test";
+import { afterEach, describe, it, expect, mock, spyOn } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import {
   fetchTaskMeta,
   fetchTaskHistory,
@@ -239,6 +242,21 @@ describe("formatMarkdown", () => {
     const output = formatMarkdown({ ...journal, attachments: [] }, true);
     expect(output).toContain("_(no attachments found)_");
   });
+
+  it("formats small attachment sizes and invalid timestamps", () => {
+    const output = formatMarkdown({
+      task: { id: "TASK-SIZES" },
+      history: [{ timestamp: "bad-date", action: "noted" }],
+      attachments: [
+        makeAttachment({ id: "att_kb", filename: "two-k.txt", size: 2048 }),
+        makeAttachment({ id: "att_b", filename: "small.txt", size: 12 }),
+      ],
+    }, true);
+
+    expect(output).toContain("bad-d [noted]");
+    expect(output).toContain("2.0KB");
+    expect(output).toContain("12B");
+  });
 });
 
 describe("formatCompact", () => {
@@ -278,6 +296,26 @@ describe("formatJson", () => {
 // ---------------------------------------------------------------------------
 
 describe("task-journal CLI command", () => {
+  const tempHomes: string[] = [];
+
+  afterEach(() => {
+    for (const home of tempHomes.splice(0)) {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  function useTempHome(): () => void {
+    const previousHome = process.env.HOME;
+    const home = join(tmpdir(), `task-journal-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(home, { recursive: true });
+    tempHomes.push(home);
+    process.env.HOME = home;
+    return () => {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    };
+  }
+
   it("outputs markdown by default for a task with history and attachments", async () => {
     const fakeFetch = mock(async (url: unknown) => {
       const u = String(url);
@@ -343,5 +381,85 @@ describe("task-journal CLI command", () => {
     expect(output).toContain("[TASK-002]");
     expect(output).toContain("started");
     expect(output).toContain("cassius");
+  });
+
+  it("reports not found when todos 404s and no local attachments exist", async () => {
+    const restoreHome = useTempHome();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () => new Response("{}", { status: 404 })) as unknown as typeof fetch;
+    let exitCode: number | undefined;
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      exitCode = code;
+      return undefined as never;
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["task-journal", "TASK-MISSING"], { from: "user" });
+      expect(exitCode).toBe(1);
+      expect(capture.err.join("")).toContain("Task not found: TASK-MISSING");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+      globalThis.fetch = originalFetch;
+      restoreHome();
+    }
+  });
+
+  it("emits JSON and compact output through the registered command", async () => {
+    const restoreHome = useTempHome();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async (url: unknown) => {
+      if (String(url).endsWith("/history")) {
+        return new Response(JSON.stringify([{ timestamp: "2026-03-14T11:00:00Z", action: "started" }]), { status: 200 });
+      }
+      return new Response(JSON.stringify({ subject: "Registered output", status: "open" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const capture = captureOutput();
+
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["task-journal", "TASK-CMD", "--format", "json"], { from: "user" });
+      expect(JSON.parse(capture.out.join("")).task.subject).toBe("Registered output");
+
+      capture.out.length = 0;
+      await program.parseAsync(["task-journal", "TASK-CMD", "--format", "compact"], { from: "user" });
+      expect(capture.out.join("")).toContain("[TASK-CMD] Registered output");
+    } finally {
+      capture.restore();
+      globalThis.fetch = originalFetch;
+      restoreHome();
+    }
+  });
+
+  it("prints an error when the local attachments DB cannot be opened", async () => {
+    const restoreHome = useTempHome();
+    const blockedHome = process.env.HOME!;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () => new Response(JSON.stringify({ subject: "Blocked DB" }), { status: 200 })) as unknown as typeof fetch;
+    rmSync(blockedHome, { recursive: true, force: true });
+    mkdirSync(blockedHome, { recursive: true });
+    const fileHome = join(blockedHome, "file-home");
+    writeFileSync(fileHome, "not a directory");
+    process.env.HOME = fileHome;
+    let exitCode: number | undefined;
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      exitCode = code;
+      return undefined as never;
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["task-journal", "TASK-DBERR"], { from: "user" });
+      expect(exitCode).toBe(1);
+      expect(capture.err.join("")).toContain("Error:");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+      globalThis.fetch = originalFetch;
+      restoreHome();
+    }
   });
 });

@@ -29,6 +29,10 @@ export interface HandleTaskEventResult {
   regenerated: number;
 }
 
+export function defaultWatchSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ---------------------------------------------------------------------------
 // Core event handler (exported for unit testing)
 // ---------------------------------------------------------------------------
@@ -134,8 +138,7 @@ export async function connectAndWatch(
   signal?: AbortSignal,
   fetchFn: typeof fetch = fetch,
   dbFactory: () => AttachmentsDB = () => new AttachmentsDB(),
-  sleepFn: (ms: number) => Promise<void> = (ms) =>
-    new Promise((resolve) => setTimeout(resolve, ms))
+  sleepFn: (ms: number) => Promise<void> = defaultWatchSleep
 ): Promise<void> {
   let backoffMs = 5000;
   const maxBackoffMs = 60_000;

@@ -231,6 +231,11 @@ export function formatJson(journal: TaskJournal): string {
   return JSON.stringify(journal, null, 2);
 }
 
+export function exitTaskNotFound(taskId: string): never {
+  process.stderr.write(`Error: Task not found: ${taskId}\n`);
+  process.exit(1);
+}
+
 // ---------------------------------------------------------------------------
 // CLI registration
 // ---------------------------------------------------------------------------
@@ -260,16 +265,8 @@ export function registerTaskJournal(program: Command): void {
         // 404: task not found in todos AND no attachments
         if (!todosReachable && journal.attachments.length === 0 && !journal.task.subject) {
           // Attempt a direct 404 check
-          try {
-            const response = await fetch(`${todosUrl}/api/tasks/${taskId}`);
-            if (response.status === 404) {
-              process.stderr.write(`Error: Task not found: ${taskId}\n`);
-              process.exit(1);
-              return;
-            }
-          } catch {
-            // todos unreachable, not a 404
-          }
+          const response = await fetch(`${todosUrl}/api/tasks/${taskId}`).catch(() => null);
+          if (response?.status === 404) return exitTaskNotFound(taskId);
         }
 
         let output: string;

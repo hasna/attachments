@@ -411,6 +411,63 @@ describe("configCommand set", () => {
     }
   });
 
+  it("sets host and public path without changing port", async () => {
+    const capture = captureOutput();
+    try {
+      const program = buildConfigCmd();
+      await program.parseAsync(["config", "set", "--host", "0.0.0.0", "--public-path", "/files"], { from: "user" });
+      expect(getConfig().server.host).toBe("0.0.0.0");
+      expect(getConfig().server.publicPath).toBe("/files");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("sets storage options", async () => {
+    const capture = captureOutput();
+    try {
+      const program = buildConfigCmd();
+      await program.parseAsync([
+        "config",
+        "set",
+        "--storage-backend",
+        "local",
+        "--local-dir",
+        "/tmp/attachments",
+        "--max-size",
+        "12345",
+      ], { from: "user" });
+      expect(getConfig().storage.backend).toBe("local");
+      expect(getConfig().storage.localDir).toBe("/tmp/attachments");
+      expect(getConfig().storage.maxSizeBytes).toBe(12345);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("exits with error for invalid storage options", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+    try {
+      const program = buildConfigCmd();
+      await expect(
+        program.parseAsync(["config", "set", "--storage-backend", "tape"], { from: "user" })
+      ).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--storage-backend");
+
+      capture.err.length = 0;
+      await expect(
+        program.parseAsync(["config", "set", "--max-size", "0"], { from: "user" })
+      ).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--max-size");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
   it("sets expiry via --expiry", async () => {
     const capture = captureOutput();
     try {
@@ -430,6 +487,57 @@ describe("configCommand set", () => {
       expect(getConfig().defaults.linkType).toBe("server");
     } finally {
       capture.restore();
+    }
+  });
+
+  it("sets client API and internal link options", async () => {
+    const capture = captureOutput();
+    try {
+      const program = buildConfigCmd();
+      await program.parseAsync([
+        "config",
+        "set",
+        "--client-mode",
+        "cloud",
+        "--api-url",
+        "https://api.example///",
+        "--api-token",
+        "token",
+        "--api-token-env",
+        "ATTACHMENTS_TOKEN",
+        "--internal-base-url",
+        "http://machine.local///",
+        "--internal-machine",
+        "machine-1",
+        "--prefer-internal",
+      ], { from: "user" });
+      const config = getConfig();
+      expect(config.client.mode).toBe("cloud");
+      expect(config.client.apiBaseUrl).toBe("https://api.example");
+      expect(config.client.apiToken).toBe("token");
+      expect(config.client.apiTokenEnv).toBe("ATTACHMENTS_TOKEN");
+      expect(config.client.internalBaseUrl).toBe("http://machine.local");
+      expect(config.client.internalMachineId).toBe("machine-1");
+      expect(config.client.preferInternal).toBe(true);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("exits with error for invalid --client-mode", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+    try {
+      const program = buildConfigCmd();
+      await expect(
+        program.parseAsync(["config", "set", "--client-mode", "remote"], { from: "user" })
+      ).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--client-mode");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
     }
   });
 

@@ -51,6 +51,12 @@ describe("attachments storage sync configuration", () => {
     expect(getStorageMode()).toBe("remote");
   });
 
+  it("rejects unknown storage modes", () => {
+    process.env["HASNA_ATTACHMENTS_STORAGE_MODE"] = "sideways";
+
+    expect(() => getStorageMode()).toThrow("Unknown attachments storage mode");
+  });
+
   it("parses and validates storage table filters", () => {
     expect(parseStorageTables()).toEqual(["attachments", "share_links", "feedback"]);
     expect(parseStorageTables([" attachments ", "feedback"])).toEqual(["attachments", "feedback"]);

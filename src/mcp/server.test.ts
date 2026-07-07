@@ -72,6 +72,7 @@ const mockDelete = mock((_id: string) => {});
 const mockUpdateLink = mock((_id: string, _link: string, _expiresAt?: number | null) => {});
 const mockMarkReady = mock((_input: unknown) => {});
 const mockClose = mock(() => {});
+const mockRun = mock((_sql: string, _params?: unknown[]) => {});
 
 // Use real config module with temp config file — avoids module cache pollution
 let _mcpTestConfigDir: string;
@@ -92,6 +93,29 @@ const mockGetLinkType = mock(() => "presigned" as const);
 
 const mockDbInsert = mock((_att: unknown) => {});
 const mockDbCreateShareLink = mock((_input: unknown) => ({ shareLink: {}, token: "share_test001" }));
+const mockRunHealthCheck = mock(async (_opts?: unknown) => ({
+  healthy: 1,
+  expired: 2,
+  dead: 3,
+  noLink: 4,
+  fixed: 5,
+  total: 6,
+  results: [
+    {
+      id: "att_health",
+      filename: "health.txt",
+      status: "healthy",
+      link: "https://example.com/health",
+      expiresAt: null,
+      fixed: false,
+      newLink: undefined,
+    },
+  ],
+}));
+const mockGetStorageStatus = mock(() => ({ mode: "local", tables: ["attachments"] }));
+const mockStoragePush = mock(async (_opts?: unknown) => ({ pushed: 1 }));
+const mockStoragePull = mock(async (_opts?: unknown) => ({ pulled: 2 }));
+const mockStorageSync = mock(async (_opts?: unknown) => ({ pushed: 1, pulled: 2 }));
 
 const mockS3ClientInstance = {
   upload: mock(async () => {}),
@@ -140,6 +164,7 @@ mock.module("../core/db.js", () => ({
     close = mockClose;
     insert = mockDbInsert;
     createShareLink = mockDbCreateShareLink;
+    run = mockRun;
   },
 }));
 // Set up real config with test values
@@ -170,9 +195,19 @@ mock.module("../core/s3.js", () => ({
     presignPut = mockS3ClientInstance.presignPut;
   },
 }));
+mock.module("../cli/commands/health-check.js", () => ({
+  runHealthCheck: mockRunHealthCheck,
+}));
+mock.module("../db/storage-sync.js", () => ({
+  STORAGE_TABLES: ["attachments", "share_links"],
+  getStorageStatus: mockGetStorageStatus,
+  storagePull: mockStoragePull,
+  storagePush: mockStoragePush,
+  storageSync: mockStorageSync,
+}));
 
 // Import server AFTER mocks are set up
-const { createServer, getToolsForProfile } = await import("./server.js");
+const { createServer, getToolsForProfile, main, printHelp, hasFlag, getMcpVersion, handleMainError, runMainIfEntry } = await import("./server.js");
 
 // Restore all mocks after this file's tests complete
 afterAll(() => {
@@ -313,6 +348,148 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     const tools = getToolsForProfile();
     expect(tools).toHaveLength(26);
     delete process.env.ATTACHMENTS_PROFILE;
+  });
+});
+
+describe("MCP server entrypoint helpers", () => {
+  it("detects flags from explicit argv", () => {
+    expect(hasFlag(["node", "attachments-mcp", "--help"], "--help", "-h")).toBe(true);
+    expect(hasFlag(["node", "attachments-mcp"], "--help", "-h")).toBe(false);
+  });
+
+  it("prints help through the injected writer", () => {
+    let output = "";
+    printHelp((chunk: string) => {
+      output += chunk;
+    });
+
+    expect(output).toContain("Usage: attachments-mcp");
+    expect(output).toContain("--http");
+  });
+
+  it("falls back to npm_package_version when package loading fails", () => {
+    const previous = process.env.npm_package_version;
+    process.env.npm_package_version = "9.9.9";
+    try {
+      expect(getMcpVersion(() => {
+        throw new Error("missing package");
+      })).toBe("9.9.9");
+    } finally {
+      if (previous === undefined) delete process.env.npm_package_version;
+      else process.env.npm_package_version = previous;
+    }
+  });
+
+  it("handles --help and --version without starting transports", async () => {
+    let output = "";
+    await main({
+      argv: ["attachments-mcp", "--help"],
+      writeStdout: (chunk: string) => {
+        output += chunk;
+      },
+      buildServer: () => {
+        throw new Error("should not build");
+      },
+    });
+    expect(output).toContain("Usage: attachments-mcp");
+
+    output = "";
+    await main({
+      argv: ["attachments-mcp", "--version"],
+      writeStdout: (chunk: string) => {
+        output += chunk;
+      },
+      version: () => "1.2.3",
+    });
+    expect(output).toBe("1.2.3\n");
+  });
+
+  it("connects stdio transport in stdio mode", async () => {
+    const connect = mock(async (_transport: unknown) => {});
+    const transport = { kind: "stdio" };
+
+    await main({
+      argv: ["attachments-mcp"],
+      isStdio: () => true,
+      buildServer: () => ({ connect }) as never,
+      createStdioTransport: () => transport as never,
+    });
+
+    expect(connect).toHaveBeenCalledWith(transport);
+  });
+
+  it("starts HTTP mode and registers shutdown handlers", async () => {
+    const close = mock(async () => {});
+    const signals: Record<string, () => void> = {};
+    const exits: number[] = [];
+
+    await main({
+      argv: ["attachments-mcp", "--http"],
+      isStdio: () => false,
+      buildServer: (() => ({})) as never,
+      resolveHttpPort: () => 8899,
+      startHttpServer: mock(async (_build: unknown, opts: { port: number }) => {
+        expect(opts.port).toBe(8899);
+        return { close };
+      }) as never,
+      onSignal: ((event: string, cb: () => void) => {
+        signals[event] = cb;
+        return process;
+      }) as never,
+      exit: ((code?: number | string | null) => {
+        exits.push(Number(code ?? 0));
+        return undefined as never;
+      }) as never,
+    });
+
+    expect(Object.keys(signals)).toEqual(["SIGINT", "SIGTERM"]);
+    signals.SIGINT?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(exits).toEqual([0]);
+
+    signals.SIGTERM?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(exits).toEqual([0, 0]);
+  });
+
+  it("logs and exits on top-level main errors", () => {
+    const originalError = console.error;
+    const originalExit = process.exit;
+    const errors: unknown[][] = [];
+    const exits: unknown[] = [];
+    console.error = ((...args: unknown[]) => {
+      errors.push(args);
+    }) as typeof console.error;
+    process.exit = ((code?: string | number | null) => {
+      exits.push(code);
+      return undefined as never;
+    }) as typeof process.exit;
+
+    try {
+      handleMainError(new Error("boom"));
+    } finally {
+      console.error = originalError;
+      process.exit = originalExit;
+    }
+
+    expect(errors[0]?.[0]).toBe("MCP server error:");
+    expect(exits).toEqual([1]);
+  });
+
+  it("runs main and routes errors when invoked as the entrypoint", async () => {
+    const error = new Error("entry failed");
+    const handled: unknown[] = [];
+
+    runMainIfEntry(true, async () => {
+      throw error;
+    }, (err) => {
+      handled.push(err);
+    });
+
+    await Promise.resolve();
+    expect(handled).toEqual([error]);
   });
 });
 
@@ -899,6 +1076,17 @@ describe("MCP Server — presign_upload", () => {
     expect(result.content[0]!.text).toContain("Invalid expiry format");
   });
 
+  it("returns error when presigned upload expiry is never", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "presign_upload", {
+      filename: "file.txt",
+      expiry: "never",
+    })) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("cannot be never");
+  });
+
   it("finalizes a pending upload and generates a share link", async () => {
     mockFindById.mockImplementation(() => ({
       id: "att_pending",
@@ -991,6 +1179,74 @@ describe("MCP Server — presign_upload", () => {
     expect(mockS3ClientInstance.delete).toHaveBeenCalledWith("attachments/2026-06-19/att_pending/huge.bin");
     expect(mockDelete).toHaveBeenCalledWith("att_pending");
   });
+
+  it("returns error when completing an unknown presigned upload", async () => {
+    mockFindById.mockImplementation(() => null);
+
+    const server = createServer();
+    const result = (await callTool(server, "complete_presigned_upload", {
+      id: "att_missing",
+    })) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("Pending attachment not found");
+  });
+
+  it("returns error when completing an already-ready upload", async () => {
+    mockFindById.mockImplementation(() => ({
+      id: "att_ready",
+      filename: "ready.pdf",
+      s3Key: "attachments/2026-06-19/att_ready/ready.pdf",
+      bucket: "my-bucket",
+      size: 1,
+      contentType: "application/pdf",
+      link: "https://example.com/ready",
+      tag: null,
+      expiresAt: Date.now() + 3600000,
+      createdAt: Date.now(),
+      storageBackend: "s3",
+      status: "ready",
+    }));
+
+    const server = createServer();
+    const result = (await callTool(server, "complete_presigned_upload", {
+      id: "att_ready",
+    })) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("already complete");
+  });
+
+  it("falls back to stored metadata when completed object head omits it", async () => {
+    mockFindById.mockImplementation(() => ({
+      id: "att_pending",
+      filename: "report.pdf",
+      s3Key: "attachments/2026-06-19/att_pending/report.pdf",
+      bucket: "my-bucket",
+      size: 512,
+      contentType: "application/pdf",
+      link: null,
+      tag: null,
+      expiresAt: Date.now() + 3600000,
+      createdAt: Date.now(),
+      storageBackend: "s3",
+      status: "pending",
+    }));
+    mockS3ClientInstance.head.mockImplementation(async () => ({}));
+
+    const server = createServer();
+    const result = (await callTool(server, "complete_presigned_upload", {
+      id: "att_pending",
+      link_type: "presigned",
+    })) as { content: Array<{ text: string }> };
+
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed.size).toBe(512);
+    expect(mockMarkReady).toHaveBeenCalledWith(expect.objectContaining({
+      size: 512,
+      contentType: "application/pdf",
+    }));
+  });
 });
 
 describe("MCP Server — link_to_task", () => {
@@ -1073,6 +1329,24 @@ describe("MCP Server — link_to_task", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain("TASK-999");
+  });
+
+  it("returns detailed error when todos PATCH fails with non-404 status", async () => {
+    globalThis.fetch = mock(async () => ({
+      ok: false,
+      status: 500,
+      text: async () => "boom",
+    })) as unknown as typeof fetch;
+
+    const server = createServer();
+    const result = (await callTool(server, "link_to_task", {
+      attachment_id: "att_test001",
+      task_id: "TASK-500",
+    })) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("HTTP 500");
+    expect(result.content[0]!.text).toContain("boom");
   });
 
   it("defaults todos_url to http://localhost:3000", async () => {
@@ -1216,6 +1490,36 @@ describe("MCP Server — complete_task_with_files", () => {
     expect(result.content[0]!.text).toContain("TASK-999");
   });
 
+  it("returns detailed error when task completion fails with non-404 status", async () => {
+    mockUploadFile.mockImplementationOnce(async () => ({
+      id: "att_ev500",
+      filename: "file.txt",
+      s3Key: "key",
+      bucket: "my-bucket",
+      size: 100,
+      contentType: "text/plain",
+      link: null,
+      expiresAt: null,
+      createdAt: 1699000000000,
+    }));
+
+    globalThis.fetch = mock(async () => ({
+      ok: false,
+      status: 500,
+      text: async () => "server exploded",
+    })) as unknown as typeof fetch;
+
+    const server = createServer();
+    const result = (await callTool(server, "complete_task_with_files", {
+      task_id: "TASK-500",
+      paths: ["/tmp/file.txt"],
+    })) as { content: Array<{ text: string }>; isError: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("HTTP 500");
+    expect(result.content[0]!.text).toContain("server exploded");
+  });
+
   it("returns error when paths array is empty", async () => {
     const server = createServer();
     const result = (await callTool(server, "complete_task_with_files", {
@@ -1323,6 +1627,106 @@ describe("MCP Server — save_session", () => {
 
     expect(capturedUrl).toContain("localhost:9999");
     expect(capturedUrl).toContain("ses_custom");
+  });
+
+  it("reads messages from object-shaped session responses", async () => {
+    globalThis.fetch = mock(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        messages: [{ role: "assistant", content: "object message" }],
+      }),
+    })) as unknown as typeof fetch;
+
+    const server = createServer();
+    await callTool(server, "save_session", {
+      session_id: "ses_object",
+    });
+
+    const [buf] = mockUploadFromBuffer.mock.calls[0] as [Buffer, string, unknown];
+    expect(buf.toString("utf-8")).toContain("object message");
+  });
+
+  it("reads messages from data-shaped session responses", async () => {
+    globalThis.fetch = mock(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [{ role: "user", text: "data message" }],
+      }),
+    })) as unknown as typeof fetch;
+
+    const server = createServer();
+    await callTool(server, "save_session", {
+      session_id: "ses_data",
+    });
+
+    const [buf] = mockUploadFromBuffer.mock.calls[0] as [Buffer, string, unknown];
+    expect(buf.toString("utf-8")).toContain("data message");
+  });
+
+  it("falls back to raw content for unrecognized message responses", async () => {
+    globalThis.fetch = mock(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ unexpected: true }),
+    })) as unknown as typeof fetch;
+
+    const server = createServer();
+    await callTool(server, "save_session", {
+      session_id: "ses_raw",
+    });
+
+    const [buf] = mockUploadFromBuffer.mock.calls[0] as [Buffer, string, unknown];
+    expect(buf.toString("utf-8")).toContain('"unexpected":true');
+  });
+
+  it("falls back to the session endpoint when messages endpoint is unavailable", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = mock(async (url: unknown) => {
+      calls.push(String(url));
+      if (calls.length === 1) {
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ messages: [{ role: "assistant", content: "fallback message" }] }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    const server = createServer();
+    await callTool(server, "save_session", {
+      session_id: "ses_fallback",
+    });
+
+    expect(calls[0]).toContain("/messages");
+    expect(calls[1]).not.toContain("/messages");
+    const [buf] = mockUploadFromBuffer.mock.calls[0] as [Buffer, string, unknown];
+    expect(buf.toString("utf-8")).toContain("fallback message");
+  });
+
+  it("uses raw session body when fallback endpoint has no messages", async () => {
+    let callCount = 0;
+    globalThis.fetch = mock(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ transcript: "raw fallback" }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    const server = createServer();
+    await callTool(server, "save_session", {
+      session_id: "ses_fallback_raw",
+    });
+
+    const [buf] = mockUploadFromBuffer.mock.calls[0] as [Buffer, string, unknown];
+    expect(buf.toString("utf-8")).toContain("raw fallback");
   });
 
   it("passes expiry and tag to uploadFromBuffer", async () => {
@@ -1452,6 +1856,132 @@ describe("MCP Server — get_context", () => {
     expect(parsed).toHaveProperty("expiring_soon");
     expect(parsed).toHaveProperty("summary");
     expect(typeof parsed.attachments).toBe("number");
+  });
+
+  it("includes expiring soon and recent attachments in the context summary", async () => {
+    mockFindAll.mockImplementationOnce(() => [
+      {
+        id: "att_soon",
+        filename: "soon.txt",
+        s3Key: "key",
+        bucket: "my-bucket",
+        size: 1,
+        contentType: "text/plain",
+        link: "https://example.com/soon",
+        expiresAt: Date.now() + 60_000,
+        createdAt: Date.now(),
+      },
+    ]);
+
+    const server = createServer();
+    const result = (await callTool(server, "get_context", {})) as {
+      content: Array<{ text: string }>;
+    };
+
+    expect(result.content[0]!.text).toContain("Expiring in 24h");
+    expect(result.content[0]!.text).toContain("soon.txt");
+  });
+});
+
+describe("MCP Server — health, storage, feedback, and agents", () => {
+  beforeEach(() => {
+    mockRunHealthCheck.mockClear();
+    mockGetStorageStatus.mockClear();
+    mockStoragePush.mockClear();
+    mockStoragePull.mockClear();
+    mockStorageSync.mockClear();
+    mockRun.mockClear();
+  });
+
+  it("returns attachment health summary", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "check_attachment_health", {
+      fix: true,
+    })) as { content: Array<{ text: string }> };
+
+    expect(mockRunHealthCheck).toHaveBeenCalledWith({ fix: true });
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed.healthy).toBe(1);
+    expect(parsed.results[0].id).toBe("att_health");
+  });
+
+  it("registers, refreshes, focuses, and lists MCP agents", async () => {
+    const server = createServer();
+    const registered = (await callTool(server, "register_agent", {
+      name: "worker",
+      session_id: "ses_1",
+    })) as { content: Array<{ text: string }> };
+    const agent = JSON.parse(registered.content[0]!.text);
+
+    const updated = (await callTool(server, "register_agent", {
+      name: "worker",
+      session_id: "ses_2",
+    })) as { content: Array<{ text: string }> };
+    expect(JSON.parse(updated.content[0]!.text).agent_id).toBe(agent.agent_id);
+
+    const heartbeat = (await callTool(server, "heartbeat", {
+      agent_id: agent.agent_id,
+    })) as { content: Array<{ text: string }> };
+    expect(JSON.parse(heartbeat.content[0]!.text).agent_id).toBe(agent.agent_id);
+
+    const focused = (await callTool(server, "set_focus", {
+      agent_id: agent.agent_id,
+      project_id: "proj_1",
+    })) as { content: Array<{ text: string }> };
+    expect(JSON.parse(focused.content[0]!.text).project_id).toBe("proj_1");
+
+    const listed = (await callTool(server, "list_agents", {})) as { content: Array<{ text: string }> };
+    expect(JSON.parse(listed.content[0]!.text)[0].project_id).toBe("proj_1");
+  });
+
+  it("returns errors for unknown agent heartbeat and focus requests", async () => {
+    const server = createServer();
+    const heartbeat = (await callTool(server, "heartbeat", {
+      agent_id: "missing",
+    })) as { content: Array<{ text: string }>; isError: boolean };
+    expect(heartbeat.isError).toBe(true);
+    expect(heartbeat.content[0]!.text).toContain("Agent not found");
+
+    const focus = (await callTool(server, "set_focus", {
+      agent_id: "missing",
+    })) as { content: Array<{ text: string }>; isError: boolean };
+    expect(focus.isError).toBe(true);
+    expect(focus.content[0]!.text).toContain("Agent not found");
+  });
+
+  it("routes storage sync tools with table filters", async () => {
+    const server = createServer();
+    await callTool(server, "storage_status", {});
+    await callTool(server, "storage_push", { tables: ["attachments"] });
+    await callTool(server, "storage_pull", { tables: ["share_links"] });
+    await callTool(server, "storage_sync", { tables: ["attachments", "share_links"] });
+
+    expect(mockGetStorageStatus).toHaveBeenCalledTimes(1);
+    expect(mockStoragePush).toHaveBeenCalledWith({ tables: ["attachments"] });
+    expect(mockStoragePull).toHaveBeenCalledWith({ tables: ["share_links"] });
+    expect(mockStorageSync).toHaveBeenCalledWith({ tables: ["attachments", "share_links"] });
+  });
+
+  it("routes storage sync tools without table filters", async () => {
+    const server = createServer();
+    await callTool(server, "storage_push", {});
+
+    expect(mockStoragePush).toHaveBeenCalledWith(undefined);
+  });
+
+  it("persists feedback via the local database", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "send_feedback", {
+      message: "works well",
+      email: "user@example.test",
+      category: "bug",
+    })) as { content: Array<{ text: string }> };
+
+    expect(result.content[0]!.text).toContain("Feedback saved");
+    expect(mockRun).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO feedback"),
+      expect.arrayContaining(["works well", "user@example.test", "bug"])
+    );
   });
 });
 

@@ -83,6 +83,7 @@ function captureOutput() {
 describe("serve command", () => {
   beforeEach(() => {
     process.env["ATTACHMENTS_SERVE_EXIT_AFTER_START"] = "1";
+    delete process.env["ATTACHMENTS_INTERNAL_BIND_HOST"];
     mockStartServer.mockReset();
     mockValidateS3Config.mockReset();
     mockValidateS3Config.mockImplementation(() => {});
@@ -197,6 +198,42 @@ describe("serve command", () => {
     } finally {
       capture.restore();
       exitSpy.mockRestore();
+    }
+  });
+
+  it("prints internal bind details when --internal is used", async () => {
+    process.env["ATTACHMENTS_INTERNAL_BIND_HOST"] = "100.80.1.2";
+    const capture = captureOutput();
+    try {
+      const program = buildProgram();
+      await program.parseAsync(["serve", "--internal", "--port", "3459"], { from: "user" });
+      const output = capture.out.join("");
+      expect(mockStartServer).toHaveBeenCalledWith(3459, "100.80.1.2");
+      expect(output).toContain("Internal URL: http://100.80.1.2:3459");
+      expect(output).toContain("Tailscale-only bind");
+    } finally {
+      capture.restore();
+      delete process.env["ATTACHMENTS_INTERNAL_BIND_HOST"];
+    }
+  });
+
+  it("waits for shutdown signals when not configured to exit after start", async () => {
+    delete process.env["ATTACHMENTS_SERVE_EXIT_AFTER_START"];
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+    try {
+      const program = buildProgram();
+      const pending = program.parseAsync(["serve"], { from: "user" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      process.emit("SIGTERM");
+      await expect(pending).rejects.toThrow("process.exit called");
+      expect(mockStartServer).toHaveBeenCalledTimes(1);
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+      process.env["ATTACHMENTS_SERVE_EXIT_AFTER_START"] = "1";
     }
   });
 });

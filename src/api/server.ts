@@ -1443,41 +1443,6 @@ export function createApp(): Hono {
     }
   }
 
-  const sharePageHeadHandler = (c: Context) => {
-    const token = c.req.param("token")!;
-    const db = new AttachmentsDB();
-    try {
-      const access = resolveShareAccess(db, token, { consume: false });
-      c.header("Content-Type", "text/html; charset=UTF-8");
-      c.header("Content-Length", "0");
-      c.header("X-Attachment-Filename", access.attachment.filename);
-      return c.body(null, 200);
-    } catch (err) {
-      if (err instanceof ShareAccessError) return c.body(null, err.status);
-      return c.body(null, 500);
-    } finally {
-      db.close();
-    }
-  };
-
-  const shareDownloadHeadHandler = (c: Context) => {
-    const token = c.req.param("token")!;
-    const db = new AttachmentsDB();
-    try {
-      const access = resolveShareAccess(db, token, { consume: false });
-      c.header("Content-Disposition", contentDispositionAttachment(access.attachment.filename));
-      c.header("Accept-Ranges", access.attachment.encryptionAlgorithm ? "none" : "bytes");
-      c.header("Content-Type", access.attachment.contentType);
-      c.header("Content-Length", String(access.attachment.size));
-      return c.body(null, 200);
-    } catch (err) {
-      if (err instanceof ShareAccessError) return c.body(null, err.status);
-      return c.body(null, 500);
-    } finally {
-      db.close();
-    }
-  };
-
   const shareDownloadGetHandler = async (c: Context) => {
     const token = c.req.param("token")!;
     const db = new AttachmentsDB();
@@ -1506,20 +1471,16 @@ export function createApp(): Hono {
   const shareDownloadPostHandler = async (c: Context) => {
     let password: string | undefined;
     let grantToken: string | undefined;
-    try {
-      const body = await c.req.parseBody();
+    const body = await c.req.parseBody().catch(() => null);
+    if (body) {
       password = typeof body["password"] === "string" ? body["password"] : undefined;
       grantToken = typeof body["grant"] === "string" ? body["grant"] : undefined;
-    } catch {
-      password = undefined;
     }
     return serveShareDownload(c, password, grantToken ?? c.req.query("grant"));
   };
 
   for (const prefix of publicRoutePrefixes) {
     app.get(`${prefix}/:token`, sharePageHandler);
-    app.on("HEAD", `${prefix}/:token`, sharePageHeadHandler);
-    app.on("HEAD", `${prefix}/:token/download`, shareDownloadHeadHandler);
     app.get(`${prefix}/:token/download`, shareDownloadGetHandler);
     app.post(`${prefix}/:token/download`, shareDownloadPostHandler);
     app.post(`${prefix}/:token/request-access`, requestAccessHandler);
@@ -1572,7 +1533,7 @@ export function startServer(port: number, hostname = "localhost"): void {
   const resolvedHostname = hostname ?? config.server.host;
 
   // Use Bun.serve if available, otherwise @hono/node-server
-  if (typeof Bun !== "undefined") {
+  if (typeof Bun !== "undefined" && typeof Bun.serve === "function") {
     const server = Bun.serve({
       port: resolvedPort,
       hostname: resolvedHostname,

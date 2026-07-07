@@ -63,8 +63,10 @@ const {
   checkExpiredLinks,
   checkMcpInstalled,
   checkVersion,
+  checkIntegration,
   formatResults,
   registerDoctor,
+  resolvePackageVersion,
 } = await import("./doctor");
 
 // ---------------------------------------------------------------------------
@@ -233,6 +235,12 @@ describe("checkS3Connection", () => {
 // ---------------------------------------------------------------------------
 
 describe("checkDatabase", () => {
+  it("returns fail when the database file is absent", () => {
+    const result = checkDatabase(join(TEST_DIR, "missing-home", "db.sqlite"));
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("db.sqlite not found");
+  });
+
   it("returns ok when DB is accessible with attachments", () => {
     const now = Date.now();
     mockAttachments = [
@@ -255,15 +263,15 @@ describe("checkDatabase", () => {
   });
 
   it("returns fail when DB throws an error", () => {
+    const dbDir = join(TEST_DIR, ".hasna", "attachments");
+    mkdirSync(dbDir, { recursive: true });
+    const dbPath = join(dbDir, "db.sqlite");
+    writeFileSync(dbPath, "");
     mockDbThrows = true;
-    // We need the db file to "exist" so existsSync passes — create a temp file at actual path
-    // Since we can't change the DB_PATH for tests easily, we test the error branch by
-    // verifying that when DB throws, status is fail.
-    // To reach the throw branch, existsSync must return true.
-    // We can verify this indirectly: if existsSync passes and db throws, we get fail.
-    const result = checkDatabase();
-    // If the real ~/.hasna/attachments/db.sqlite doesn't exist, we get fail for "not found" — still fail.
+
+    const result = checkDatabase(dbPath);
     expect(result.status).toBe("fail");
+    expect(result.message).toContain("query failed");
   });
 
   it("returns ok message with attachment count", () => {
@@ -424,6 +432,51 @@ describe("checkVersion", () => {
   });
 });
 
+describe("checkIntegration", () => {
+  it("returns ok when the integration health endpoint is reachable", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+
+    try {
+      const result = await checkIntegration("todos", "TODOS_URL", "http://localhost:19427");
+      expect(result.status).toBe("ok");
+      expect(result.message).toContain("reachable");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("returns warn when an unset integration cannot be reached", async () => {
+    const originalFetch = globalThis.fetch;
+    const previousUrl = process.env.TODOS_URL;
+    delete process.env.TODOS_URL;
+    globalThis.fetch = mock(async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+
+    try {
+      const result = await checkIntegration("todos", "TODOS_URL", "http://localhost:19427");
+      expect(result.status).toBe("warn");
+      expect(result.message).toContain("not configured");
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (previousUrl === undefined) delete process.env.TODOS_URL;
+      else process.env.TODOS_URL = previousUrl;
+    }
+  });
+});
+
+describe("resolvePackageVersion", () => {
+  it("falls back to npm_package_version when package loading fails", () => {
+    const version = resolvePackageVersion(
+      () => {
+        throw new Error("missing package");
+      },
+      { npm_package_version: "9.8.7" } as NodeJS.ProcessEnv,
+    );
+
+    expect(version).toBe("9.8.7");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // formatResults
 // ---------------------------------------------------------------------------
@@ -494,6 +547,24 @@ describe("doctor command — all checks pass", () => {
     } finally {
       capture.restore();
       (Bun as unknown as Record<string, unknown>).spawn = originalSpawn;
+    }
+  });
+
+  it("exits with code 1 when any check fails", async () => {
+    let exitCode: number | undefined;
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      exitCode = code;
+      return undefined as never;
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildDoctorCmd();
+      await program.parseAsync(["doctor"], { from: "user" });
+      expect(exitCode).toBe(1);
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
     }
   });
 });

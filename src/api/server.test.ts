@@ -2,7 +2,7 @@ import { describe, it, expect, mock, beforeAll, beforeEach, afterAll } from "bun
 import { tmpdir } from "os";
 import { join } from "path";
 import { mkdirSync, rmSync } from "fs";
-import type { Attachment, ShareLink } from "../core/db";
+import type { AccessGrant, Attachment, ShareLink } from "../core/db";
 import { setConfigPath, setConfig } from "../core/config";
 import { buildPasswordHash } from "../core/security";
 
@@ -68,11 +68,27 @@ const mockShareLink: ShareLink = {
   passwordHash: null,
   maxUses: null,
   usedCount: 0,
+  requireEmail: false,
+  allowedEmails: null,
 };
 const mockDbFindShareLinkByToken = mock((_token: string): ShareLink | null => ({ ...mockShareLink }));
 const mockDbConsumeShareLink = mock((_id: string) => true);
 const mockDbReleaseShareLink = mock((_id: string) => true);
 const mockDbIncrementDownloads = mock((_id: string) => {});
+const mockAccessGrant: AccessGrant = {
+  id: "grant_1",
+  shareLinkId: "share_link_1",
+  email: "user@example.test",
+  tokenHash: "grant_hash",
+  createdAt: 1700000000000,
+  expiresAt: Date.now() + 60_000,
+  consumedAt: null,
+};
+const mockDbFindAccessGrantByToken = mock((_token: string): AccessGrant | null => ({ ...mockAccessGrant }));
+const mockDbCreateAccessGrant = mock((_input: unknown) => ({
+  grant: { ...mockAccessGrant },
+  token: "grant_testtoken",
+}));
 
 const mockDbInsert = mock((_att: unknown) => {});
 
@@ -91,7 +107,16 @@ mock.module("../core/db", () => ({
     consumeShareLink = mockDbConsumeShareLink;
     releaseShareLink = mockDbReleaseShareLink;
     incrementDownloads = mockDbIncrementDownloads;
+    findAccessGrantByToken = mockDbFindAccessGrantByToken;
+    createAccessGrant = mockDbCreateAccessGrant;
   },
+}));
+
+const mockEmailSend = mock(async (_input: unknown) => {});
+const mockResolveEmailSender = mock((): { send: typeof mockEmailSend } | null => null);
+
+mock.module("../core/email-sender", () => ({
+  resolveEmailSender: mockResolveEmailSender,
 }));
 
 const mockS3Delete = mock(async (_key: string) => {});
@@ -189,6 +214,12 @@ mock.module("../core/download", () => ({
   isExpired: (att: Attachment) => att.expiresAt !== null && att.expiresAt <= Date.now(),
 }));
 
+const mockNodeServe = mock((_opts: unknown) => ({}));
+
+mock.module("@hono/node-server", () => ({
+  serve: mockNodeServe,
+}));
+
 // Import after mocks
 const { createApp } = await import("./server");
 
@@ -211,6 +242,8 @@ function makeFormData(filename: string, content: string, extraFields?: Record<st
   return fd;
 }
 
+const FORM_UPLOAD_BYTES_FOR_TEST = 64 * 1024 * 1024;
+
 // --- Tests ---
 
 describe("REST API server", () => {
@@ -219,6 +252,7 @@ describe("REST API server", () => {
   beforeEach(() => {
     delete process.env.ATTACHMENTS_API_TOKEN;
     delete process.env.HASNA_ATTACHMENTS_API_TOKEN;
+    delete process.env.ATTACHMENTS_TRUST_PROXY;
     try { rmSync(join(testConfigDir, "config.json"), { force: true }); } catch {}
     setConfig(mockConfig);
     app = createApp();
@@ -255,6 +289,13 @@ describe("REST API server", () => {
     mockDbReleaseShareLink.mockReset();
     mockDbReleaseShareLink.mockImplementation(() => true);
     mockDbIncrementDownloads.mockReset();
+    mockDbFindAccessGrantByToken.mockReset();
+    mockDbFindAccessGrantByToken.mockImplementation(() => ({ ...mockAccessGrant }));
+    mockDbCreateAccessGrant.mockReset();
+    mockDbCreateAccessGrant.mockImplementation(() => ({
+      grant: { ...mockAccessGrant },
+      token: "grant_testtoken",
+    }));
     mockDbDelete.mockReset();
     mockDbClose.mockReset();
     mockS3Delete.mockReset();
@@ -288,6 +329,11 @@ describe("REST API server", () => {
       contentType: "text/plain",
       status: 200,
     }));
+    mockResolveEmailSender.mockReset();
+    mockResolveEmailSender.mockImplementation(() => null);
+    mockEmailSend.mockReset();
+    mockEmailSend.mockImplementation(async () => {});
+    mockNodeServe.mockReset();
   });
 
   // --- GET /api/health ---
@@ -318,6 +364,14 @@ describe("REST API server", () => {
       expect(res.headers.get("referrer-policy")).toBe("no-referrer");
       expect(res.headers.get("permissions-policy")).toContain("camera=()");
       expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    });
+
+    it("sets HSTS when the forwarded protocol is https", async () => {
+      const res = await app.request("/api/health", {
+        headers: { "x-forwarded-proto": "https" },
+      });
+
+      expect(res.headers.get("strict-transport-security")).toContain("max-age=31536000");
     });
   });
 
@@ -417,6 +471,48 @@ describe("REST API server", () => {
       delete process.env.ATTACHMENTS_MAX_SIZE;
     });
 
+    it("rejects multipart form uploads above the soft limit by Content-Length", async () => {
+      const res = await app.request("/api/attachments", {
+        method: "POST",
+        headers: { "content-length": String(65 * 1024 * 1024) },
+      });
+
+      expect(res.status).toBe(413);
+      const body = await res.json();
+      expect(body.error).toContain("Multipart form uploads are capped");
+      expect(mockUploadStreamAttachment).not.toHaveBeenCalled();
+    });
+
+    it("rejects multipart file bodies above the soft limit after parsing", async () => {
+      const fd = new FormData();
+      fd.append("file", new File([new Uint8Array(FORM_UPLOAD_BYTES_FOR_TEST + 1)], "huge.bin"));
+
+      const res = await app.request("/api/attachments", {
+        method: "POST",
+        body: fd,
+      });
+
+      expect(res.status).toBe(413);
+      const body = await res.json();
+      expect(body.error).toContain("Multipart form uploads are capped");
+      expect(mockUploadStreamAttachment).not.toHaveBeenCalled();
+    });
+
+    it("rejects multipart files above the configured max after parsing", async () => {
+      process.env.ATTACHMENTS_MAX_SIZE = "5";
+      const fd = makeFormData("test.txt", "hello world");
+      const res = await app.request("/api/attachments", {
+        method: "POST",
+        body: fd,
+      });
+
+      expect(res.status).toBe(413);
+      const body = await res.json();
+      expect(body.error).toContain("too large");
+      expect(mockUploadStreamAttachment).not.toHaveBeenCalled();
+      delete process.env.ATTACHMENTS_MAX_SIZE;
+    });
+
     it("returns 500 when uploadFile throws", async () => {
       mockUploadStreamAttachment.mockImplementation(async () => {
         throw new Error("S3 upload failed");
@@ -431,6 +527,38 @@ describe("REST API server", () => {
       expect(res.status).toBe(500);
       const body = await res.json();
       expect(body.error).toContain("S3 upload failed");
+    });
+
+    it("passes upload options from multipart fields", async () => {
+      const fd = makeFormData("test.txt", "hello", {
+        max_downloads: "2",
+        link_type: "server",
+        allowed_emails: " one@example.test, two@example.test ",
+        require_email: "1",
+        encrypt: "1",
+      });
+
+      const res = await app.request("/api/attachments", {
+        method: "POST",
+        body: fd,
+        headers: { "x-attachment-password": "pw" },
+      });
+
+      expect(res.status).toBe(201);
+      const [, , , opts] = mockUploadStreamAttachment.mock.calls[0] as [unknown, string, string, {
+        maxDownloads?: number;
+        linkType?: string;
+        allowedEmails?: string[] | null;
+        requireEmail?: boolean;
+        password?: string;
+        encrypt?: boolean;
+      }];
+      expect(opts.maxDownloads).toBe(2);
+      expect(opts.linkType).toBe("server");
+      expect(opts.allowedEmails).toEqual(["one@example.test", "two@example.test"]);
+      expect(opts.requireEmail).toBe(true);
+      expect(opts.password).toBe("pw");
+      expect(opts.encrypt).toBe(true);
     });
   });
 
@@ -458,6 +586,24 @@ describe("REST API server", () => {
       expect(opts.size).toBe(13);
     });
 
+    it("parses PUT upload options from query and headers", async () => {
+      const res = await app.request("/api/attachments?filename=stream.txt&max_downloads=2&link_type=server", {
+        method: "PUT",
+        headers: { "content-type": "text/plain", "x-attachments-tag": "tagged" },
+        body: "file contents",
+      });
+
+      expect(res.status).toBe(201);
+      const [, , , opts] = mockUploadStreamAttachment.mock.calls[0] as [unknown, string, string, {
+        maxDownloads?: number;
+        linkType?: string;
+        tag?: string;
+      }];
+      expect(opts.maxDownloads).toBe(2);
+      expect(opts.linkType).toBe("server");
+      expect(opts.tag).toBe("tagged");
+    });
+
     it("rejects PUT uploads above the configured max by Content-Length", async () => {
       process.env.ATTACHMENTS_MAX_SIZE = "5";
       const res = await app.request("/api/attachments?filename=big.txt", {
@@ -468,6 +614,74 @@ describe("REST API server", () => {
       expect(res.status).toBe(413);
       expect(mockUploadStreamAttachment).not.toHaveBeenCalled();
       delete process.env.ATTACHMENTS_MAX_SIZE;
+    });
+
+    it("returns 400 when PUT request body is missing", async () => {
+      const res = await app.request("/api/attachments?filename=empty.txt", {
+        method: "PUT",
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("Request body is required");
+    });
+
+    it("returns 500 when PUT streaming upload fails", async () => {
+      mockUploadStreamAttachment.mockImplementation(async () => {
+        throw new Error("stream upload failed");
+      });
+
+      const res = await app.request("/api/attachments?filename=stream.txt", {
+        method: "PUT",
+        headers: { "content-type": "text/plain" },
+        body: "file contents",
+      });
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain("stream upload failed");
+    });
+  });
+
+  describe("GET /api/deployment", () => {
+    it("returns the deployment plan with resolved storage backend", async () => {
+      const res = await app.request("/api/deployment");
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.storage_backend).toBe("s3");
+      expect(body.routing).toBeDefined();
+    });
+  });
+
+  describe("GET /api/context", () => {
+    it("returns compact text context with expiring and recent attachments", async () => {
+      mockDbFindAll.mockImplementation(() => [
+        { ...mockAttachment, id: "att_active", filename: "active.txt", expiresAt: Date.now() + 60_000 },
+        { ...mockAttachment, id: "att_expired", filename: "expired.txt", expiresAt: Date.now() - 60_000 },
+      ]);
+
+      const res = await app.request("/api/context");
+
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).toContain("Attachments: 2 total");
+      expect(text).toContain("Expiring in 24h");
+      expect(text).toContain("active.txt");
+    });
+
+    it("returns JSON context when requested", async () => {
+      mockDbFindAll.mockImplementation(() => [
+        { ...mockAttachment, expiresAt: Date.now() + 60_000 },
+      ]);
+
+      const res = await app.request("/api/context?format=json");
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.attachments).toBe(1);
+      expect(body.active).toBe(1);
+      expect(body.summary).toContain("Attachments: 1 total");
     });
   });
 
@@ -628,6 +842,20 @@ describe("REST API server", () => {
       const body = await res.json();
       expect(body.error).toContain("S3 download failed");
     });
+
+    it("returns 410 when direct API download attachment has expired", async () => {
+      mockDbFindById.mockImplementation(() => ({
+        ...mockAttachment,
+        expiresAt: Date.now() - 1000,
+      }));
+
+      const res = await app.request("/api/attachments/att_test00001/download");
+
+      expect(res.status).toBe(410);
+      const body = await res.json();
+      expect(body.error).toContain("expired");
+      expect(mockOpenAttachmentStream).not.toHaveBeenCalled();
+    });
   });
 
   // --- GET /api/attachments/:id/link ---
@@ -740,6 +968,81 @@ describe("REST API server", () => {
       expect(att.filename).toBe("large.bin");
     });
 
+    it("rejects multipart creation without a JSON body", async () => {
+      const res = await app.request("/api/attachments/multipart", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("Request body is required");
+    });
+
+    it("rejects multipart creation without a filename", async () => {
+      const res = await app.request("/api/attachments/multipart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("filename is required");
+    });
+
+    it("rejects multipart creation when storage is not S3", async () => {
+      setConfig({ storage: { backend: "local" } });
+
+      const res = await app.request("/api/attachments/multipart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "large.bin" }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("requires S3");
+    });
+
+    it("rejects multipart creation when size exceeds the configured max", async () => {
+      const res = await app.request("/api/attachments/multipart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "large.bin", size: mockConfig.storage.maxSizeBytes + 1 }),
+      });
+
+      expect(res.status).toBe(413);
+      expect(mockS3CreateMultipartUpload).not.toHaveBeenCalled();
+    });
+
+    it("rejects multipart creation when upload expiry is never", async () => {
+      const res = await app.request("/api/attachments/multipart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "large.bin", upload_expiry: "never" }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("cannot be never");
+    });
+
+    it("returns 500 when multipart creation fails", async () => {
+      mockS3CreateMultipartUpload.mockImplementation(async () => {
+        throw new Error("multipart unavailable");
+      });
+
+      const res = await app.request("/api/attachments/multipart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "large.bin" }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain("multipart unavailable");
+    });
+
     it("returns a presigned URL for a multipart part", async () => {
       mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
       const res = await app.request("/api/attachments/att_test00001/multipart/part", {
@@ -757,6 +1060,66 @@ describe("REST API server", () => {
         3,
         3600
       );
+    });
+
+    it("rejects multipart part requests without a JSON body", async () => {
+      const res = await app.request("/api/attachments/att_test00001/multipart/part", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("Request body is required");
+    });
+
+    it("rejects multipart part requests without upload_id", async () => {
+      const res = await app.request("/api/attachments/att_test00001/multipart/part", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ part_number: 1 }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("upload_id is required");
+    });
+
+    it("rejects invalid multipart part numbers", async () => {
+      const res = await app.request("/api/attachments/att_test00001/multipart/part", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id: "upload_test123", part_number: 0 }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("part_number");
+    });
+
+    it("rejects multipart part requests for non-pending attachments", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "ready" }));
+
+      const res = await app.request("/api/attachments/att_test00001/multipart/part", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id: "upload_test123", part_number: 1 }),
+      });
+
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects multipart part URL expiry of never", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+
+      const res = await app.request("/api/attachments/att_test00001/multipart/part", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id: "upload_test123", part_number: 1, expiry: "never" }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("cannot be never");
     });
 
     it("completes multipart upload and creates a share link", async () => {
@@ -790,6 +1153,170 @@ describe("REST API server", () => {
         link: expect.stringContaining("/a/"),
         expiresAt: expect.any(Number),
       });
+    });
+
+    it("completes multipart upload with lowercase part keys", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+      const res = await app.request("/api/attachments/att_test00001/multipart/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          upload_id: "upload_test123",
+          parts: [{ etag: "abc", part_number: 1 }],
+          link_type: "presigned",
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.link).toContain("/a/");
+      expect(mockS3CompleteMultipartUpload).toHaveBeenCalledWith(
+        mockAttachment.s3Key,
+        "upload_test123",
+        [{ ETag: "abc", PartNumber: 1 }]
+      );
+    });
+
+    it("rejects multipart complete without a JSON body", async () => {
+      const res = await app.request("/api/attachments/att_test00001/multipart/complete", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("Request body is required");
+    });
+
+    it("rejects multipart complete without upload_id", async () => {
+      const res = await app.request("/api/attachments/att_test00001/multipart/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parts: [{ ETag: "abc", PartNumber: 1 }] }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("upload_id is required");
+    });
+
+    it("rejects multipart complete without parts", async () => {
+      const res = await app.request("/api/attachments/att_test00001/multipart/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id: "upload_test123", parts: [] }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("parts are required");
+    });
+
+    it("rejects multipart complete for missing pending attachments", async () => {
+      mockDbFindById.mockImplementation(() => null);
+      const res = await app.request("/api/attachments/att_missing/multipart/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id: "upload_test123", parts: [{ ETag: "abc", PartNumber: 1 }] }),
+      });
+
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects multipart complete with malformed parts", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+      const res = await app.request("/api/attachments/att_test00001/multipart/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id: "upload_test123", parts: [{ ETag: "", PartNumber: 0 }] }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("Every part");
+    });
+
+    it("deletes oversized multipart objects after completion", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+      mockS3Head.mockImplementation(async () => ({
+        contentLength: mockConfig.storage.maxSizeBytes + 1,
+        contentType: "application/octet-stream",
+      }));
+
+      const res = await app.request("/api/attachments/att_test00001/multipart/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id: "upload_test123", parts: [{ ETag: "abc", PartNumber: 1 }] }),
+      });
+
+      expect(res.status).toBe(413);
+      expect(mockS3Delete).toHaveBeenCalledWith(mockAttachment.s3Key);
+      expect(mockDbMarkReady).not.toHaveBeenCalled();
+    });
+
+    it("returns 500 when multipart completion fails", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+      mockS3CompleteMultipartUpload.mockImplementation(async () => {
+        throw new Error("complete failed");
+      });
+
+      const res = await app.request("/api/attachments/att_test00001/multipart/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id: "upload_test123", parts: [{ ETag: "abc", PartNumber: 1 }] }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain("complete failed");
+    });
+
+    it("aborts a pending multipart upload", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+
+      const res = await app.request("/api/attachments/att_test00001/multipart/abort", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id: "upload_test123" }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockDbDelete).toHaveBeenCalledWith("att_test00001");
+      expect(mockS3AbortMultipart).toHaveBeenCalledWith(mockAttachment.s3Key, "upload_test123");
+    });
+
+    it("rejects multipart abort without a JSON body", async () => {
+      const res = await app.request("/api/attachments/att_test00001/multipart/abort", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("Request body is required");
+    });
+
+    it("rejects multipart abort without upload_id", async () => {
+      const res = await app.request("/api/attachments/att_test00001/multipart/abort", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("upload_id is required");
+    });
+
+    it("rejects multipart abort for missing attachments", async () => {
+      mockDbFindById.mockImplementation(() => null);
+
+      const res = await app.request("/api/attachments/att_missing/multipart/abort", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id: "upload_test123" }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(mockS3AbortMultipart).not.toHaveBeenCalled();
     });
   });
 
@@ -897,6 +1424,34 @@ describe("REST API server", () => {
       expect(mockDbInsert).not.toHaveBeenCalled();
     });
 
+    it("rejects presigned PUT creation with expiry never", async () => {
+      const res = await app.request("/api/attachments/presign-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "report.pdf", expiry: "never" }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("cannot be never");
+    });
+
+    it("returns 500 when presigned PUT creation fails", async () => {
+      mockS3PresignPut.mockImplementation(async () => {
+        throw new Error("presign failed");
+      });
+
+      const res = await app.request("/api/attachments/presign-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: "report.pdf" }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain("presign failed");
+    });
+
     it("finalizes a pending presigned upload and creates a server share link", async () => {
       mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
       const res = await app.request("/api/attachments/att_test00001/presign-upload/complete", {
@@ -947,6 +1502,57 @@ describe("REST API server", () => {
       expect(res.status).toBe(413);
       expect(mockDbDelete).toHaveBeenCalledWith("att_test00001");
       expect(mockDbMarkReady).not.toHaveBeenCalled();
+    });
+
+    it("finalizes a pending presigned upload with a presigned link", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+      const res = await app.request("/api/attachments/att_test00001/presign-upload/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ link_type: "presigned" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.link).toContain("sig=new");
+      expect(mockGeneratePresignedLink).toHaveBeenCalledTimes(1);
+    });
+
+    it("uses stored size and content type when S3 head omits them during finalize", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+      mockS3Head.mockImplementation(async () => ({}));
+
+      const res = await app.request("/api/attachments/att_test00001/presign-upload/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ link_type: "presigned" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.size).toBe(mockAttachment.size);
+      expect(mockDbMarkReady).toHaveBeenCalledWith({
+        id: "att_test00001",
+        size: mockAttachment.size,
+        contentType: mockAttachment.contentType,
+        link: expect.stringContaining("sig=new"),
+        expiresAt: expect.any(Number),
+      });
+    });
+
+    it("returns 500 when presigned finalize fails", async () => {
+      mockDbFindById.mockImplementation(() => ({ ...mockAttachment, status: "pending" }));
+      mockS3Head.mockImplementation(async () => {
+        throw new Error("head failed");
+      });
+
+      const res = await app.request("/api/attachments/att_test00001/presign-upload/complete", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain("head failed");
     });
   });
 
@@ -1003,6 +1609,58 @@ describe("REST API server", () => {
   // --- GET /a/:token ---
 
   describe("GET /a/:token — public share page", () => {
+    it("renders friendly pages for expired and revoked share links", async () => {
+      mockDbFindShareLinkByToken.mockImplementationOnce(() => ({
+        ...mockShareLink,
+        expiresAt: Date.now() - 1000,
+      }));
+      const expired = await app.request("/a/share_expired");
+      expect(expired.status).toBe(410);
+      expect(await expired.text()).toContain("has expired");
+
+      mockDbFindShareLinkByToken.mockImplementationOnce(() => ({
+        ...mockShareLink,
+        revokedAt: Date.now(),
+      }));
+      const revoked = await app.request("/a/share_revoked");
+      expect(revoked.status).toBe(410);
+      expect(await revoked.text()).toContain("was revoked");
+    });
+
+    it("renders password-required and generic unavailable share errors", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        passwordHash: buildPasswordHash("passw0rd"),
+      }));
+      const password = await app.request("/a/share_password/download");
+      expect(password.status).toBe(401);
+      expect(await password.text()).toContain("Enter the correct password");
+
+      mockDbFindById.mockImplementationOnce(() => null);
+      mockDbFindShareLinkByToken.mockImplementation(() => ({ ...mockShareLink }));
+      const missingAttachment = await app.request("/a/share_missing_attachment");
+      expect(missingAttachment.status).toBe(404);
+      expect(await missingAttachment.text()).toContain("Attachment unavailable");
+    });
+
+    it("renders the password-required public error page when retry metadata is unavailable", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        passwordHash: buildPasswordHash("passw0rd"),
+      }));
+      mockDbFindById.mockImplementation(() => null);
+      const form = new FormData();
+      form.append("password", "wrong");
+
+      const res = await app.request("/a/share_password/download", {
+        method: "POST",
+        body: form,
+      });
+
+      expect(res.status).toBe(401);
+      expect(await res.text()).toContain("Password required");
+    });
+
     it("renders a password prompt without consuming password-protected links", async () => {
       mockDbFindShareLinkByToken.mockImplementation(() => ({
         ...mockShareLink,
@@ -1064,6 +1722,39 @@ describe("REST API server", () => {
       expect(res.status).toBe(401);
       expect(mockDbConsumeShareLink).not.toHaveBeenCalled();
       expect(mockOpenAttachmentStream).not.toHaveBeenCalled();
+    });
+
+    it("expires stale password failure windows and uses trusted proxy addresses when configured", async () => {
+      process.env.ATTACHMENTS_TRUST_PROXY = "1";
+      const originalNow = Date.now;
+      let now = 1_700_000_000_000;
+      Date.now = () => now;
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        passwordHash: buildPasswordHash("passw0rd"),
+      }));
+
+      try {
+        const form = new FormData();
+        form.append("password", "wrong");
+        const failed = await app.request("/a/share_window/download", {
+          method: "POST",
+          headers: { "cf-connecting-ip": "203.0.113.44" },
+          body: form,
+        });
+        expect(failed.status).toBe(401);
+
+        now += 10 * 60 * 1000 + 1;
+        const retry = await app.request("/a/share_window/download", {
+          method: "POST",
+          headers: { "cf-connecting-ip": "203.0.113.44" },
+          body: form,
+        });
+        expect(retry.status).toBe(401);
+      } finally {
+        Date.now = originalNow;
+        delete process.env.ATTACHMENTS_TRUST_PROXY;
+      }
     });
 
     it("temporarily rate-limits repeated wrong public download passwords", async () => {
@@ -1134,6 +1825,234 @@ describe("REST API server", () => {
       expect(mockOpenAttachmentStream).toHaveBeenCalledTimes(1);
     });
 
+    it("returns a friendly error if a limited link is consumed by another request first", async () => {
+      mockDbConsumeShareLink.mockImplementationOnce(() => false);
+
+      const res = await app.request("/a/share_testtoken/download", {
+        headers: { "x-attachments-download": "1" },
+      });
+
+      expect(res.status).toBe(410);
+      expect(await res.text()).toContain("already been used");
+      expect(mockOpenAttachmentStream).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns 500 when public download streaming fails", async () => {
+      mockOpenAttachmentStream.mockImplementation(async () => {
+        throw new Error("public stream failed");
+      });
+
+      const res = await app.request("/a/share_testtoken/download", {
+        headers: { "x-attachments-download": "1" },
+      });
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain("public stream failed");
+    });
+
+    it("handles email-gated pages, grants, and failed grants", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        requireEmail: true,
+      }));
+
+      const page = await app.request("/a/share_email");
+      expect(page.status).toBe(200);
+      expect(await page.text()).toContain("Email me an access link");
+
+      mockDbFindAccessGrantByToken.mockImplementationOnce(() => null);
+      const invalidGrantPage = await app.request("/a/share_email?grant=bad");
+      expect(invalidGrantPage.status).toBe(200);
+      expect(await invalidGrantPage.text()).toContain("Email me an access link");
+
+      const noGrantDownload = await app.request("/a/share_email/download");
+      expect(noGrantDownload.status).toBe(303);
+      expect(noGrantDownload.headers.get("location")).toBe("/a/share_email");
+
+      mockDbFindAccessGrantByToken.mockImplementationOnce(() => null);
+      const badGrantDownload = await app.request("/a/share_email/download?grant=bad");
+      expect(badGrantDownload.status).toBe(401);
+      expect(await badGrantDownload.text()).toContain("This attachment link has expired");
+    });
+
+    it("serves email-gated downloads with a valid grant token", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        requireEmail: true,
+      }));
+
+      const res = await app.request("/a/share_email/download?grant=grant_testtoken", {
+        headers: { "x-attachments-download": "1" },
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockOpenAttachmentStream).toHaveBeenCalledTimes(1);
+    });
+
+    it("handles email access requests without a configured sender", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        requireEmail: true,
+      }));
+      const form = new FormData();
+      form.append("email", "user@example.test");
+
+      const res = await app.request("/a/share_email/request-access", {
+        method: "POST",
+        body: form,
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.text()).toContain("Email access unavailable");
+      expect(mockEmailSend).not.toHaveBeenCalled();
+    });
+
+    it("treats malformed email access request bodies as empty email submissions", async () => {
+      mockResolveEmailSender.mockImplementation(() => ({ send: mockEmailSend }));
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        requireEmail: true,
+      }));
+
+      const res = await app.request("/a/share_email/request-access", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=broken" },
+        body: "not a valid multipart body",
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("A valid email address is required");
+    });
+
+    it("emails a grant link for valid email access requests", async () => {
+      mockResolveEmailSender.mockImplementation(() => ({ send: mockEmailSend }));
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        requireEmail: true,
+      }));
+      const form = new FormData();
+      form.append("email", "User@Example.Test");
+
+      const res = await app.request("/a/share_email/request-access", {
+        method: "POST",
+        body: form,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("Check your inbox");
+      expect(mockDbCreateAccessGrant).toHaveBeenCalledTimes(1);
+      expect(mockEmailSend).toHaveBeenCalledTimes(1);
+    });
+
+    it("rerenders the email form when an email gate validation error is recoverable", async () => {
+      mockResolveEmailSender.mockImplementation(() => ({ send: mockEmailSend }));
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        requireEmail: true,
+      }));
+      const form = new FormData();
+      form.append("email", "not-an-email");
+
+      const res = await app.request("/a/share_email/request-access", {
+        method: "POST",
+        body: form,
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("A valid email address is required");
+    });
+
+    it("renders the share error page when email gate recovery cannot resolve the link", async () => {
+      mockResolveEmailSender.mockImplementation(() => ({ send: mockEmailSend }));
+      mockDbFindShareLinkByToken.mockImplementation(() => null);
+      const form = new FormData();
+      form.append("email", "user@example.test");
+
+      const res = await app.request("/a/share_missing/request-access", {
+        method: "POST",
+        body: form,
+      });
+
+      expect(res.status).toBe(404);
+      expect(await res.text()).toContain("Attachment unavailable");
+    });
+
+    it("returns JSON for unexpected email sender failures", async () => {
+      mockResolveEmailSender.mockImplementation(() => ({ send: mockEmailSend }));
+      mockEmailSend.mockImplementation(async () => {
+        throw new Error("email failed");
+      });
+      mockDbFindShareLinkByToken.mockImplementation(() => ({
+        ...mockShareLink,
+        requireEmail: true,
+      }));
+      const form = new FormData();
+      form.append("email", "user@example.test");
+
+      const res = await app.request("/a/share_email/request-access", {
+        method: "POST",
+        body: form,
+      });
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain("email failed");
+    });
+
+    it("returns JSON when share page resolution throws an unexpected error", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => {
+        throw new Error("db failed");
+      });
+
+      const res = await app.request("/a/share_error");
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain("db failed");
+    });
+
+    it("returns JSON when public download resolution throws an unexpected error", async () => {
+      mockDbFindShareLinkByToken.mockImplementation(() => {
+        throw new Error("db failed");
+      });
+
+      const res = await app.request("/a/share_error/download");
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain("db failed");
+    });
+
+    it("returns JSON when POST download consumption throws an unexpected error", async () => {
+      mockDbFindShareLinkByToken
+        .mockImplementationOnce(() => ({ ...mockShareLink }))
+        .mockImplementation(() => {
+        throw new Error("db failed in consume");
+      });
+
+      const res = await app.request("/a/share_error/download", {
+        method: "POST",
+        body: new FormData(),
+      });
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain("db failed in consume");
+    });
+
+    it("supports HEAD checks for share pages and downloads", async () => {
+      const page = await app.request("/a/share_testtoken", { method: "HEAD" });
+      expect(page.status).toBe(200);
+
+      const download = await app.request("/a/share_testtoken/download", { method: "HEAD" });
+      expect(download.status).toBe(200);
+
+      mockDbFindShareLinkByToken.mockImplementationOnce(() => null);
+      const missing = await app.request("/a/share_missing", { method: "HEAD" });
+      expect(missing.status).toBe(404);
+    });
+
     it("renders a friendly page for exhausted attachment links", async () => {
       mockDbFindShareLinkByToken.mockImplementation(() => ({
         ...mockShareLink,
@@ -1168,6 +2087,29 @@ describe("REST API server", () => {
       mockDbFindById.mockImplementation(() => null);
       const res = await app.request("/d/att_missing");
       expect(res.status).toBe(404);
+    });
+
+    it("returns 410 for expired legacy links", async () => {
+      mockDbFindById.mockImplementation(() => ({
+        ...mockAttachment,
+        expiresAt: Date.now() - 1000,
+      }));
+
+      const res = await app.request("/d/att_expired");
+
+      expect(res.status).toBe(410);
+      const body = await res.json();
+      expect(body.error).toContain("expired");
+    });
+
+    it("redirects legacy links that now have share-link records", async () => {
+      mockDbFindShareLinksByAttachmentId.mockImplementationOnce(() => [{ ...mockShareLink }]);
+
+      const res = await app.request("/d/att_test00001");
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe(mockAttachment.link);
+      expect(mockOpenAttachmentStream).not.toHaveBeenCalled();
     });
 
     it("streams server-link attachments without generating S3 URLs", async () => {
@@ -1217,6 +2159,20 @@ describe("REST API — startServer", () => {
       // If require fails (ESM), use the already-imported createApp
       // In Bun, Bun.serve is available so the Bun branch runs
       // We just verify the function exists and is callable
+    } finally {
+      (Bun as unknown as { serve: typeof Bun.serve }).serve = originalServe;
+    }
+  });
+
+  it("uses the Node fallback when Bun.serve is not available", async () => {
+    const originalServe = Bun.serve;
+    (Bun as unknown as { serve?: typeof Bun.serve }).serve = undefined;
+
+    try {
+      const { startServer } = require("./server");
+      startServer(9998, "127.0.0.1");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mockNodeServe).toHaveBeenCalledTimes(1);
     } finally {
       (Bun as unknown as { serve: typeof Bun.serve }).serve = originalServe;
     }

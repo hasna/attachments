@@ -101,8 +101,7 @@ export async function checkS3Connection(): Promise<CheckResult> {
   }
 }
 
-export function checkDatabase(): CheckResult {
-  const dbPath = join(homedir(), ".hasna", "attachments", "db.sqlite");
+export function checkDatabase(dbPath = join(homedir(), ".hasna", "attachments", "db.sqlite")): CheckResult {
   if (!existsSync(dbPath)) {
     return {
       label: "Database",
@@ -202,6 +201,17 @@ export function checkVersion(version: string): CheckResult {
   };
 }
 
+export function resolvePackageVersion(
+  requireFn: (id: string) => { version?: string } = require,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  try {
+    return requireFn("../../../package.json").version ?? "unknown";
+  } catch {
+    return env.npm_package_version ?? "unknown";
+  }
+}
+
 export async function checkIntegration(name: string, urlEnvVar: string, defaultUrl: string): Promise<CheckResult> {
   const url = process.env[urlEnvVar] ?? defaultUrl;
   const isSet = !!process.env[urlEnvVar];
@@ -210,14 +220,10 @@ export async function checkIntegration(name: string, urlEnvVar: string, defaultU
     const timer = setTimeout(() => controller.abort(), 3000);
     const res = await fetch(`${url}/api/health`, { signal: controller.signal });
     clearTimeout(timer);
-    if (res.ok) {
-      return { label: `${name} integration (${urlEnvVar})`, status: "ok", message: `${url} — reachable` };
-    }
+    if (res.ok) return { label: `${name} integration (${urlEnvVar})`, status: "ok", message: `${url} — reachable` };
     return { label: `${name} integration (${urlEnvVar})`, status: "warn", message: `${url} returned ${res.status}` };
   } catch {
-    if (!isSet) {
-      return { label: `${name} integration (${urlEnvVar})`, status: "warn", message: `not configured (set ${urlEnvVar} to enable)` };
-    }
+    if (!isSet) return { label: `${name} integration (${urlEnvVar})`, status: "warn", message: `not configured (set ${urlEnvVar} to enable)` };
     return { label: `${name} integration (${urlEnvVar})`, status: "fail", message: `${url} — unreachable` };
   }
 }
@@ -244,14 +250,7 @@ export function formatResults(results: CheckResult[]): string {
 // ---------------------------------------------------------------------------
 
 export function registerDoctor(program: Command): void {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const pkgVersion: string = (() => {
-    try {
-      return (require("../../../package.json") as { version: string }).version;
-    } catch {
-      return process.env.npm_package_version ?? "unknown";
-    }
-  })();
+  const pkgVersion = resolvePackageVersion();
 
   program
     .command("doctor")

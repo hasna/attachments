@@ -3,20 +3,23 @@ import { existsSync } from "fs";
 import { getConfig, CONFIG_PATH } from "../../core/config";
 import { AttachmentsDB } from "../../core/db";
 
+export function resolveWhoamiPackageVersion(
+  requireFn: (id: string) => { version?: string } = require,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  try {
+    return requireFn("../../../package.json").version ?? env.npm_package_version ?? "unknown";
+  } catch {
+    return env.npm_package_version ?? "unknown";
+  }
+}
+
 export function registerWhoami(program: Command): void {
   program
     .command("whoami")
     .description("Show setup summary and environment status")
     .action(() => {
-      // Version — read from package.json relative to the module, fallback to env var
-      let version = "unknown";
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const pkg = require("../../../package.json");
-        version = pkg.version ?? process.env.npm_package_version ?? "unknown";
-      } catch {
-        version = process.env.npm_package_version ?? "unknown";
-      }
+      const version = resolveWhoamiPackageVersion();
 
       const lines: string[] = [];
       lines.push(`@hasna/attachments v${version}`);

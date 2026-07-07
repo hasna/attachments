@@ -1222,10 +1222,9 @@ function readStorageSyncOptions(args: Record<string, unknown>): { tables?: strin
 // Server bootstrap
 // ---------------------------------------------------------------------------
 
-function getMcpVersion(): string {
+export function getMcpVersion(loadPackage: () => { version?: string } = () => require("../../package.json") as { version?: string }): string {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return (require("../../package.json") as { version: string }).version;
+    return loadPackage().version ?? process.env.npm_package_version ?? "1.0.0";
   } catch {
     return process.env.npm_package_version ?? "1.0.0";
   }
@@ -1413,12 +1412,12 @@ export function buildServer(): Server {
 /** @deprecated Use buildServer() */
 export const createServer = buildServer;
 
-function hasFlag(...flags: string[]): boolean {
-  return process.argv.some((arg) => flags.includes(arg));
+export function hasFlag(argv: string[], ...flags: string[]): boolean {
+  return argv.some((arg) => flags.includes(arg));
 }
 
-function printHelp(): void {
-  process.stdout.write(
+export function printHelp(write: (chunk: string) => unknown = (chunk) => process.stdout.write(chunk)): void {
+  write(
     `Usage: attachments-mcp [options]
 
 Attachments MCP server (stdio transport by default)
@@ -1432,33 +1431,51 @@ Options:
   );
 }
 
-async function main(): Promise<void> {
-  if (hasFlag("--help", "-h")) {
-    printHelp();
+export type McpMainDeps = {
+  argv?: string[];
+  writeStdout?: (chunk: string) => unknown;
+  isStdio?: () => boolean;
+  buildServer?: typeof buildServer;
+  createStdioTransport?: () => StdioServerTransport;
+  startHttpServer?: typeof startMcpHttpServer;
+  resolveHttpPort?: typeof resolveMcpHttpPort;
+  onSignal?: typeof process.on;
+  exit?: typeof process.exit;
+  version?: () => string;
+};
+
+export async function main(deps: McpMainDeps = {}): Promise<void> {
+  const argv = deps.argv ?? process.argv;
+  const writeStdout = deps.writeStdout ?? ((chunk: string) => process.stdout.write(chunk));
+  if (hasFlag(argv, "--help", "-h")) {
+    printHelp(writeStdout);
     return;
   }
 
-  if (hasFlag("--version", "-V")) {
-    process.stdout.write(`${getMcpVersion()}\n`);
+  if (hasFlag(argv, "--version", "-V")) {
+    writeStdout(`${(deps.version ?? getMcpVersion)()}\n`);
     return;
   }
 
-  if (isStdioMode()) {
-    const server = buildServer();
-    const transport = new StdioServerTransport();
+  const build = deps.buildServer ?? buildServer;
+  if ((deps.isStdio ?? isStdioMode)()) {
+    const server = build();
+    const transport = deps.createStdioTransport ? deps.createStdioTransport() : new StdioServerTransport();
     await server.connect(transport);
     return;
   }
 
   // Default: shared Streamable HTTP server (one process per MCP, many agents).
-  const handle = await startMcpHttpServer(buildServer, {
-    port: resolveMcpHttpPort(),
+  const handle = await (deps.startHttpServer ?? startMcpHttpServer)(build, {
+    port: (deps.resolveHttpPort ?? resolveMcpHttpPort)(),
   });
-  process.on("SIGINT", () => {
-    void handle.close().finally(() => process.exit(0));
+  const onSignal = deps.onSignal ?? process.on.bind(process);
+  const exit = deps.exit ?? process.exit;
+  onSignal("SIGINT", () => {
+    void handle.close().finally(() => exit(0));
   });
-  process.on("SIGTERM", () => {
-    void handle.close().finally(() => process.exit(0));
+  onSignal("SIGTERM", () => {
+    void handle.close().finally(() => exit(0));
   });
 }
 
@@ -1466,9 +1483,17 @@ async function main(): Promise<void> {
 // Entry point
 // ---------------------------------------------------------------------------
 
-if (import.meta.main) {
-  main().catch((error) => {
-    console.error("MCP server error:", error);
-    process.exit(1);
-  });
+export function handleMainError(error: unknown): void {
+  console.error("MCP server error:", error);
+  process.exit(1);
 }
+
+export function runMainIfEntry(
+  isEntry = import.meta.main,
+  mainFn: () => Promise<void> = main,
+  errorHandler: (error: unknown) => void = handleMainError,
+): void {
+  if (isEntry) void mainFn().catch(errorHandler);
+}
+
+runMainIfEntry();

@@ -71,6 +71,26 @@ describe("buildDeploymentPlan", () => {
     expect(plan.routing.missing).toContain("deployment.routing.attachmentsOrigin");
     expect(plan.cloudflare.worker_environment.ATTACHMENTS_ORIGIN).toBe("<attachments-origin>");
   });
+
+  it("falls back when no hostname can be inferred", () => {
+    const plan = buildDeploymentPlan(baseConfig({
+      server: {
+        port: 3459,
+        host: "localhost",
+        baseUrl: "not a url",
+        publicPath: "/a",
+      },
+      domains: [],
+      deployment: {
+        provider: "cloudflare",
+        managedBy: "external",
+      },
+    }));
+
+    expect(plan.routing.attachment_route_pattern).toBe("/a/*");
+    expect(plan.routing.fallback_route_pattern).toBe("*");
+    expect(plan.routing.missing).toContain("deployment.publicHostname");
+  });
 });
 
 describe("classifyAttachmentRouteProbe", () => {
@@ -94,5 +114,30 @@ describe("classifyAttachmentRouteProbe", () => {
 
     expect(result.ok).toBe(true);
     expect(result.service).toBe("attachments");
+  });
+
+  it("accepts JSON attachment errors as a successful route hit", () => {
+    const result = classifyAttachmentRouteProbe({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Attachment not found" }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.service).toBe("attachments");
+  });
+
+  it("classifies malformed or unknown responses as unknown", () => {
+    expect(classifyAttachmentRouteProbe({
+      status: 502,
+      contentType: "application/json",
+      body: "{not-json",
+    })).toMatchObject({ ok: false, service: "unknown" });
+
+    expect(classifyAttachmentRouteProbe({
+      status: 200,
+      contentType: "text/plain",
+      body: "hello",
+    })).toMatchObject({ ok: false, service: "unknown" });
   });
 });

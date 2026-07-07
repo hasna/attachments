@@ -68,7 +68,7 @@ afterAll(() => {
 });
 
 // Import after mocks
-const { presignUploadCommand, presignCompleteCommand } = await import("./presign");
+const { presignUploadCommand, presignCompleteCommand, registerPresign } = await import("./presign");
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -103,6 +103,19 @@ function captureOutput() {
 }
 
 // ─── tests ───────────────────────────────────────────────────────────────────
+
+describe("registerPresign", () => {
+  it("registers both presign commands", () => {
+    const { Command } = require("commander") as typeof import("commander");
+    const program = new Command();
+    registerPresign(program);
+
+    expect(program.commands.map((cmd) => cmd.name()).sort()).toEqual([
+      "presign-complete",
+      "presign-upload",
+    ]);
+  });
+});
 
 describe("presign-upload command", () => {
   beforeEach(() => {
@@ -204,6 +217,24 @@ describe("presign-upload command", () => {
         program.parseAsync(["presign-upload", "file.txt", "--expiry", "invalid"], { from: "user" })
       ).rejects.toThrow("process.exit called");
       expect(capture.err.join("")).toContain("Invalid expiry format");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("exits when presigned upload expiry is never", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildPresignCmd();
+      await expect(
+        program.parseAsync(["presign-upload", "file.txt", "--expiry", "never"], { from: "user" })
+      ).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("cannot be never");
     } finally {
       capture.restore();
       exitSpy.mockRestore();
@@ -320,5 +351,103 @@ describe("presign-upload command", () => {
       capture.restore();
       exitSpy.mockRestore();
     }
+  });
+
+  it("validates presign-complete options before finalizing", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildPresignCmd();
+      await expect(program.parseAsync(["presign-complete", "att_pending", "--format", "xml"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--format");
+
+      capture.err.length = 0;
+      await expect(program.parseAsync(["presign-complete", "att_pending", "--link-type", "cdn"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--link-type");
+
+      capture.err.length = 0;
+      await expect(program.parseAsync(["presign-complete", "att_pending", "--max-downloads", "0"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("--max-downloads");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("exits when pending upload is missing or already complete", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildPresignCmd();
+      mockDbFindById.mockImplementationOnce(() => null);
+      await expect(program.parseAsync(["presign-complete", "att_missing"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("Pending attachment not found");
+
+      capture.err.length = 0;
+      mockDbFindById.mockImplementationOnce(() => ({
+        id: "att_done",
+        filename: "done.pdf",
+        s3Key: "attachments/done.pdf",
+        bucket: "test-bucket",
+        size: 100,
+        contentType: "application/pdf",
+        link: "https://example.com",
+        tag: null,
+        expiresAt: null,
+        createdAt: Date.now(),
+        storageBackend: "s3",
+        status: "ready",
+      }));
+      await expect(program.parseAsync(["presign-complete", "att_done"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("already complete");
+    } finally {
+      capture.restore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("validates presign-complete expiry and outputs JSON", async () => {
+    const pending = {
+      id: "att_pending_json",
+      filename: "report.pdf",
+      s3Key: "attachments/2026-06-19/att_pending/report.pdf",
+      bucket: "test-bucket",
+      size: 0,
+      contentType: "application/pdf",
+      link: null,
+      tag: null,
+      expiresAt: Date.now() + 3600000,
+      createdAt: Date.now(),
+      storageBackend: "s3",
+      status: "pending",
+    };
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    const capture = captureOutput();
+
+    try {
+      const program = buildPresignCmd();
+      mockDbFindById.mockImplementationOnce(() => pending);
+      await expect(program.parseAsync(["presign-complete", "att_pending_json", "--expiry", "bad"], { from: "user" })).rejects.toThrow("process.exit called");
+      expect(capture.err.join("")).toContain("Invalid expiry format");
+    } finally {
+      exitSpy.mockRestore();
+    }
+
+    capture.out.length = 0;
+    capture.err.length = 0;
+    mockDbFindById.mockImplementationOnce(() => pending);
+    const program = buildPresignCmd();
+    await program.parseAsync(["presign-complete", "att_pending_json", "--format", "json"], { from: "user" });
+    const parsed = JSON.parse(capture.out.join(""));
+    expect(parsed).toMatchObject({ id: "att_pending_json", filename: "report.pdf", size: 4096 });
+    capture.restore();
   });
 });
