@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { AttachmentsDB, type Attachment } from "../../core/db";
 import { listCloudAttachments } from "../../core/api-client";
 import { getConfig, isCloudClientMode } from "../../core/config";
+import { resolveAttachmentsV1 } from "../../core/cloud-v1";
 import { formatBytes, formatExpiry } from "../utils";
 
 function compactLine(att: Attachment): string {
@@ -66,7 +67,10 @@ export function listCommand(): Command {
 
       let db: AttachmentsDB | null = null;
       try {
-        const attachments = isCloudClientMode(getConfig())
+        const v1 = resolveAttachmentsV1();
+        const attachments = v1.transport === "cloud-http"
+          ? await v1.store.list({ limit, includeExpired, tag })
+          : isCloudClientMode(getConfig())
           ? await listCloudAttachments({ limit, includeExpired, tag })
           : (() => {
               db = new AttachmentsDB();

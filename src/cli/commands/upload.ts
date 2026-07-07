@@ -3,6 +3,7 @@ import { execSync } from "child_process";
 import { uploadFile, uploadFromUrl, uploadStreamAttachment } from "../../core/upload";
 import { getConfig, isCloudClientMode, validateStorageConfig } from "../../core/config";
 import { uploadFileToCloudApi, uploadStreamToCloudApi, uploadUrlToCloudApi } from "../../core/api-client";
+import { resolveAttachmentsV1 } from "../../core/cloud-v1";
 import { resolveInternalBaseUrl } from "../../core/internal-link";
 import { isValidEmail } from "../../core/security";
 import { formatBytes, formatExpiry, exitError } from "../utils";
@@ -56,7 +57,11 @@ export function registerUpload(program: Command): void {
       if (options.clientMode && options.clientMode !== "local" && options.clientMode !== "cloud") {
         exitError("--client-mode must be local or cloud");
       }
-      const cloudMode = options.clientMode ? options.clientMode === "cloud" : isCloudClientMode(config);
+      // Self-hosted /v1 cloud takes precedence when configured (and not forced local).
+      const v1 = options.clientMode === "local" ? { transport: "local" as const, store: null } : resolveAttachmentsV1();
+      const cloudMode = v1.transport === "cloud-http"
+        ? true
+        : options.clientMode ? options.clientMode === "cloud" : isCloudClientMode(config);
       if (!cloudMode) {
         try {
           validateStorageConfig(config);
@@ -81,6 +86,16 @@ export function registerUpload(program: Command): void {
       if (options.internal && cloudMode) {
         exitError("--internal requires local client mode. Use --client-mode local or set client.mode to local.");
       }
+      if (v1.transport === "cloud-http" && options.encrypt) {
+        exitError("--encrypt is not supported in self_hosted (/v1) mode. Use --client-mode local to encrypt at rest.");
+      }
+      const v1UploadOptions = {
+        expiry: options.expiry,
+        tag: options.tag,
+        password: options.password,
+        maxDownloads,
+        linkType: options.linkType,
+      };
       const internalBaseUrl = options.internal ? (await resolveInternalBaseUrl(config)).baseUrl : undefined;
 
       // Helper to upload a single file/url/stdin and output result
@@ -91,7 +106,9 @@ export function registerUpload(program: Command): void {
             exitError("--filename is required when using --stdin");
           }
           const contentType = "application/octet-stream";
-          attachment = cloudMode
+          attachment = v1.transport === "cloud-http"
+            ? await v1.store.uploadStream(process.stdin, options.filename, v1UploadOptions)
+            : cloudMode
             ? await uploadStreamToCloudApi(process.stdin, options.filename, contentType, {
               expiry: options.expiry,
               linkType: options.linkType,
@@ -129,7 +146,11 @@ export function registerUpload(program: Command): void {
             allowedEmails,
             baseUrl: internalBaseUrl,
           };
-          attachment = cloudMode
+          attachment = v1.transport === "cloud-http"
+            ? isUrl
+              ? await v1.store.uploadUrl(file, v1UploadOptions)
+              : await v1.store.uploadFile(file, v1UploadOptions)
+            : cloudMode
             ? isUrl
               ? await uploadUrlToCloudApi(file, uploadOptions)
               : await uploadFileToCloudApi(file, uploadOptions)

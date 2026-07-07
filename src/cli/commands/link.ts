@@ -4,6 +4,7 @@ import { S3Client } from "../../core/s3";
 import { getConfig, getPublicBaseUrl, isCloudClientMode, parseExpiryStrict } from "../../core/config";
 import { generatePresignedLink, generateShareLink, getLinkType } from "../../core/links";
 import { getCloudAttachmentLink, regenerateCloudAttachmentLink } from "../../core/api-client";
+import { resolveAttachmentsV1 } from "../../core/cloud-v1";
 import { formatExpiry } from "../utils";
 
 export function linkCommand(): Command {
@@ -24,19 +25,25 @@ export function linkCommand(): Command {
       }
 
       const config = getConfig();
-      if (isCloudClientMode(config)) {
+      const v1 = resolveAttachmentsV1();
+      if (v1.transport === "cloud-http" || isCloudClientMode(config)) {
         const maxDownloads = options.maxDownloads ? parseInt(options.maxDownloads as string, 10) : undefined;
         if (maxDownloads !== undefined && (!Number.isInteger(maxDownloads) || maxDownloads <= 0)) {
           process.stderr.write("Error: --max-downloads must be a positive integer\n");
           process.exit(1);
         }
-        const result = options.regenerate
-          ? await regenerateCloudAttachmentLink(id, {
-              expiry: options.expiry,
-              password: options.password as string | undefined,
-              maxDownloads,
-              linkType: config.defaults.linkType,
-            })
+        const regenOptions = {
+          expiry: options.expiry,
+          password: options.password as string | undefined,
+          maxDownloads,
+          linkType: config.defaults.linkType,
+        };
+        const result = v1.transport === "cloud-http"
+          ? options.regenerate
+            ? await v1.store.regenerateLink(id, regenOptions)
+            : await v1.store.getLink(id)
+          : options.regenerate
+          ? await regenerateCloudAttachmentLink(id, regenOptions)
           : await getCloudAttachmentLink(id);
 
         if (options.brief) {
