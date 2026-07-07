@@ -100,6 +100,30 @@ describe("AttachmentsDB", () => {
       const found = db.findById(att.id);
       expect(found!.tag).toBeNull();
     });
+
+    it("preserves storage, encryption, status, and download metadata", () => {
+      const att = makeAttachment({
+        storageBackend: "local",
+        status: "pending",
+        encryptionAlgorithm: "aes-256-gcm",
+        encryptionSalt: "salt",
+        encryptionIv: "iv",
+        encryptionTag: "tag",
+        downloads: 3,
+      });
+
+      db.insert(att);
+
+      expect(db.findById(att.id)).toMatchObject({
+        storageBackend: "local",
+        status: "pending",
+        encryptionAlgorithm: "aes-256-gcm",
+        encryptionSalt: "salt",
+        encryptionIv: "iv",
+        encryptionTag: "tag",
+        downloads: 3,
+      });
+    });
   });
 
   describe("findAll", () => {
@@ -215,6 +239,109 @@ describe("AttachmentsDB", () => {
     });
   });
 
+  describe("pending uploads and download counters", () => {
+    it("marks pending attachments ready and keeps existing content type/link when omitted", () => {
+      const att = makeAttachment({
+        status: "pending",
+        size: 0,
+        contentType: "application/octet-stream",
+        link: "old-link",
+      });
+      db.insert(att);
+
+      db.markReady({ id: att.id, size: 42 });
+
+      expect(db.findById(att.id)).toMatchObject({
+        status: "ready",
+        size: 42,
+        contentType: "application/octet-stream",
+        link: "old-link",
+        expiresAt: null,
+      });
+    });
+
+    it("marks pending attachments ready with explicit content type, link, and expiry", () => {
+      const att = makeAttachment({ status: "pending", size: 0 });
+      db.insert(att);
+
+      db.markReady({ id: att.id, size: 99, contentType: "text/csv", link: "new-link", expiresAt: 123 });
+
+      expect(db.findById(att.id)).toMatchObject({
+        status: "ready",
+        size: 99,
+        contentType: "text/csv",
+        link: "new-link",
+        expiresAt: 123,
+      });
+    });
+
+    it("increments download counters", () => {
+      const att = makeAttachment({ downloads: 4 });
+      db.insert(att);
+
+      db.incrementDownloads(att.id);
+
+      expect(db.findById(att.id)!.downloads).toBe(5);
+    });
+  });
+
+  describe("share links and access grants", () => {
+    it("creates, finds, consumes, and releases share links", () => {
+      const att = makeAttachment();
+      db.insert(att);
+
+      const { shareLink, token } = db.createShareLink({
+        attachmentId: att.id,
+        expiresAt: Date.now() + 60_000,
+        password: "pw",
+        maxUses: 2,
+        requireEmail: true,
+        allowedEmails: ["user@example.test"],
+      });
+
+      expect(shareLink.id.startsWith("share_")).toBe(true);
+      expect(shareLink.passwordHash?.startsWith("scrypt$")).toBe(true);
+      expect(db.findShareLinkByToken(token)).toMatchObject({
+        id: shareLink.id,
+        attachmentId: att.id,
+        maxUses: 2,
+        usedCount: 0,
+        requireEmail: true,
+        allowedEmails: ["user@example.test"],
+      });
+      expect(db.findShareLinksByAttachmentId(att.id).map((row) => row.id)).toEqual([shareLink.id]);
+      expect(db.consumeShareLink(shareLink.id)).toBe(true);
+      expect(db.releaseShareLink(shareLink.id)).toBe(true);
+    });
+
+    it("returns false when share links or access grants cannot be consumed", () => {
+      expect(db.consumeShareLink("missing")).toBe(false);
+      expect(db.releaseShareLink("missing")).toBe(false);
+      expect(db.consumeAccessGrant("missing")).toBe(false);
+    });
+
+    it("creates and consumes email access grants", () => {
+      const att = makeAttachment({ id: "att_1" });
+      db.insert(att);
+      const { shareLink } = db.createShareLink({ attachmentId: att.id, expiresAt: null });
+      const { grant, token } = db.createAccessGrant({
+        shareLinkId: shareLink.id,
+        email: "user@example.test",
+        ttlMs: 60_000,
+      });
+
+      expect(db.findAccessGrantByToken(token)).toMatchObject({
+        id: grant.id,
+        shareLinkId: shareLink.id,
+        email: "user@example.test",
+        consumedAt: null,
+      });
+      expect(db.consumeAccessGrant(grant.id)).toBe(true);
+      expect(db.consumeAccessGrant(grant.id)).toBe(false);
+      expect(db.findAccessGrantByToken("missing")).toBeNull();
+    });
+  });
+
   describe("delete", () => {
     it("removes the attachment from the database", () => {
       const att = makeAttachment();
@@ -248,6 +375,15 @@ describe("AttachmentsDB", () => {
     it("returns 0 when nothing is expired", () => {
       db.insert(makeAttachment({ id: "att_future", expiresAt: Date.now() + 99999999 }));
       expect(db.deleteExpired()).toBe(0);
+    });
+  });
+
+  describe("raw SQL helpers", () => {
+    it("runs SQL with and without params and exposes the raw database", () => {
+      db.run("CREATE TABLE custom_table (id TEXT PRIMARY KEY, value TEXT)");
+      db.run("INSERT INTO custom_table (id, value) VALUES (?, ?)", ["one", "value"]);
+
+      expect(db.raw.prepare("SELECT value FROM custom_table WHERE id = ?").get("one")).toEqual({ value: "value" });
     });
   });
 });

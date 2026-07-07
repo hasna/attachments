@@ -9,11 +9,11 @@ const ENV_NAMES = [
   "HOME",
   "HASNA_ATTACHMENTS_DATABASE_URL",
   "ATTACHMENTS_DATABASE_URL",
+  "HASNA_ATTACHMENTS_STORAGE_MODE",
+  "ATTACHMENTS_STORAGE_MODE",
 ] as const;
 
-const ORIGINAL_ENV = new Map<string, string | undefined>(
-  ENV_NAMES.map((name) => [name, process.env[name]]),
-);
+const ORIGINAL_HOME = process.env["HOME"];
 
 let tempHome: string | undefined;
 
@@ -52,9 +52,8 @@ describe("attachments storage command", () => {
 
   afterEach(() => {
     for (const name of ENV_NAMES) {
-      const value = ORIGINAL_ENV.get(name);
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
+      if (name === "HOME" && ORIGINAL_HOME !== undefined) process.env[name] = ORIGINAL_HOME;
+      else delete process.env[name];
     }
     if (tempHome) rmSync(tempHome, { recursive: true, force: true });
     tempHome = undefined;

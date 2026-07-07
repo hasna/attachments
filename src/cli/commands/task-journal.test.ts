@@ -297,6 +297,9 @@ describe("task-journal CLI command", () => {
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = fakeFetch;
+    const exitSpy = spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as never);
 
     // Suppress DB by using an in-memory DB path
     const capture = captureOutput();
@@ -311,6 +314,8 @@ describe("task-journal CLI command", () => {
         // DB open may fail in test env — that's acceptable for smoke test
       }
     } finally {
+      process.exitCode = undefined;
+      exitSpy.mockRestore();
       capture.restore();
       globalThis.fetch = originalFetch;
     }

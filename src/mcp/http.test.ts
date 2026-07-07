@@ -6,6 +6,7 @@ import { buildServer } from "./server.js";
 import {
   DEFAULT_MCP_HTTP_PORT,
   isHttpMode,
+  isStdioMode,
   resolveMcpHttpPort,
   startMcpHttpServer,
 } from "./http.js";
@@ -22,6 +23,12 @@ describe("mcp http transport", () => {
     expect(isHttpMode(["node"], {})).toBe(false);
     expect(isHttpMode(["node", "--http"], {})).toBe(true);
     expect(isHttpMode(["node"], { MCP_HTTP: "1" })).toBe(true);
+  });
+
+  test("isStdioMode detects explicit stdio mode", () => {
+    expect(isStdioMode(["node"], {})).toBe(false);
+    expect(isStdioMode(["node", "--stdio"], {})).toBe(true);
+    expect(isStdioMode(["node"], { MCP_STDIO: "1" })).toBe(true);
   });
 });
 
