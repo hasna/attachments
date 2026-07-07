@@ -27,6 +27,11 @@ import {
   verifyAccessGrant,
 } from "../core/email-gate";
 import { resolveEmailSender } from "../core/email-sender";
+import {
+  FeedbackBodyError,
+  normalizeFeedbackInput,
+  readFeedbackJsonBody,
+} from "../core/feedback";
 
 function maxUploadBytes(): number {
   const config = getConfig();
@@ -187,6 +192,19 @@ function requireApiAuth(c: Context): Response | null {
   const actual = requestApiToken(c);
   if (actual && safeEqual(actual, expected)) return null;
   return c.json({ error: "Unauthorized" }, 401);
+}
+
+async function readFeedbackJson(c: Context): Promise<
+  | { ok: true; body: Awaited<ReturnType<typeof readFeedbackJsonBody>> }
+  | { ok: false; response: Response }
+> {
+  try {
+    return { ok: true, body: await readFeedbackJsonBody(c.req.raw) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = error instanceof FeedbackBodyError ? error.status : 400;
+    return { ok: false, response: c.json({ error: message }, status) };
+  }
 }
 
 function htmlEscape(value: string): string {
@@ -439,6 +457,25 @@ export function createApp(): Hono {
   });
 
   app.get("/api/deployment", (c) => c.json(deploymentPlan()));
+
+  // POST /api/feedback — local-first feedback endpoint for CLI/MCP clients.
+  app.post("/api/feedback", async (c) => {
+    const parsed = await readFeedbackJson(c);
+    if (!parsed.ok) return parsed.response;
+
+    try {
+      const feedback = normalizeFeedbackInput(parsed.body);
+      const db = new AttachmentsDB();
+      try {
+        db.insertFeedback(feedback);
+      } finally {
+        db.close();
+      }
+      return c.json(feedback, 201);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
 
   // POST /api/attachments — multipart file upload
   app.post("/api/attachments", async (c) => {

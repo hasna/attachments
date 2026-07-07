@@ -31,10 +31,12 @@ export const PG_MIGRATIONS: string[] = [
   // Migration 2: feedback table
   `CREATE TABLE IF NOT EXISTS feedback (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    service TEXT NOT NULL DEFAULT 'attachments',
+    version TEXT NOT NULL DEFAULT 'unknown',
     message TEXT NOT NULL,
     email TEXT,
+    timestamp TEXT NOT NULL DEFAULT NOW()::text,
     category TEXT DEFAULT 'general',
-    version TEXT,
     machine_id TEXT,
     created_at TEXT NOT NULL DEFAULT NOW()::text
   )`,
@@ -59,4 +61,17 @@ export const PG_MIGRATIONS: string[] = [
   `ALTER TABLE attachments ADD COLUMN IF NOT EXISTS encryption_salt TEXT`,
   `ALTER TABLE attachments ADD COLUMN IF NOT EXISTS encryption_iv TEXT`,
   `ALTER TABLE attachments ADD COLUMN IF NOT EXISTS downloads BIGINT NOT NULL DEFAULT 0`,
+  `ALTER TABLE feedback ADD COLUMN IF NOT EXISTS service TEXT`,
+  `ALTER TABLE feedback ADD COLUMN IF NOT EXISTS version TEXT`,
+  `ALTER TABLE feedback ADD COLUMN IF NOT EXISTS timestamp TEXT`,
+  `ALTER TABLE feedback ADD COLUMN IF NOT EXISTS email TEXT`,
+  `ALTER TABLE feedback ALTER COLUMN service SET DEFAULT 'attachments'`,
+  `ALTER TABLE feedback ALTER COLUMN version SET DEFAULT 'unknown'`,
+  `ALTER TABLE feedback ALTER COLUMN timestamp SET DEFAULT NOW()::text`,
+  `UPDATE feedback SET service = 'attachments' WHERE service IS NULL OR btrim(service) = ''`,
+  `UPDATE feedback SET version = 'unknown' WHERE version IS NULL OR btrim(version) = ''`,
+  `UPDATE feedback SET timestamp = COALESCE(NULLIF(timestamp, ''), created_at, NOW()::text) WHERE timestamp IS NULL OR btrim(timestamp) = ''`,
+  `ALTER TABLE feedback ALTER COLUMN service SET NOT NULL`,
+  `ALTER TABLE feedback ALTER COLUMN version SET NOT NULL`,
+  `ALTER TABLE feedback ALTER COLUMN timestamp SET NOT NULL`,
 ];

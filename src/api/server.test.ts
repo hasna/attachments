@@ -75,6 +75,7 @@ const mockDbReleaseShareLink = mock((_id: string) => true);
 const mockDbIncrementDownloads = mock((_id: string) => {});
 
 const mockDbInsert = mock((_att: unknown) => {});
+const mockDbInsertFeedback = mock((_feedback: unknown) => {});
 
 mock.module("../core/db", () => ({
   AttachmentsDB: class MockAttachmentsDB {
@@ -84,6 +85,7 @@ mock.module("../core/db", () => ({
     delete = mockDbDelete;
     close = mockDbClose;
     insert = mockDbInsert;
+    insertFeedback = mockDbInsertFeedback;
     createShareLink = mockDbCreateShareLink;
     findShareLinksByAttachmentId = mockDbFindShareLinksByAttachmentId;
     markReady = mockDbMarkReady;
@@ -176,6 +178,17 @@ function testBodyStream(): ReadableStream<Uint8Array> {
     },
   });
 }
+function oversizedFeedbackJsonStream(): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+      controller.enqueue(encoder.encode('{"message":"'));
+      controller.enqueue(encoder.encode("x".repeat(20_000)));
+      controller.enqueue(encoder.encode('"}'));
+      controller.close();
+    },
+  });
+}
 const mockOpenAttachmentStream = mock(async () => ({
   body: testBodyStream(),
   contentLength: 13,
@@ -257,6 +270,7 @@ describe("REST API server", () => {
     mockDbIncrementDownloads.mockReset();
     mockDbDelete.mockReset();
     mockDbClose.mockReset();
+    mockDbInsertFeedback.mockReset();
     mockS3Delete.mockReset();
     mockS3Delete.mockImplementation(async () => {});
     mockS3PresignPut.mockReset();
@@ -288,6 +302,68 @@ describe("REST API server", () => {
       contentType: "text/plain",
       status: 200,
     }));
+  });
+
+  describe("POST /api/feedback", () => {
+    it("stores feedback with canonical fields", async () => {
+      const res = await app.request("/api/feedback", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          service: "attachments",
+          version: "1.2.3",
+          message: "Please add resumable downloads",
+          email: "User@Example.com",
+          timestamp: "2026-07-07T10:11:12.000Z",
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.service).toBe("attachments");
+      expect(body.version).toBe("1.2.3");
+      expect(body.message).toBe("Please add resumable downloads");
+      expect(body.email).toBe("user@example.com");
+      expect(body.timestamp).toBe("2026-07-07T10:11:12.000Z");
+      expect(mockDbInsertFeedback).toHaveBeenCalledTimes(1);
+      const [feedback] = mockDbInsertFeedback.mock.calls[0] as [Record<string, unknown>];
+      expect(feedback.service).toBe("attachments");
+      expect(feedback.version).toBe("1.2.3");
+      expect(feedback.email).toBe("user@example.com");
+    });
+
+    it("rejects empty feedback messages", async () => {
+      const res = await app.request("/api/feedback", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: "   " }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(mockDbInsertFeedback).not.toHaveBeenCalled();
+    });
+
+    it("rejects oversized feedback bodies before insertion", async () => {
+      const res = await app.request("/api/feedback", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: "x".repeat(20_000) }),
+      });
+
+      expect(res.status).toBe(413);
+      expect(mockDbInsertFeedback).not.toHaveBeenCalled();
+    });
+
+    it("rejects oversized streamed feedback bodies while reading", async () => {
+      const res = await app.request("/api/feedback", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: oversizedFeedbackJsonStream(),
+      });
+
+      expect(res.status).toBe(413);
+      expect(mockDbInsertFeedback).not.toHaveBeenCalled();
+    });
   });
 
   // --- GET /api/health ---

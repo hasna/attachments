@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock, spyOn } from "bun:test";
-import { AttachmentsClient } from "./index";
+import { AttachmentsApiClient, AttachmentsClient } from "./index";
+import type { CreateFeedbackRequest, Feedback } from "./index";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -507,5 +508,29 @@ describe("AttachmentsClient", () => {
       expect(result.bucket).toBe("");
       expect(result.contentType).toBe("");
     });
+  });
+});
+
+describe("generated feedback SDK exports", () => {
+  it("exports createFeedback and feedback request/response types from the root entrypoint", () => {
+    const request: CreateFeedbackRequest = {
+      message: "Please add better upload progress",
+      service: "attachments",
+      version: "1.2.3",
+      email: "user@example.com",
+      timestamp: "2026-07-07T10:11:12.000Z",
+    };
+    const feedback: Feedback = {
+      id: "fb_test001",
+      service: "attachments",
+      version: "1.2.3",
+      message: request.message,
+      email: "user@example.com",
+      timestamp: "2026-07-07T10:11:12.000Z",
+    };
+    const client = new AttachmentsApiClient({ baseUrl: "https://attachments.example.com" });
+
+    expect(request.message).toBe(feedback.message);
+    expect(typeof client.createFeedback).toBe("function");
   });
 });

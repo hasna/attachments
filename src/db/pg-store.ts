@@ -11,7 +11,7 @@
  */
 
 import type { TypedQueryClient } from "../generated/storage-kit/query.js";
-import type { Attachment, ShareLink } from "../core/db.js";
+import type { Attachment, Feedback, ShareLink } from "../core/db.js";
 import { buildPasswordHash, generateShareToken, hashShareToken } from "../core/security.js";
 
 type AttachmentRow = {
@@ -207,6 +207,22 @@ export class PgAttachmentsStore {
       [Date.now()],
     );
     return result.rowCount;
+  }
+
+  async insertFeedback(feedback: Feedback): Promise<void> {
+    await this.client.execute(
+      `INSERT INTO feedback
+        (id, service, version, message, email, timestamp, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$6)`,
+      [
+        feedback.id,
+        feedback.service,
+        feedback.version,
+        feedback.message,
+        feedback.email,
+        feedback.timestamp,
+      ],
+    );
   }
 
   async createShareLink(input: {

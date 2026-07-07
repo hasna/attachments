@@ -50,6 +50,15 @@ export interface AccessGrant {
   consumedAt: number | null;
 }
 
+export interface Feedback {
+  id: string;
+  service: string;
+  version: string;
+  message: string;
+  email: string | null;
+  timestamp: string;
+}
+
 interface AttachmentRow {
   id: string;
   filename: string;
@@ -92,6 +101,16 @@ interface AccessGrantRow {
   created_at: number;
   expires_at: number;
   consumed_at: number | null;
+}
+
+interface FeedbackRow {
+  id: string;
+  service?: string | null;
+  version?: string | null;
+  message: string;
+  email: string | null;
+  timestamp?: string | null;
+  created_at?: string | null;
 }
 
 function rowToAttachment(row: AttachmentRow): Attachment {
@@ -154,6 +173,17 @@ function rowToAccessGrant(row: AccessGrantRow): AccessGrant {
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     consumedAt: row.consumed_at,
+  };
+}
+
+function rowToFeedback(row: FeedbackRow): Feedback {
+  return {
+    id: row.id,
+    service: row.service || "attachments",
+    version: row.version || "unknown",
+    message: row.message,
+    email: row.email,
+    timestamp: row.timestamp || row.created_at || new Date(0).toISOString(),
   };
 }
 
@@ -247,13 +277,27 @@ export class AttachmentsDB {
     this.db.run(`
       CREATE TABLE IF NOT EXISTS feedback (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        service TEXT NOT NULL DEFAULT 'attachments',
+        version TEXT NOT NULL DEFAULT 'unknown',
         message TEXT NOT NULL,
         email TEXT,
+        timestamp TEXT NOT NULL DEFAULT (datetime('now')),
         category TEXT DEFAULT 'general',
-        version TEXT,
         machine_id TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
+    `);
+    this.addColumnIfMissing("feedback", "service", "TEXT NOT NULL DEFAULT 'attachments'");
+    this.addColumnIfMissing("feedback", "version", "TEXT NOT NULL DEFAULT 'unknown'");
+    this.addColumnIfMissing("feedback", "timestamp", "TEXT");
+    this.addColumnIfMissing("feedback", "email", "TEXT");
+    this.addColumnIfMissing("feedback", "created_at", "TEXT");
+    this.db.run(`UPDATE feedback SET service = 'attachments' WHERE service IS NULL OR trim(service) = ''`);
+    this.db.run(`UPDATE feedback SET version = 'unknown' WHERE version IS NULL OR trim(version) = ''`);
+    this.db.run(`
+      UPDATE feedback
+      SET timestamp = COALESCE(NULLIF(timestamp, ''), created_at, datetime('now'))
+      WHERE timestamp IS NULL OR trim(timestamp) = ''
     `);
   }
 
@@ -562,6 +606,36 @@ export class AttachmentsDB {
       )
       .run(now);
     return result.changes;
+  }
+
+  insertFeedback(feedback: Feedback): void {
+    this.db
+      .prepare(
+        `INSERT INTO feedback
+          (id, service, version, message, email, timestamp, created_at)
+         VALUES
+          ($id, $service, $version, $message, $email, $timestamp, $timestamp)`
+      )
+      .run({
+        $id: feedback.id,
+        $service: feedback.service,
+        $version: feedback.version,
+        $message: feedback.message,
+        $email: feedback.email,
+        $timestamp: feedback.timestamp,
+      });
+  }
+
+  listFeedback(limit?: number): Feedback[] {
+    const sql =
+      limit !== undefined
+        ? `SELECT id, service, version, message, email, timestamp, created_at FROM feedback ORDER BY timestamp DESC LIMIT ?`
+        : `SELECT id, service, version, message, email, timestamp, created_at FROM feedback ORDER BY timestamp DESC`;
+    const rows =
+      limit !== undefined
+        ? this.db.prepare<FeedbackRow, number>(sql).all(limit)
+        : this.db.prepare<FeedbackRow, []>(sql).all();
+    return rows.map(rowToFeedback);
   }
 
   run(sql: string, params?: unknown[]): void {

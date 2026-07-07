@@ -6,6 +6,8 @@
  * and is also served live at `GET /openapi.json`.
  */
 
+import { FEEDBACK_LIMITS } from "../core/feedback.js";
+
 export function buildOpenApiDocument(version: string): Record<string, unknown> {
   const attachmentSchema = {
     type: "object",
@@ -20,6 +22,18 @@ export function buildOpenApiDocument(version: string): Record<string, unknown> {
       created_at: { type: "integer" },
     },
     required: ["id", "filename", "size", "created_at"],
+  };
+  const feedbackSchema = {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      service: { type: "string", maxLength: FEEDBACK_LIMITS.maxServiceLength },
+      version: { type: "string", maxLength: FEEDBACK_LIMITS.maxVersionLength },
+      message: { type: "string", maxLength: FEEDBACK_LIMITS.maxMessageLength },
+      email: { type: "string", nullable: true, maxLength: FEEDBACK_LIMITS.maxEmailLength },
+      timestamp: { type: "string", format: "date-time" },
+    },
+    required: ["id", "service", "version", "message", "timestamp"],
   };
 
   return {
@@ -77,6 +91,18 @@ export function buildOpenApiDocument(version: string): Record<string, unknown> {
           },
           required: ["filename", "content_base64"],
         },
+        CreateFeedbackRequest: {
+          type: "object",
+          properties: {
+            service: { type: "string", maxLength: FEEDBACK_LIMITS.maxServiceLength },
+            version: { type: "string", maxLength: FEEDBACK_LIMITS.maxVersionLength },
+            message: { type: "string", maxLength: FEEDBACK_LIMITS.maxMessageLength },
+            email: { type: "string", nullable: true, maxLength: FEEDBACK_LIMITS.maxEmailLength },
+            timestamp: { type: "string", format: "date-time" },
+          },
+          required: ["message"],
+        },
+        Feedback: feedbackSchema,
         LinkResponse: {
           type: "object",
           properties: {
@@ -162,6 +188,22 @@ export function buildOpenApiDocument(version: string): Record<string, unknown> {
           },
           responses: {
             "201": { content: { "application/json": { schema: { $ref: "#/components/schemas/Attachment" } } } },
+          },
+        },
+      },
+      "/v1/feedback": {
+        post: {
+          operationId: "createFeedback",
+          summary: "Create a feedback record.",
+          security: [{ apiKey: [] }],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { $ref: "#/components/schemas/CreateFeedbackRequest" } } },
+          },
+          responses: {
+            "201": { content: { "application/json": { schema: { $ref: "#/components/schemas/Feedback" } } } },
+            "400": { content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+            "413": { content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
           },
         },
       },

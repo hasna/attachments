@@ -126,9 +126,30 @@ const mockUploadFromBuffer = mock(async (_buffer: Buffer, filename: string, _opt
   createdAt: 1699000000000,
 }));
 
+const mockSendFeedback = mock(async (_input: unknown, _options: unknown) => ({
+  feedback: {
+    id: "fb_test001",
+    service: "attachments",
+    version: "1.2.3",
+    message: "Great MCP surface",
+    email: "user@example.com",
+    timestamp: "2026-07-07T10:11:12.000Z",
+  },
+  local: { saved: true },
+  cloud: {
+    attempted: true,
+    ok: true,
+    endpoint: "https://attachments.example.com/v1/feedback",
+    status: 201,
+  },
+}));
+
 mock.module("../core/upload.js", () => ({ uploadFile: mockUploadFile, uploadFromUrl: mockUploadFromUrl, uploadFromBuffer: mockUploadFromBuffer }));
 mock.module("../core/download.js", () => ({
   downloadAttachment: mockDownloadAttachment,
+}));
+mock.module("../core/feedback.js", () => ({
+  sendFeedback: mockSendFeedback,
 }));
 mock.module("../core/db.js", () => ({
   AttachmentsDB: class MockAttachmentsDB {
@@ -223,11 +244,11 @@ async function listTools(server: ReturnType<typeof createServer>) {
 // ---------------------------------------------------------------------------
 
 describe("MCP Server — tools/list", () => {
-  it("returns 13 standard tools by default (no ATTACHMENTS_PROFILE set)", async () => {
+  it("returns 14 standard tools by default (no ATTACHMENTS_PROFILE set)", async () => {
     delete process.env.ATTACHMENTS_PROFILE;
     const server = createServer();
     const result = (await listTools(server)) as { tools: Array<{ name: string }> };
-    expect(result.tools).toHaveLength(13);
+    expect(result.tools).toHaveLength(14);
     const names = result.tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("download_attachment");
@@ -238,6 +259,7 @@ describe("MCP Server — tools/list", () => {
     expect(names).toContain("save_session");
     expect(names).toContain("report_stats");
     expect(names).toContain("get_context");
+    expect(names).toContain("send_feedback");
   });
 });
 
@@ -251,9 +273,9 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("get_link");
   });
 
-  it("standard profile returns exactly 13 tools", () => {
+  it("standard profile returns exactly 14 tools", () => {
     const tools = getToolsForProfile("standard");
-    expect(tools).toHaveLength(13);
+    expect(tools).toHaveLength(14);
     const names = tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("download_attachment");
@@ -264,6 +286,7 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("save_session");
     expect(names).toContain("report_stats");
     expect(names).toContain("get_context");
+    expect(names).toContain("send_feedback");
   });
 
   it("full profile returns all 26 tools", () => {
@@ -295,10 +318,10 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).not.toContain(retiredToolName("_sync"));
   });
 
-  it("no argument (reads process.env.ATTACHMENTS_PROFILE) defaults to standard (13 tools)", () => {
+  it("no argument (reads process.env.ATTACHMENTS_PROFILE) defaults to standard (14 tools)", () => {
     delete process.env.ATTACHMENTS_PROFILE;
     const tools = getToolsForProfile();
-    expect(tools).toHaveLength(13);
+    expect(tools).toHaveLength(14);
   });
 
   it("ATTACHMENTS_PROFILE=minimal env var returns 3 tools", () => {
@@ -313,6 +336,35 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     const tools = getToolsForProfile();
     expect(tools).toHaveLength(26);
     delete process.env.ATTACHMENTS_PROFILE;
+  });
+});
+
+describe("MCP Server — send_feedback", () => {
+  beforeEach(() => mockSendFeedback.mockClear());
+
+  it("sends feedback through the shared delivery path", async () => {
+    const server = createServer();
+    const result = (await callTool(server, "send_feedback", {
+      message: "Great MCP surface",
+      service: "attachments",
+      version: "1.2.3",
+      email: "user@example.com",
+      timestamp: "2026-07-07T10:11:12.000Z",
+      endpoint: "https://attachments.example.com/v1/feedback",
+    })) as { content: Array<{ text: string }> };
+
+    expect(mockSendFeedback).toHaveBeenCalledWith({
+      message: "Great MCP surface",
+      service: "attachments",
+      version: "1.2.3",
+      email: "user@example.com",
+      timestamp: "2026-07-07T10:11:12.000Z",
+    }, {
+      endpoint: "https://attachments.example.com/v1/feedback",
+      skipCloud: undefined,
+    });
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed.cloud.endpoint).toBe("https://attachments.example.com/v1/feedback");
   });
 });
 
@@ -743,7 +795,7 @@ describe("MCP Server — describe_tools", () => {
     };
 
     const parsed = JSON.parse(result.content[0]!.text);
-    expect(Object.keys(parsed)).toHaveLength(17);
+    expect(Object.keys(parsed)).toHaveLength(18);
     expect(parsed.upload_attachment).toBeDefined();
     expect(parsed.upload_attachments).toBeDefined();
     expect(parsed.presign_upload).toBeDefined();
@@ -752,6 +804,7 @@ describe("MCP Server — describe_tools", () => {
     expect(parsed.complete_task_with_files).toBeDefined();
     expect(parsed.save_session).toBeDefined();
     expect(parsed.report_stats).toBeDefined();
+    expect(parsed.send_feedback).toBeDefined();
   });
 
   it("returns error for unknown tool_name", async () => {

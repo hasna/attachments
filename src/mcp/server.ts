@@ -19,6 +19,7 @@ import { getConfig, getPublicBaseUrl, parseExpiryStrict, setConfig, validateS3Co
 import { generatePresignedLink, generateShareLink, getLinkType } from "../core/links.js";
 import { S3Client } from "../core/s3.js";
 import { createObjectKey, sanitizeFilename } from "../core/security.js";
+import { sendFeedback } from "../core/feedback.js";
 
 // ---------------------------------------------------------------------------
 // In-memory agent registry (attribution for uploads)
@@ -261,6 +262,23 @@ const FULL_SCHEMAS: Record<string, object> = {
         format: { type: "string", enum: ["text", "json"], description: "Output format (default: text)" }
       }
     }
+  },
+  send_feedback: {
+    name: "send_feedback",
+    description: "Save feedback locally and submit it to the configured Hasna cloud endpoint.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        message: { type: "string", description: "Feedback message." },
+        service: { type: "string", description: "Service name. Defaults to attachments." },
+        version: { type: "string", description: "Service version. Defaults to the package version." },
+        email: { type: "string", description: "Optional follow-up email." },
+        timestamp: { type: "string", description: "ISO timestamp. Defaults to now." },
+        endpoint: { type: "string", description: "Optional cloud feedback endpoint override." },
+        skip_cloud: { type: "boolean", description: "Only save feedback locally." },
+      },
+      required: ["message"],
+    },
   },
 };
 
@@ -533,13 +551,17 @@ const LEAN_TOOLS = [
   },
   {
     name: "send_feedback",
-    description: "Send feedback about this service",
+    description: "Save feedback locally and submit to Hasna cloud",
     inputSchema: {
       type: "object" as const,
       properties: {
         message: { type: "string", description: "Feedback message" },
+        service: { type: "string", description: "Service name" },
+        version: { type: "string", description: "Service version" },
         email: { type: "string", description: "Optional email for follow-up" },
-        category: { type: "string", enum: ["bug", "feature", "general"], description: "Feedback category" },
+        timestamp: { type: "string", description: "ISO timestamp" },
+        endpoint: { type: "string", description: "Cloud feedback endpoint override" },
+        skip_cloud: { type: "boolean", description: "Only save feedback locally" },
       },
       required: ["message"],
     },
@@ -603,6 +625,7 @@ const STANDARD_TOOLS = new Set([
   "heartbeat",
   "set_focus",
   "list_agents",
+  "send_feedback",
 ]);
 
 export function getToolsForProfile(
@@ -1376,14 +1399,25 @@ export function buildServer(): Server {
           break;
         }
         case "send_feedback": {
-          const fa = args as { message: string; email?: string; category?: string };
-          const fdb = new AttachmentsDB();
-          try {
-            fdb.run("INSERT INTO feedback (message, email, category, version) VALUES (?, ?, ?, ?)", [fa.message, fa.email || null, fa.category || "general", getMcpVersion()]);
-          } finally {
-            fdb.close();
-          }
-          result = "Feedback saved. Thank you!";
+          const fa = args as {
+            message: string;
+            service?: string;
+            version?: string;
+            email?: string;
+            timestamp?: string;
+            endpoint?: string;
+            skip_cloud?: boolean;
+          };
+          result = await sendFeedback({
+            message: fa.message,
+            service: fa.service,
+            version: fa.version ?? getMcpVersion(),
+            email: fa.email,
+            timestamp: fa.timestamp,
+          }, {
+            endpoint: fa.endpoint,
+            skipCloud: fa.skip_cloud,
+          });
           break;
         }
         default:

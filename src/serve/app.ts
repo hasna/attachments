@@ -29,6 +29,11 @@ import { openAttachmentStream, isExpired } from "../core/download.js";
 import { generatePresignedLink, generateShareLink, getLinkType } from "../core/links.js";
 import { createObjectKey, sanitizeFilename, contentDispositionAttachment } from "../core/security.js";
 import { buildOpenApiDocument } from "./openapi.js";
+import {
+  FeedbackBodyError,
+  normalizeFeedbackInput,
+  readFeedbackJsonBody,
+} from "../core/feedback.js";
 
 export interface ServeAppDeps {
   client: PoolQueryClient;
@@ -105,6 +110,19 @@ export function createServeApp(deps: ServeAppDeps): Hono {
     return null;
   }
 
+  async function readFeedbackJson(c: Context): Promise<
+    | { ok: true; body: Awaited<ReturnType<typeof readFeedbackJsonBody>> }
+    | { ok: false; response: Response }
+  > {
+    try {
+      return { ok: true, body: await readFeedbackJsonBody(c.req.raw) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = error instanceof FeedbackBodyError ? error.status : 400;
+      return { ok: false, response: c.json({ error: message }, status) };
+    }
+  }
+
   // ── Health / ready / version ────────────────────────────────────────────
   app.get("/health", async (c) => {
     const health = await checkHealth(client);
@@ -133,6 +151,21 @@ export function createServeApp(deps: ServeAppDeps): Hono {
   app.get("/openapi.json", (c) => c.json(buildOpenApiDocument(version)));
 
   // ── /v1 API ──────────────────────────────────────────────────────────────
+  app.post("/v1/feedback", async (c) => {
+    const denied = await requireScopes(c, [`${APP_SLUG}:write`]);
+    if (denied) return denied;
+    const parsed = await readFeedbackJson(c);
+    if (!parsed.ok) return parsed.response;
+
+    try {
+      const feedback = normalizeFeedbackInput(parsed.body);
+      await store.insertFeedback(feedback);
+      return c.json(feedback, 201);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
   app.get("/v1/attachments", async (c) => {
     const denied = await requireScopes(c, [`${APP_SLUG}:read`]);
     if (denied) return denied;

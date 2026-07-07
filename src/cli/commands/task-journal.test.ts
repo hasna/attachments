@@ -300,6 +300,9 @@ describe("task-journal CLI command", () => {
 
     // Suppress DB by using an in-memory DB path
     const capture = captureOutput();
+    const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
     try {
       // We test the full CLI with a custom DB. Since we can't easily inject,
       // we'll test the formatter instead — CLI smoke-test just verifies it doesn't crash.
@@ -312,6 +315,7 @@ describe("task-journal CLI command", () => {
       }
     } finally {
       capture.restore();
+      exitSpy.mockRestore();
       globalThis.fetch = originalFetch;
     }
   });

@@ -228,6 +228,81 @@ describe("AttachmentsDB", () => {
     });
   });
 
+  describe("feedback", () => {
+    it("creates feedback table with canonical contract fields", () => {
+      const columns = db.raw
+        .prepare("PRAGMA table_info(feedback)")
+        .all() as Array<{ name: string; notnull: number }>;
+      const byName = new Map(columns.map((column) => [column.name, column]));
+
+      expect(byName.get("service")?.notnull).toBe(1);
+      expect(byName.get("version")?.notnull).toBe(1);
+      expect(byName.get("message")?.notnull).toBe(1);
+      expect(byName.has("email")).toBe(true);
+      expect(byName.get("timestamp")?.notnull).toBe(1);
+    });
+
+    it("inserts and lists feedback rows", () => {
+      db.insertFeedback({
+        id: "fb_test001",
+        service: "attachments",
+        version: "1.2.3",
+        message: "Useful service",
+        email: "user@example.com",
+        timestamp: "2026-07-07T10:11:12.000Z",
+      });
+
+      const rows = db.listFeedback();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toEqual({
+        id: "fb_test001",
+        service: "attachments",
+        version: "1.2.3",
+        message: "Useful service",
+        email: "user@example.com",
+        timestamp: "2026-07-07T10:11:12.000Z",
+      });
+    });
+
+    it("preserves and backfills legacy feedback rows", () => {
+      const legacyPath = makeTempPath();
+      const legacy = new SqliteDatabase(legacyPath);
+      legacy.run(`
+        CREATE TABLE feedback (
+          id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+          message TEXT NOT NULL,
+          email TEXT,
+          category TEXT DEFAULT 'general',
+          version TEXT,
+          machine_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+      legacy
+        .prepare("INSERT INTO feedback (id, message, email, category, version, machine_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run("fb_legacy001", "Legacy message", null, "general", null, "machine-1", "2026-07-07T10:11:12.000Z");
+      legacy.close();
+
+      const migrated = new DB(legacyPath);
+      try {
+        const rows = migrated.listFeedback();
+        expect(rows).toEqual([{
+          id: "fb_legacy001",
+          service: "attachments",
+          version: "unknown",
+          message: "Legacy message",
+          email: null,
+          timestamp: "2026-07-07T10:11:12.000Z",
+        }]);
+      } finally {
+        migrated.close();
+        rmSync(legacyPath, { force: true });
+        rmSync(`${legacyPath}-wal`, { force: true });
+        rmSync(`${legacyPath}-shm`, { force: true });
+      }
+    });
+  });
+
   describe("deleteExpired", () => {
     it("deletes only expired attachments and returns count", () => {
       const now = Date.now();

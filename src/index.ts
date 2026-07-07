@@ -5,7 +5,22 @@ export type { UploadOptions, UploadDeps } from "./core/upload.js";
 export { downloadAttachment, streamAttachment, openAttachmentStream, extractId, extractShareToken, isExpired } from "./core/download.js";
 export type { DownloadResult, DownloadDeps } from "./core/download.js";
 export { AttachmentsDB } from "./core/db.js";
-export type { Attachment, ShareLink } from "./core/db.js";
+export type { Attachment, Feedback, ShareLink } from "./core/db.js";
+export {
+  FEEDBACK_LIMITS,
+  assertFeedbackBodySize,
+  normalizeFeedbackInput,
+  postFeedbackToCloud,
+  resolveFeedbackEndpoint,
+  sendFeedback,
+} from "./core/feedback.js";
+export type {
+  FeedbackCloudResult,
+  FeedbackDeliveryOptions,
+  FeedbackInput,
+  SendFeedbackOptions,
+  SendFeedbackResult,
+} from "./core/feedback.js";
 export { getConfig, setConfig, validateS3Config, validateStorageConfig, parseExpiry, parseExpiryStrict, setConfigPath } from "./core/config.js";
 export type { AttachmentsConfig } from "./core/config.js";
 export { S3Client } from "./core/s3.js";

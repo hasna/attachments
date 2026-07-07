@@ -13,6 +13,8 @@ export {
   ApiError,
   type AttachmentsApiClientOptions,
   type CreateAttachmentRequest,
+  type CreateFeedbackRequest,
+  type Feedback,
   type LinkResponse,
   type RegenerateLinkRequest,
   type DeleteResponse,

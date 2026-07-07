@@ -26,6 +26,7 @@ import { configCommand } from "./commands/config";
 import { initCommand, heartbeatCommand, focusCommand } from "./commands/agent";
 import { storageCommand } from "./commands/storage";
 import { domainCommand } from "./commands/domain";
+import { feedbackCommand } from "./commands/feedback";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkgVersion: string = (() => { try { return (require("../../package.json") as { version: string }).version; } catch { return process.env.npm_package_version ?? "unknown"; } })();
@@ -33,6 +34,7 @@ const pkgVersion: string = (() => { try { return (require("../../package.json") 
 const program = new Command()
   .name("attachments")
   .description("Attachment transfer for agents — local or private S3")
+  .enablePositionalOptions()
   .version(pkgVersion);
 
 // Register all subcommands
@@ -60,6 +62,7 @@ program.addCommand(linkCommand());
 program.addCommand(configCommand());
 program.addCommand(storageCommand());
 program.addCommand(domainCommand());
+program.addCommand(feedbackCommand());
 program.addCommand(initCommand());
 program.addCommand(heartbeatCommand());
 program.addCommand(focusCommand());
