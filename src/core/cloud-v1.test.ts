@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { resolveAttachmentsV1 } from "./cloud-v1";
 
 const BASE = "https://attachments.hasna.xyz";
@@ -45,6 +48,11 @@ describe("resolveAttachmentsV1", () => {
 
   test("explicit STORAGE_MODE=local forces local even with URL+KEY", () => {
     const r = resolveAttachmentsV1({ ...cloudEnv, HASNA_ATTACHMENTS_STORAGE_MODE: "local" } as NodeJS.ProcessEnv);
+    expect(r.transport).toBe("local");
+  });
+
+  test("ATTACHMENTS_CLIENT_MODE=local keeps unit tests and local CLI paths hermetic", () => {
+    const r = resolveAttachmentsV1({ ...cloudEnv, ATTACHMENTS_CLIENT_MODE: "local" } as NodeJS.ProcessEnv);
     expect(r.transport).toBe("local");
   });
 
@@ -99,5 +107,76 @@ describe("resolveAttachmentsV1", () => {
     await r.store.delete("att_x");
     expect(calls[0]!.method).toBe("DELETE");
     expect(calls[0]!.url).toBe(`${BASE}/v1/attachments/att_x`);
+  });
+
+  test("link helpers use the /v1 link routes", async () => {
+    const { calls, fetchImpl } = mockFetch((call) => {
+      if (call.method === "GET") return { status: 200, body: { link: "https://x/a", expires_at: 123 } };
+      const body = JSON.parse(call.body!);
+      expect(body.expiry).toBe("24h");
+      expect(body.password).toBe("pw");
+      expect(body.max_downloads).toBe(2);
+      expect(body.link_type).toBe("server");
+      return { status: 200, body: { link: "https://x/b", expires_at: 456 } };
+    });
+    const r = resolveAttachmentsV1(cloudEnv, { fetchImpl });
+    if (r.transport !== "cloud-http") throw new Error("expected cloud");
+    expect(await r.store.getLink("att_link")).toEqual({ link: "https://x/a", expires_at: 123 });
+    expect(await r.store.regenerateLink("att_link", {
+      expiry: "24h",
+      password: "pw",
+      maxDownloads: 2,
+      linkType: "server",
+    })).toEqual({ link: "https://x/b", expires_at: 456 });
+    expect(calls[0]!.url).toBe(`${BASE}/v1/attachments/att_link/link`);
+    expect(calls[1]!.method).toBe("POST");
+    expect(calls[1]!.url).toBe(`${BASE}/v1/attachments/att_link/link`);
+  });
+
+  test("HTTP errors do not echo response bodies that may contain credentials", async () => {
+    const { fetchImpl } = mockFetch(() => ({
+      status: 500,
+      body: { error: `upstream echoed ${KEY}` },
+    }));
+    const r = resolveAttachmentsV1(cloudEnv, { fetchImpl });
+    if (r.transport !== "cloud-http") throw new Error("expected cloud");
+    try {
+      await r.store.list();
+      throw new Error("expected list to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("HTTP 500");
+      expect((error as Error).message).not.toContain(KEY);
+    }
+  });
+
+  test("download uses the normalized /v1 base URL without duplicating the suffix", async () => {
+    const calls: Call[] = [];
+    const originalFetch = globalThis.fetch;
+    const outDir = mkdtempSync(join(tmpdir(), "attachments-cloud-v1-"));
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries((init?.headers as Record<string, string>) ?? {})) headers[k.toLowerCase()] = v;
+      calls.push({ method: init?.method ?? "GET", url: String(input), headers, body: (init?.body as string) ?? null });
+      return new Response("hello", {
+        status: 200,
+        headers: {
+          "content-disposition": "attachment; filename=\"hello.txt\"",
+          "content-length": "5",
+        },
+      });
+    }) as typeof fetch;
+    try {
+      const r = resolveAttachmentsV1({ ...cloudEnv, HASNA_ATTACHMENTS_API_URL: `${BASE}/v1` } as NodeJS.ProcessEnv);
+      if (r.transport !== "cloud-http") throw new Error("expected cloud");
+      const result = await r.store.download("att_download", outDir);
+      expect(calls[0]!.url).toBe(`${BASE}/v1/attachments/att_download/download`);
+      expect(calls[0]!.headers["authorization"]).toBe(`Bearer ${KEY}`);
+      expect(result.filename).toBe("hello.txt");
+      expect(readFileSync(result.path, "utf-8")).toBe("hello");
+    } finally {
+      globalThis.fetch = originalFetch;
+      rmSync(outDir, { recursive: true, force: true });
+    }
   });
 });
