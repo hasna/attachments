@@ -11,6 +11,7 @@ import { setConfigPath, setConfig } from "../../core/config";
 type MockAttachment = {
   id: string; filename: string; s3Key: string; bucket: string; size: number;
   contentType: string; link: string | null; expiresAt: number | null; createdAt: number;
+  storageBackend?: "local" | "s3";
 };
 
 const mockFindById = mock((_id: string): MockAttachment | null => null);
@@ -32,14 +33,25 @@ mock.module("../../core/db", () => ({
 }));
 
 const mockS3Delete = mock(async (_key: string) => {});
+const mockS3Constructor = mock((_cfg: unknown) => {});
 
 mock.module("../../core/s3", () => ({
   S3Client: class MockS3Client {
-    constructor(_cfg: unknown) {}
+    constructor(cfg: unknown) { mockS3Constructor(cfg); }
     delete = mockS3Delete;
     upload = mock(async () => {});
     download = mock(async () => Buffer.from(""));
     presign = mock(async () => "https://presigned");
+  },
+}));
+
+const mockLocalDelete = mock(async (_key: string) => {});
+const mockLocalConstructor = mock((_cfg: unknown) => {});
+
+mock.module("../../core/object-storage", () => ({
+  LocalObjectStore: class MockLocalObjectStore {
+    constructor(cfg: unknown) { mockLocalConstructor(cfg); }
+    delete = mockLocalDelete;
   },
 }));
 
@@ -115,11 +127,21 @@ function captureOutput() {
 
 describe("deleteCommand", () => {
   beforeEach(() => {
+    setConfig({
+      s3: { bucket: "test-bucket", region: "us-east-1", accessKeyId: "K", secretAccessKey: "S" },
+      storage: { backend: "auto", localDir: join(_deleteTestConfigDir, "objects"), maxSizeBytes: 1024 * 1024 },
+      server: { port: 3459, baseUrl: "http://localhost:3459" },
+      defaults: { expiry: "7d", linkType: "presigned" },
+    });
     mockFindById.mockReset();
     mockDeleteDb.mockReset();
     mockDbClose.mockReset();
+    mockS3Constructor.mockReset();
     mockS3Delete.mockReset();
     mockS3Delete.mockImplementation(async () => {});
+    mockLocalConstructor.mockReset();
+    mockLocalDelete.mockReset();
+    mockLocalDelete.mockImplementation(async () => {});
   });
 
   it("deletes attachment by id when --yes is passed", async () => {
@@ -134,6 +156,34 @@ describe("deleteCommand", () => {
       expect(mockS3Delete).toHaveBeenCalledWith("uploads/file.pdf");
       expect(mockDeleteDb).toHaveBeenCalledWith("att_todelete");
       expect(capture.out.join("")).toContain("Deleted att_todelete");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("deletes local attachment without constructing S3 when S3 is unconfigured", async () => {
+    setConfig({
+      s3: { bucket: "", region: "", accessKeyId: "", secretAccessKey: "" },
+      storage: { backend: "local", localDir: join(_deleteTestConfigDir, "objects"), maxSizeBytes: 1024 * 1024 },
+    });
+    const att = makeAttachment({
+      id: "att_local_delete",
+      s3Key: "uploads/local.txt",
+      bucket: "local",
+      storageBackend: "local",
+    });
+    mockFindById.mockImplementation(() => att);
+
+    const capture = captureOutput();
+    try {
+      const program = buildDeleteCmd();
+      await program.parseAsync(["delete", "att_local_delete", "--yes"], { from: "user" });
+
+      expect(mockLocalDelete).toHaveBeenCalledWith("uploads/local.txt");
+      expect(mockS3Constructor).not.toHaveBeenCalled();
+      expect(mockS3Delete).not.toHaveBeenCalled();
+      expect(mockDeleteDb).toHaveBeenCalledWith("att_local_delete");
+      expect(capture.out.join("")).toContain("Deleted att_local_delete");
     } finally {
       capture.restore();
     }

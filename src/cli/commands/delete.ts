@@ -3,6 +3,7 @@ import { AttachmentsDB } from "../../core/db";
 import { S3Client } from "../../core/s3";
 import { getConfig, isCloudClientMode } from "../../core/config";
 import { deleteCloudAttachment } from "../../core/api-client";
+import { LocalObjectStore } from "../../core/object-storage";
 
 export function deleteCommand(): Command {
   const cmd = new Command("delete")
@@ -46,8 +47,14 @@ export function deleteCommand(): Command {
         }
 
         const config = getConfig();
-        const s3 = new S3Client(config.s3);
-        await s3.delete(att.s3Key);
+        const storageBackend = att.storageBackend ?? (att.bucket === "local" ? "local" : "s3");
+        if (storageBackend === "local") {
+          const store = new LocalObjectStore(config);
+          await store.delete(att.s3Key);
+        } else {
+          const s3 = new S3Client(config.s3);
+          await s3.delete(att.s3Key);
+        }
 
         db.delete(id);
         if (options.brief) {
