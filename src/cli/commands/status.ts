@@ -3,6 +3,7 @@ import { ListObjectsV2Command, S3Client as AWSS3Client } from "@aws-sdk/client-s
 import { AttachmentsDB } from "../../core/db";
 import { getClientApiBaseUrl, getConfig, hasS3Config, isCloudClientMode, CONFIG_PATH } from "../../core/config";
 import { getCloudHealth } from "../../core/api-client";
+import { resolveAttachmentsV1 } from "../../core/cloud-v1";
 import { formatBytes } from "../utils";
 import { join } from "path";
 import { homedir } from "os";
@@ -73,6 +74,23 @@ export function registerStatus(program: Command): void {
     .description("Show system status: S3 connection, attachment stats, config paths")
     .action(async () => {
       const config = getConfig();
+      const v1 = resolveAttachmentsV1();
+      if (v1.transport === "cloud-http") {
+        try {
+          const rows = await v1.store.list({ limit: 1 });
+          process.stdout.write(`Mode: self_hosted (/v1)\n`);
+          process.stdout.write(`API: ${v1.store.baseUrl}\n`);
+          process.stdout.write(`Health: reachable (list ok, ${rows.length >= 0 ? "authorized" : "unknown"})\n`);
+          process.stdout.write(`Config: ${CONFIG_PATH}\n`);
+          return;
+        } catch (error) {
+          process.stdout.write(`Mode: self_hosted (/v1)\n`);
+          process.stdout.write(`API: ${v1.store.baseUrl}\n`);
+          process.stdout.write(`Health: connection failed (${error instanceof Error ? error.message : String(error)})\n`);
+          process.stdout.write(`Config: ${CONFIG_PATH}\n`);
+          return;
+        }
+      }
       if (isCloudClientMode(config)) {
         try {
           const health = await getCloudHealth();
