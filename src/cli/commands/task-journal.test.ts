@@ -1,5 +1,20 @@
-import { describe, it, expect, mock, spyOn } from "bun:test";
-import {
+import { describe, it, expect, mock, spyOn, beforeEach, afterAll } from "bun:test";
+import { Command } from "commander";
+import type { Attachment, AttachmentsDB } from "../../core/db";
+import type { TaskJournal } from "./task-journal";
+
+const mockDbFindAll = mock((_opts?: object) => [] as Attachment[]);
+const mockDbClose = mock(() => {});
+
+mock.module("../../core/db", () => ({
+  AttachmentsDB: class MockAttachmentsDB {
+    constructor(_path?: string) {}
+    findAll = mockDbFindAll;
+    close = mockDbClose;
+  },
+}));
+
+const {
   fetchTaskMeta,
   fetchTaskHistory,
   buildTaskJournal,
@@ -8,11 +23,16 @@ import {
   formatJson,
   findTaskAttachments,
   registerTaskJournal,
-} from "./task-journal";
-import type { TaskJournal } from "./task-journal";
-import { AttachmentsDB } from "../../core/db";
-import type { Attachment } from "../../core/db";
-import { Command } from "commander";
+} = await import("./task-journal");
+
+afterAll(() => mock.restore());
+
+beforeEach(() => {
+  mockDbFindAll.mockReset();
+  mockDbFindAll.mockImplementation((_opts?: object) => [] as Attachment[]);
+  mockDbClose.mockReset();
+  mockDbClose.mockImplementation(() => {});
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -279,6 +299,8 @@ describe("formatJson", () => {
 
 describe("task-journal CLI command", () => {
   it("outputs markdown by default for a task with history and attachments", async () => {
+    mockDbFindAll.mockImplementation((_opts?: object) => [makeAttachment()]);
+
     const fakeFetch = mock(async (url: unknown) => {
       const u = String(url);
       if (u.endsWith("/history")) {
@@ -298,18 +320,16 @@ describe("task-journal CLI command", () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = fakeFetch;
 
-    // Suppress DB by using an in-memory DB path
     const capture = captureOutput();
     try {
-      // We test the full CLI with a custom DB. Since we can't easily inject,
-      // we'll test the formatter instead — CLI smoke-test just verifies it doesn't crash.
       const program = buildProgram();
-      // This may fail on DB open (fine — we check output partially)
-      try {
-        await program.parseAsync(["task-journal", "TASK-001"], { from: "user" });
-      } catch {
-        // DB open may fail in test env — that's acceptable for smoke test
-      }
+      await program.parseAsync(["task-journal", "TASK-001"], { from: "user" });
+      const output = capture.out.join("");
+      expect(output).toContain("# Task Journal: TASK-001");
+      expect(output).toContain("Fix auth bug");
+      expect(output).toContain("att_abc123");
+      expect(mockDbFindAll).toHaveBeenCalledWith({ tag: "task:TASK-001", includeExpired: true });
+      expect(mockDbClose).toHaveBeenCalledTimes(1);
     } finally {
       capture.restore();
       globalThis.fetch = originalFetch;
