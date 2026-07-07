@@ -2,11 +2,19 @@ import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 import { tmpdir } from "os";
 import { join } from "path";
 import { mkdirSync, rmSync, readFileSync, existsSync } from "fs";
+import { Readable } from "stream";
 
 // Import real modules — no mock.module needed thanks to deps injection
-import { extractId, isExpired, downloadAttachment, streamAttachment } from "./download";
+import {
+  extractId,
+  extractShareToken,
+  isExpired,
+  downloadAttachment,
+  openAttachmentStream,
+  streamAttachment,
+} from "./download";
 import type { DownloadDeps } from "./download";
-import type { Attachment } from "./db";
+import type { Attachment, ShareLink } from "./db";
 
 // --- Helpers ---
 
@@ -26,8 +34,20 @@ function makeFakeAttachment(overrides: Partial<Attachment> = {}): Attachment {
 }
 
 function makeMockDB(attachment: Attachment | null = null) {
+  const shareLink: ShareLink = {
+    id: "share_1",
+    attachmentId: attachment?.id ?? "att_test001",
+    tokenHash: "hash",
+    expiresAt: null,
+    createdAt: Date.now(),
+    revokedAt: null,
+    passwordHash: null,
+    maxUses: null,
+    usedCount: 0,
+  };
   return {
     findById: mock((_id: string) => attachment),
+    findShareLinkByToken: mock((_token: string) => shareLink),
     close: mock(() => {}),
     insert: mock(() => {}),
     findAll: mock(() => []),
@@ -90,6 +110,14 @@ describe("extractId", () => {
 
   it("stops at hash fragment", () => {
     expect(extractId("http://localhost:3459/d/att_abc123#section")).toBe("att_abc123");
+  });
+});
+
+describe("extractShareToken", () => {
+  it("extracts tokens from public share URLs", () => {
+    expect(extractShareToken("https://example.test/a/share_token?x=1")).toBe("share_token");
+    expect(extractShareToken("/a/share_token#download")).toBe("share_token");
+    expect(extractShareToken("att_1")).toBeNull();
   });
 });
 
@@ -188,6 +216,70 @@ describe("downloadAttachment", () => {
     expect(result.path).toBe(join(nonExistentDirWithSlash, "file.txt"));
     expect(readFileSync(result.path).toString()).toBe("content");
   });
+
+  it("downloads through a share link and increments downloads after reservation", async () => {
+    const att = makeFakeAttachment({ filename: "shared.txt", bucket: "local", storageBackend: "local" });
+    const db = makeMockDB(att);
+    const objectStore = {
+      getStream: mock(() => ({
+        body: Readable.from(["shared"]),
+        contentLength: 6,
+        contentType: "text/plain",
+        status: 200 as const,
+      })),
+    };
+    const dir = makeTempDir();
+
+    const result = await downloadAttachment("https://example.test/a/share_token", dir, {
+      db: db as any,
+      objectStore: objectStore as any,
+      config: { storage: { localDir: dir } } as any,
+    });
+
+    expect(result.filename).toBe("shared.txt");
+    expect(readFileSync(result.path, "utf8")).toBe("shared");
+    expect(db.consumeShareLink).toHaveBeenCalledWith("share_1");
+    expect(db.incrementDownloads).toHaveBeenCalledWith("att_test001");
+  });
+
+  it("releases a reserved share link when streaming fails", async () => {
+    const att = makeFakeAttachment({ bucket: "local", storageBackend: "local" });
+    const db = makeMockDB(att);
+    const failing = new Readable({
+      read() {
+        this.destroy(new Error("stream failed"));
+      },
+    });
+    const objectStore = {
+      getStream: mock(() => ({
+        body: failing,
+        contentLength: 0,
+        contentType: "text/plain",
+        status: 200 as const,
+      })),
+    };
+
+    await expect(downloadAttachment("https://example.test/a/share_token", makeTempDir(), {
+      db: db as any,
+      objectStore: objectStore as any,
+      config: { storage: { localDir: makeTempDir() } } as any,
+    })).rejects.toThrow("stream failed");
+    expect(db.releaseShareLink).toHaveBeenCalledWith("share_1");
+  });
+
+  it("throws when a reserved share link can no longer be consumed", async () => {
+    const att = makeFakeAttachment({ bucket: "local", storageBackend: "local" });
+    const db = makeMockDB(att);
+    db.consumeShareLink.mockImplementation(() => false);
+
+    await expect(downloadAttachment("https://example.test/a/share_token", makeTempDir(), {
+      db: db as any,
+      objectStore: {
+        getStream: () => ({ body: Readable.from(["x"]), status: 200 as const }),
+      } as any,
+      config: { storage: { localDir: makeTempDir() } } as any,
+    })).rejects.toThrow("Share link is no longer available");
+  });
 });
 
 // --- streamAttachment ---
@@ -212,5 +304,123 @@ describe("streamAttachment", () => {
     const att = makeFakeAttachment({ expiresAt: Date.now() - 1000 });
     const deps: DownloadDeps = { db: makeMockDB(att) as any, s3: makeMockS3() as any };
     await expect(streamAttachment("att_test001", deps)).rejects.toThrow("Attachment has expired");
+  });
+
+  it("streams through openAttachmentStream when no legacy S3 download helper is injected", async () => {
+    const att = makeFakeAttachment({ storageBackend: "s3" });
+    const deps: DownloadDeps = {
+      db: makeMockDB(att) as any,
+      s3: {
+        downloadStream: mock(async () => ({
+          body: Readable.from(["streamed"]),
+          contentType: "text/plain",
+          status: 200 as const,
+        })),
+      } as any,
+    };
+
+    const result = await streamAttachment("att_test001", deps);
+
+    expect(result.buffer.toString()).toBe("streamed");
+  });
+});
+
+describe("openAttachmentStream", () => {
+  it("uses injected local object stores with parsed ranges", async () => {
+    const att = makeFakeAttachment({ bucket: "local", storageBackend: "local", size: 6 });
+    const getStream = mock((_key: string, _type: string, range: unknown) => ({
+      body: Readable.from(["bc"]),
+      contentLength: 2,
+      contentType: "text/plain",
+      contentRange: "bytes 1-2/6",
+      status: 206 as const,
+      range,
+    }));
+
+    const result = await openAttachmentStream(att, {
+      objectStore: { getStream } as any,
+      rangeHeader: "bytes=1-2",
+      config: { storage: { localDir: makeTempDir() } } as any,
+    });
+
+    expect(result.status).toBe(206);
+    expect(getStream.mock.calls[0]![2]).toEqual({ start: 1, end: 2 });
+  });
+
+  it("converts web streams returned by object stores during downloads", async () => {
+    const att = makeFakeAttachment({ bucket: "local", storageBackend: "local", size: 3, filename: "web.txt" });
+    const dir = makeTempDir();
+    const result = await downloadAttachment("att_test001", dir, {
+      db: makeMockDB(att) as any,
+      objectStore: {
+        getStream: () => ({
+          body: new Response("web").body!,
+          contentLength: 3,
+          contentType: "text/plain",
+          status: 200 as const,
+        }),
+      } as any,
+      config: { storage: { localDir: makeTempDir() } } as any,
+    });
+
+    expect(readFileSync(result.path, "utf8")).toBe("web");
+  });
+
+  it("streams S3 ranges and defaults missing content type to attachment metadata", async () => {
+    const att = makeFakeAttachment({ storageBackend: "s3", size: 10, contentType: "text/plain" });
+    const downloadStream = mock(async (_key: string, range?: string) => ({
+      body: Readable.from(["range"]),
+      contentLength: 5,
+      status: 206 as const,
+      range,
+    }));
+
+    const result = await openAttachmentStream(att, {
+      s3: { downloadStream } as any,
+      rangeHeader: "bytes=0-4",
+    });
+
+    expect(downloadStream).toHaveBeenCalledWith(att.s3Key, "bytes=0-4");
+    expect(result.contentType).toBe("text/plain");
+  });
+
+  it("falls back to buffer downloads for legacy S3 clients", async () => {
+    const att = makeFakeAttachment({ storageBackend: "s3" });
+
+    const result = await openAttachmentStream(att, {
+      s3: { download: mock(async () => Buffer.from("buffer")) } as any,
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.contentLength).toBe(6);
+    expect(await new Response(Readable.toWeb(result.body as Readable) as never).text()).toBe("buffer");
+  });
+
+  it("rejects unsupported or incomplete encryption metadata", async () => {
+    await expect(openAttachmentStream(makeFakeAttachment({ encryptionAlgorithm: "x" as any }), {
+      s3: { download: mock(async () => Buffer.from("encrypted")) } as any,
+    })).rejects.toThrow("Unsupported encryption algorithm");
+
+    await expect(openAttachmentStream(makeFakeAttachment({ encryptionAlgorithm: "aes-256-ctr" }), {
+      s3: { download: mock(async () => Buffer.from("encrypted")) } as any,
+    })).rejects.toThrow("requires a password");
+
+    await expect(openAttachmentStream(makeFakeAttachment({
+      encryptionAlgorithm: "aes-256-ctr",
+      encryptionSalt: null,
+      encryptionIv: null,
+    }), {
+      password: "pw",
+      s3: { download: mock(async () => Buffer.from("encrypted")) } as any,
+    })).rejects.toThrow("metadata is incomplete");
+
+    await expect(openAttachmentStream(makeFakeAttachment({
+      encryptionAlgorithm: "aes-256-gcm",
+      encryptionSalt: "00",
+      encryptionIv: "00",
+    }), {
+      password: "pw",
+      s3: { download: mock(async () => Buffer.from("encrypted")) } as any,
+    })).rejects.toThrow("metadata is incomplete");
   });
 });

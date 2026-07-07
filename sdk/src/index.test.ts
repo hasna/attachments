@@ -508,4 +508,38 @@ describe("AttachmentsClient", () => {
       expect(result.contentType).toBe("");
     });
   });
+
+  describe("health and context", () => {
+    it("fetches server health", async () => {
+      const health = {
+        status: "ok",
+        attachments: 1,
+        expired: 0,
+        s3_configured: true,
+        server: "attachments",
+        timestamp: "2026-07-07T00:00:00.000Z",
+      };
+      mockFetch(200, health);
+
+      await expect(client.health()).resolves.toEqual(health);
+      // @ts-expect-error
+      const [url] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(url).toBe(`${BASE_URL}/api/health`);
+    });
+
+    it("fetches text and JSON context", async () => {
+      mockFetch(200, "Attachments: 1 total", { "content-type": "text/plain" });
+      await expect(client.getContext()).resolves.toBe("Attachments: 1 total");
+      // @ts-expect-error
+      let [url] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(url).toBe(`${BASE_URL}/api/context`);
+
+      const context = { attachments: 1, active: 1, expired: 0, expiring_soon: 0, summary: "ok" };
+      mockFetch(200, context);
+      await expect(client.getContext("json")).resolves.toEqual(context);
+      // @ts-expect-error
+      [url] = (globalThis.fetch as ReturnType<typeof mock>).mock.calls[0];
+      expect(url).toBe(`${BASE_URL}/api/context?format=json`);
+    });
+  });
 });

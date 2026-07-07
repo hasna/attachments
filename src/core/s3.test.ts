@@ -1,4 +1,8 @@
 import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { Readable } from "stream";
 
 // --- Mock setup ---
 // We need to intercept the AWS SDK calls. We do this by mocking the module
@@ -272,6 +276,32 @@ describe("S3Client.uploadStream", () => {
     expect(params["Body"]).toBe(stream);
     expect(params["ContentType"]).toBe("text/plain");
   });
+
+  it("uploads files through the optional transform", async () => {
+    const dir = join(tmpdir(), `attachments-s3-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "file.txt");
+    writeFileSync(path, "file");
+    let transformed: NodeJS.ReadableStream | null = null;
+    try {
+      const client = makeClient();
+      await client.uploadFile("files/file.txt", path, "text/plain", {
+        transform: (stream) => {
+          transformed = stream;
+          return stream;
+        },
+      });
+
+      const [options] = mockManagedUploadConstructor.mock.calls[0] as [Record<string, unknown>];
+      const params = options["params"] as Record<string, unknown>;
+      expect(params["Body"]).toBe(transformed);
+      for await (const _chunk of params["Body"] as NodeJS.ReadableStream) {
+        // drain before deleting the temp file
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("S3Client.download", () => {
@@ -470,6 +500,47 @@ describe("S3Client direct multipart helpers", () => {
     expect(cmd.input["ContentType"]).toBe("application/octet-stream");
   });
 
+  it("throws when direct multipart creation returns no UploadId", async () => {
+    mockSend.mockImplementation(async () => ({}));
+    const client = makeClient();
+
+    await expect(client.createMultipartUpload("uploads/large.bin", "application/octet-stream"))
+      .rejects.toThrow("Failed to initiate multipart upload");
+  });
+
+  it("uploads a direct part and returns its ETag", async () => {
+    mockSend.mockImplementation(async () => ({ ETag: "\"etag\"" }));
+    const client = makeClient() as unknown as { uploadPart(key: string, uploadId: string, partNumber: number, body: Buffer): Promise<string> };
+
+    await expect(client.uploadPart("uploads/large.bin", "upload-123", 3, Buffer.from("part"))).resolves.toBe("\"etag\"");
+    const [cmd] = mockSend.mock.calls[0] as [{ constructor: { name: string }; input: Record<string, unknown> }];
+    expect(cmd.constructor.name).toBe("UploadPartCommand");
+    expect(cmd.input["PartNumber"]).toBe(3);
+  });
+
+  it("throws when direct part upload returns no ETag", async () => {
+    mockSend.mockImplementation(async () => ({}));
+    const client = makeClient() as unknown as { uploadPart(key: string, uploadId: string, partNumber: number, body: Buffer): Promise<string> };
+
+    await expect(client.uploadPart("uploads/large.bin", "upload-123", 3, Buffer.from("part")))
+      .rejects.toThrow("Missing ETag for part 3");
+  });
+
+  it("aborts multipart uploads as best-effort cleanup", async () => {
+    mockSend.mockImplementation(async () => ({}));
+    const client = makeClient();
+
+    await expect(client.abortMultipart("uploads/large.bin", "upload-123")).resolves.toBeUndefined();
+    let [cmd] = mockSend.mock.calls[0] as [{ constructor: { name: string }; input: Record<string, unknown> }];
+    expect(cmd.constructor.name).toBe("AbortMultipartUploadCommand");
+
+    mockSend.mockReset();
+    mockSend.mockImplementation(async () => {
+      throw new Error("ignored");
+    });
+    await expect(client.abortMultipart("uploads/large.bin", "upload-123")).resolves.toBeUndefined();
+  });
+
   it("presigns an upload part URL", async () => {
     mockGetSignedUrl.mockImplementation(async () => "https://presigned.url/part?sig=abc");
     const client = makeClient();
@@ -509,5 +580,65 @@ describe("S3Client direct multipart helpers", () => {
     const [cmd] = mockSend.mock.calls[0] as [{ constructor: { name: string }; input: Record<string, unknown> }];
     expect(cmd.constructor.name).toBe("HeadObjectCommand");
     expect(cmd.input["Key"]).toBe("uploads/done.txt");
+  });
+});
+
+describe("S3Client.downloadStream and downloadToFile", () => {
+  beforeEach(() => {
+    mockSend.mockReset();
+  });
+
+  it("adapts Node, web, and async-iterable S3 response bodies", async () => {
+    const client = makeClient();
+    const bodies = [
+      Readable.from(["node"]),
+      { transformToWebStream: () => new Response("web").body! },
+      (async function* () { yield Buffer.from("iter"); })(),
+    ];
+
+    for (const body of bodies) {
+      mockSend.mockReset();
+      mockSend.mockImplementation(async () => ({
+        Body: body,
+        ContentLength: 4,
+        ContentRange: "bytes 0-3/4",
+        ContentType: "text/plain",
+      }));
+      const result = await client.downloadStream("files/body.txt", "bytes=0-3");
+      expect(result.status).toBe(206);
+      expect(result.contentType).toBe("text/plain");
+      expect(result.contentRange).toBe("bytes 0-3/4");
+      const text = await new Response(Readable.toWeb(result.body as Readable) as never).text();
+      expect(["node", "web", "iter"]).toContain(text);
+      const [cmd] = mockSend.mock.calls[0] as [{ input: Record<string, unknown> }];
+      expect(cmd.input["Range"]).toBe("bytes=0-3");
+    }
+  });
+
+  it("rejects unsupported download stream bodies and missing bodies", async () => {
+    const client = makeClient();
+    mockSend.mockImplementation(async () => ({ Body: undefined }));
+    await expect(client.downloadStream("missing")).rejects.toThrow("No body returned");
+
+    mockSend.mockImplementation(async () => ({ Body: {} }));
+    await expect(client.downloadStream("bad-body")).rejects.toThrow("Unsupported S3 response body stream");
+  });
+
+  it("downloads streams to files and returns the content length", async () => {
+    const dir = join(tmpdir(), `attachments-s3-download-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "out.txt");
+    mockSend.mockImplementation(async () => ({
+      Body: Readable.from(["file"]),
+      ContentLength: 4,
+    }));
+
+    try {
+      const client = makeClient();
+      await expect(client.downloadToFile("files/out.txt", path)).resolves.toBe(4);
+      expect(readFileSync(path, "utf8")).toBe("file");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

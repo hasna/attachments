@@ -13,21 +13,13 @@ const ENV_NAMES = [
   "ATTACHMENTS_STORAGE_MODE",
 ] as const;
 
-const ORIGINAL_ENV = new Map<string, string | undefined>(
-  ENV_NAMES.map((name) => [name, process.env[name]]),
-);
-
 describe("attachments storage sync configuration", () => {
   beforeEach(() => {
     for (const name of ENV_NAMES) delete process.env[name];
   });
 
   afterEach(() => {
-    for (const name of ENV_NAMES) {
-      const value = ORIGINAL_ENV.get(name);
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
+    for (const name of ENV_NAMES) delete process.env[name];
   });
 
   it("uses the canonical storage database envs", () => {

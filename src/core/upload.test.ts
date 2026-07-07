@@ -1,10 +1,11 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
-import { writeFileSync, unlinkSync, mkdirSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { Readable } from "stream";
 
 // Import the real modules — no mock.module needed thanks to deps injection
-import { uploadFile, uploadFromBuffer, uploadFromUrl } from "./upload";
+import { uploadFile, uploadFromBuffer, uploadFromUrl, uploadStreamAttachment } from "./upload";
 import type { UploadDeps } from "./upload";
 
 // --- Mock helpers ---
@@ -191,6 +192,134 @@ describe("uploadFile", () => {
     const result = await uploadFile(filePath, {}, deps);
     expect(result.contentType).toBe("application/octet-stream");
   });
+
+  it("rejects files larger than configured storage max", async () => {
+    const filePath = createTempFile("large.txt", "12345");
+    const smallConfig = {
+      ...mockConfig,
+      storage: { backend: "s3" as const, localDir: "~/.hasna/attachments/objects", maxSizeBytes: 2 },
+    };
+
+    await expect(uploadFile(filePath, {}, { ...deps, config: smallConfig })).rejects.toThrow("File too large");
+  });
+
+  it("requires a password when encryption is requested", async () => {
+    const filePath = createTempFile("encrypted.txt", "secret");
+
+    await expect(uploadFile(filePath, { encrypt: true }, deps)).rejects.toThrow("--encrypt requires a password");
+  });
+
+  it("stores encrypted uploads with encryption metadata and server links", async () => {
+    const filePath = createTempFile("encrypted.txt", "secret");
+    const objectStore = {
+      uploadFile: mock(async (_key: string, sourcePath: string, _type: string, options?: { transform?: (stream: NodeJS.ReadableStream) => NodeJS.ReadableStream }) => {
+        const stream = options?.transform ? options.transform(Readable.from([readFileSync(sourcePath)])) : Readable.from([readFileSync(sourcePath)]);
+        for await (const _chunk of stream) {
+          // drain encrypted stream so the GCM auth tag is available
+        }
+      }),
+    };
+
+    const result = await uploadFile(filePath, { encrypt: true, password: "pw", linkType: "presigned" }, {
+      ...deps,
+      objectStore: objectStore as any,
+    });
+
+    expect(result.link).toContain("/a/");
+    expect(result.encryptionAlgorithm).toBe("aes-256-gcm");
+    expect(result.encryptionSalt).toBeTruthy();
+    expect(result.encryptionIv).toBeTruthy();
+    expect(result.encryptionTag).toBeTruthy();
+  });
+
+  it("uses S3 uploadFile when the injected S3 client supports it", async () => {
+    const filePath = createTempFile("direct-file.txt", "direct");
+    const s3WithUploadFile = {
+      uploadFile: mock(async () => {}),
+      presign: mock(async () => "https://s3.example.com/presigned"),
+    };
+
+    await uploadFile(filePath, {}, { ...deps, s3: s3WithUploadFile as any });
+
+    expect(s3WithUploadFile.uploadFile).toHaveBeenCalledTimes(1);
+    expect(mockS3.upload).not.toHaveBeenCalled();
+  });
+
+  it("uses local object storage when configured", async () => {
+    const dir = join(tmpdir(), `attachments-upload-local-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const filePath = createTempFile("local.txt", "local-data");
+    try {
+      const result = await uploadFile(filePath, {}, {
+        db: mockDb as any,
+        config: {
+          ...mockConfig,
+          storage: { backend: "local" as const, localDir: dir, maxSizeBytes: 1024 },
+        },
+      });
+
+      expect(result.bucket).toBe("local");
+      expect(result.storageBackend).toBe("local");
+      expect(readFileSync(join(dir, result.s3Key), "utf8")).toBe("local-data");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("uploadStreamAttachment", () => {
+  let mockS3: ReturnType<typeof makeMockS3>;
+  let mockDb: ReturnType<typeof makeMockDB>;
+  let deps: UploadDeps;
+
+  beforeEach(() => {
+    mockS3 = makeMockS3();
+    mockDb = makeMockDB();
+    deps = { s3: mockS3 as any, db: mockDb as any, config: mockConfig };
+  });
+
+  it("uploads streams with objectStore injection and counted size", async () => {
+    const objectStore = {
+      uploadStream: mock(async (_key: string, stream: NodeJS.ReadableStream, _type: string) => {
+        for await (const _chunk of stream) {
+          // drain
+        }
+      }),
+    };
+
+    const result = await uploadStreamAttachment(Readable.from(["stream"]), "stream.txt", "text/plain", {}, {
+      ...deps,
+      objectStore: objectStore as any,
+    });
+
+    expect(result.size).toBe("stream".length);
+    expect(result.link).toContain("https://");
+    expect(objectStore.uploadStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects declared stream sizes above the configured max", async () => {
+    await expect(uploadStreamAttachment(Readable.from(["abc"]), "too-big.txt", "text/plain", { size: 5 }, {
+      ...deps,
+      config: {
+        ...mockConfig,
+        storage: { backend: "s3" as const, localDir: "~/.hasna/attachments/objects", maxSizeBytes: 2 },
+      },
+    })).rejects.toThrow("File too large");
+  });
+
+  it("rejects streams that exceed the configured max while uploading", async () => {
+    await expect(uploadStreamAttachment(Readable.from(["abc"]), "too-big.txt", "text/plain", {}, {
+      ...deps,
+      config: {
+        ...mockConfig,
+        storage: { backend: "s3" as const, localDir: "~/.hasna/attachments/objects", maxSizeBytes: 2 },
+      },
+    })).rejects.toThrow("File too large");
+  });
+
+  it("requires a password for encrypted streams", async () => {
+    await expect(uploadStreamAttachment(Readable.from(["secret"]), "secret.txt", "text/plain", { encrypt: true }, deps))
+      .rejects.toThrow("--encrypt requires a password");
+  });
 });
 
 describe("uploadFromBuffer", () => {
@@ -345,5 +474,27 @@ describe("uploadFromUrl", () => {
     );
 
     expect(result.link).toContain(`/a/`);
+  });
+
+  it("rejects URL uploads when content-length exceeds the configured max", async () => {
+    globalThis.fetch = mock(async () => new Response("abc", {
+      status: 200,
+      headers: { "content-length": "5" },
+    })) as any;
+
+    await expect(uploadFromUrl("https://example.com/large.txt", {}, {
+      ...deps,
+      config: {
+        ...mockConfig,
+        storage: { backend: "s3" as const, localDir: "~/.hasna/attachments/objects", maxSizeBytes: 2 },
+      },
+    })).rejects.toThrow("File too large");
+  });
+
+  it("rejects URL responses without readable bodies", async () => {
+    globalThis.fetch = mock(async () => new Response(null, { status: 200 })) as any;
+
+    await expect(uploadFromUrl("https://example.com/empty.txt", {}, deps))
+      .rejects.toThrow("URL response did not include a readable body");
   });
 });

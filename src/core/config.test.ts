@@ -9,10 +9,21 @@ import {
   getConfig,
   setConfig,
   validateS3Config,
+  hasS3Config,
+  resolveStorageBackend,
+  validateStorageConfig,
+  normalizePublicPath,
+  getPublicBaseUrl,
+  getClientApiBaseUrl,
+  getClientApiToken,
+  isCloudClientMode,
+  getInternalBaseUrl,
   parseExpiry,
+  parseExpiryStrict,
   setConfigPath,
   resetConfigPath,
   CONFIG_PATH,
+  normalizeConfig,
   type AttachmentsConfig,
 } from "./config";
 
@@ -33,6 +44,15 @@ afterEach(() => {
   if (existsSync(TEST_DIR)) {
     rmSync(TEST_DIR, { recursive: true, force: true });
   }
+  delete process.env["ATTACHMENTS_API_URL"];
+  delete process.env["HASNA_ATTACHMENTS_API_URL"];
+  delete process.env["ATTACHMENTS_API_TOKEN"];
+  delete process.env["HASNA_ATTACHMENTS_API_TOKEN"];
+  delete process.env["CUSTOM_ATTACHMENTS_TOKEN"];
+  delete process.env["ATTACHMENTS_MODE"];
+  delete process.env["ATTACHMENTS_CLIENT_MODE"];
+  delete process.env["ATTACHMENTS_INTERNAL_URL"];
+  delete process.env["HASNA_ATTACHMENTS_INTERNAL_URL"];
 });
 
 describe("default config path migration", () => {
@@ -270,6 +290,67 @@ describe("validateS3Config", () => {
   });
 });
 
+describe("storage and URL config helpers", () => {
+  it("detects S3 config completeness and resolves storage backend", () => {
+    expect(hasS3Config(normalizeConfig({}))).toBe(false);
+    expect(resolveStorageBackend(normalizeConfig({ storage: { backend: "local" } }))).toBe("local");
+    expect(resolveStorageBackend(normalizeConfig({
+      storage: { backend: "auto" },
+      s3: { bucket: "bucket", region: "us-east-1" },
+    }))).toBe("s3");
+    expect(() => resolveStorageBackend(normalizeConfig({ storage: { backend: "s3" } }))).toThrow("S3 configuration incomplete");
+  });
+
+  it("validates storage max size and S3-backed storage", () => {
+    expect(() => validateStorageConfig(normalizeConfig({ storage: { maxSizeBytes: 0 } }))).toThrow("storage.maxSizeBytes");
+    expect(() => validateStorageConfig(normalizeConfig({
+      storage: { backend: "s3" },
+      s3: { bucket: "bucket", region: "us-east-1" },
+    }))).not.toThrow();
+  });
+
+  it("normalizes public paths and chooses public base URL from domains", () => {
+    expect(normalizePublicPath("")).toBe("/a");
+    expect(normalizePublicPath("files///")).toBe("/files");
+    expect(normalizePublicPath("/")).toBe("/a");
+    expect(getPublicBaseUrl(normalizeConfig({
+      server: { baseUrl: "http://localhost:3459" },
+      domains: [
+        { hostname: "secondary.example", baseUrl: "https://secondary.example" },
+        { hostname: "primary.example", baseUrl: "https://primary.example", primary: true },
+      ],
+    }))).toBe("https://primary.example");
+    expect(getPublicBaseUrl(normalizeConfig({
+      server: { baseUrl: "http://localhost:3459" },
+      domains: [{ hostname: "first.example", baseUrl: "https://first.example" }],
+    }))).toBe("https://first.example");
+  });
+
+  it("reads client API URL and token from config and environment", () => {
+    expect(getClientApiBaseUrl(normalizeConfig({ client: { apiBaseUrl: "https://api.example///" } }))).toBe("https://api.example");
+    process.env["HASNA_ATTACHMENTS_API_URL"] = "https://env.example/";
+    expect(getClientApiBaseUrl(normalizeConfig({}))).toBe("https://env.example");
+
+    expect(getClientApiToken(normalizeConfig({ client: { apiToken: "cfg-token" } }))).toBe("cfg-token");
+    process.env["CUSTOM_ATTACHMENTS_TOKEN"] = "custom-token";
+    expect(getClientApiToken(normalizeConfig({ client: { apiTokenEnv: "CUSTOM_ATTACHMENTS_TOKEN" } }))).toBe("custom-token");
+    process.env["ATTACHMENTS_API_TOKEN"] = "default-token";
+    expect(getClientApiToken(normalizeConfig({}))).toBe("default-token");
+  });
+
+  it("detects cloud client mode and internal base URL sources", () => {
+    expect(isCloudClientMode(normalizeConfig({ client: { mode: "cloud" } }))).toBe(true);
+    process.env["ATTACHMENTS_CLIENT_MODE"] = "remote";
+    expect(isCloudClientMode(normalizeConfig({ client: { mode: "local" } }))).toBe(true);
+    process.env["ATTACHMENTS_CLIENT_MODE"] = "local";
+    expect(isCloudClientMode(normalizeConfig({ client: { mode: "cloud" } }))).toBe(false);
+
+    expect(getInternalBaseUrl(normalizeConfig({ client: { internalBaseUrl: "http://station:3459/" } }))).toBe("http://station:3459");
+    process.env["HASNA_ATTACHMENTS_INTERNAL_URL"] = "http://env-internal:3459/";
+    expect(getInternalBaseUrl(normalizeConfig({}))).toBe("http://env-internal:3459");
+  });
+});
+
 // ── parseExpiry ───────────────────────────────────────────────────────────────
 
 describe("parseExpiry", () => {
@@ -319,5 +400,16 @@ describe("parseExpiry", () => {
     expect(parseExpiry(" 7d")).toBe(7 * 86_400_000);
     expect(parseExpiry("7d ")).toBe(7 * 86_400_000); // trim() handles both sides
     expect(parseExpiry("  24h  ")).toBe(24 * 3_600_000);
+  });
+});
+
+describe("parseExpiryStrict", () => {
+  it("distinguishes never from timed expiries", () => {
+    expect(parseExpiryStrict("never")).toEqual({ milliseconds: null, never: true });
+    expect(parseExpiryStrict("30m")).toEqual({ milliseconds: 30 * 60_000, never: false });
+  });
+
+  it("throws for invalid strict expiry values", () => {
+    expect(() => parseExpiryStrict("soon")).toThrow("Invalid expiry format");
   });
 });
