@@ -1,8 +1,6 @@
 import { Database } from "bun:sqlite";
-import { join } from "path";
-import { existsSync, copyFileSync } from "fs";
 import { buildPasswordHash, generateShareToken, hashShareToken } from "./security";
-import { ensureAttachmentsDataDir } from "./paths";
+import { getAttachmentsDbPath } from "./paths";
 
 export interface Attachment {
   id: string;
@@ -161,17 +159,7 @@ export class AttachmentsDB {
   private db: Database;
 
   constructor(dbPath?: string) {
-    const resolvedPath =
-      dbPath ??
-      (() => {
-        const newDir = ensureAttachmentsDataDir();
-        const oldDb = join(newDir, "attachments.db");
-        const newDb = join(newDir, "db.sqlite");
-        if (existsSync(oldDb) && !existsSync(newDb)) {
-          copyFileSync(oldDb, newDb);
-        }
-        return newDb;
-      })();
+    const resolvedPath = dbPath ?? getAttachmentsDbPath();
 
     this.db = new Database(resolvedPath);
     this.db.run("PRAGMA journal_mode = WAL;");

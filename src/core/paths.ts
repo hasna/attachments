@@ -1,5 +1,5 @@
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import {
   copyFileSync,
   existsSync,
@@ -12,6 +12,12 @@ import {
 
 function getHomeDir(): string {
   return process.env["HOME"] || process.env["USERPROFILE"] || homedir();
+}
+
+function expandHomePath(path: string): string {
+  if (path === "~") return getHomeDir();
+  if (path.startsWith("~/") || path.startsWith("~\\")) return join(getHomeDir(), path.slice(2));
+  return path;
 }
 
 function copyMissingEntries(sourceDir: string, targetDir: string): void {
@@ -44,6 +50,13 @@ function copyMissingEntries(sourceDir: string, targetDir: string): void {
   }
 }
 
+function copyLegacyDbIfMissing(dataDir: string, dbPath: string): void {
+  const oldDb = join(dataDir, "attachments.db");
+  if (existsSync(oldDb) && !existsSync(dbPath)) {
+    copyFileSync(oldDb, dbPath);
+  }
+}
+
 export function ensureAttachmentsDataDir(): string {
   const home = getHomeDir();
   const canonicalDir = join(home, ".hasna", "attachments");
@@ -59,4 +72,21 @@ export function ensureAttachmentsDataDir(): string {
   }
 
   return canonicalDir;
+}
+
+export const HASNA_ATTACHMENTS_DB_PATH_ENV = "HASNA_ATTACHMENTS_DB_PATH";
+
+export function getAttachmentsDbPath(): string {
+  const dataDir = ensureAttachmentsDataDir();
+  const override = process.env[HASNA_ATTACHMENTS_DB_PATH_ENV]?.trim();
+  if (override) {
+    const dbPath = expandHomePath(override);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    copyLegacyDbIfMissing(dataDir, dbPath);
+    return dbPath;
+  }
+
+  const newDb = join(dataDir, "db.sqlite");
+  copyLegacyDbIfMissing(dataDir, newDb);
+  return newDb;
 }

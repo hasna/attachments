@@ -115,7 +115,10 @@ MCP exposes the same flow through `storage_status`, `storage_push`,
 ## Data Directory
 
 Data is stored in `~/.hasna/attachments/`. Local object storage defaults to
-`~/.hasna/attachments/objects`.
+`~/.hasna/attachments/objects`. On first run, missing files from legacy
+`~/.open-attachments/` and `~/.attachments/` directories are copied into the
+canonical directory without overwriting existing canonical files. Override the
+SQLite metadata path with `HASNA_ATTACHMENTS_DB_PATH=/path/to/db.sqlite`.
 
 ## License
 
