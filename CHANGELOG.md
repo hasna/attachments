@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Feedback persistence and delivery: SQLite feedback rows now use `service`,
+  `version`, `message`, `email`, and `timestamp`; `attachments feedback send`
+  and MCP `send_feedback` save locally before posting to the configured Hasna
+  cloud feedback endpoint.
+- Feedback receiver APIs: `POST /api/feedback` for the local/API-compatible
+  server and `POST /v1/feedback` for the cloud serve app, with generated SDK
+  support through `createFeedback`.
+
 ## [1.0.47] - 2026-06-27
 
 ### Fixed

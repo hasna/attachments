@@ -27,6 +27,7 @@ import {
   verifyAccessGrant,
 } from "../core/email-gate";
 import { resolveEmailSender } from "../core/email-sender";
+import { normalizeFeedbackInput, type FeedbackInput } from "../core/feedback";
 
 function maxUploadBytes(): number {
   const config = getConfig();
@@ -439,6 +440,27 @@ export function createApp(): Hono {
   });
 
   app.get("/api/deployment", (c) => c.json(deploymentPlan()));
+
+  // POST /api/feedback — receive feedback from CLI/MCP clients
+  app.post("/api/feedback", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as FeedbackInput | null;
+    if (!body || typeof body !== "object") {
+      return c.json({ error: "JSON body is required" }, 400);
+    }
+
+    try {
+      const feedback = normalizeFeedbackInput(body);
+      const db = new AttachmentsDB();
+      try {
+        db.insertFeedback(feedback);
+      } finally {
+        db.close();
+      }
+      return c.json(feedback, 201);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
 
   // POST /api/attachments — multipart file upload
   app.post("/api/attachments", async (c) => {

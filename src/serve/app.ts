@@ -29,6 +29,7 @@ import { openAttachmentStream, isExpired } from "../core/download.js";
 import { generatePresignedLink, generateShareLink, getLinkType } from "../core/links.js";
 import { createObjectKey, sanitizeFilename, contentDispositionAttachment } from "../core/security.js";
 import { buildOpenApiDocument } from "./openapi.js";
+import { normalizeFeedbackInput, type FeedbackInput } from "../core/feedback.js";
 
 export interface ServeAppDeps {
   client: PoolQueryClient;
@@ -133,6 +134,22 @@ export function createServeApp(deps: ServeAppDeps): Hono {
   app.get("/openapi.json", (c) => c.json(buildOpenApiDocument(version)));
 
   // ── /v1 API ──────────────────────────────────────────────────────────────
+  app.post("/v1/feedback", async (c) => {
+    const denied = await requireScopes(c, [`${APP_SLUG}:write`]);
+    if (denied) return denied;
+    const body = (await c.req.json().catch(() => null)) as FeedbackInput | null;
+    if (!body || typeof body !== "object") {
+      return c.json({ error: "JSON body is required" }, 400);
+    }
+    try {
+      const feedback = normalizeFeedbackInput(body);
+      await store.insertFeedback(feedback);
+      return c.json(feedback, 201);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
   app.get("/v1/attachments", async (c) => {
     const denied = await requireScopes(c, [`${APP_SLUG}:read`]);
     if (denied) return denied;

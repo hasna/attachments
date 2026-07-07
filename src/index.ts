@@ -15,6 +15,8 @@ export { resolveShareAccess, ShareAccessError } from "./core/share.js";
 export { LocalObjectStore, createObjectStore } from "./core/object-storage.js";
 export { buildDeploymentPlan } from "./core/deployment.js";
 export { resolveInternalBaseUrl, resolveInternalBindHost } from "./core/internal-link.js";
+export { normalizeFeedbackInput, postFeedbackToCloud, resolveFeedbackEndpoint, sendFeedback } from "./core/feedback.js";
+export type { FeedbackCloudResult, FeedbackDeliveryOptions, FeedbackInput, SendFeedbackOptions, SendFeedbackResult } from "./core/feedback.js";
 export {
   deleteCloudAttachment,
   downloadFromCloud,

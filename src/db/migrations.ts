@@ -86,6 +86,21 @@ const CORE_MIGRATIONS: Migration[] = [
        created_at TEXT NOT NULL DEFAULT NOW()::text
      )`,
   ),
+  defineMigration(
+    "attachments_0007_feedback_contract_fields",
+    `ALTER TABLE feedback ADD COLUMN IF NOT EXISTS service TEXT;
+     ALTER TABLE feedback ADD COLUMN IF NOT EXISTS version TEXT;
+     ALTER TABLE feedback ADD COLUMN IF NOT EXISTS timestamp TEXT;
+     UPDATE feedback
+       SET service = 'attachments'
+       WHERE service IS NULL OR btrim(service) = '';
+     UPDATE feedback
+       SET version = 'unknown'
+       WHERE version IS NULL OR btrim(version) = '';
+     UPDATE feedback
+       SET timestamp = COALESCE(NULLIF(timestamp, ''), created_at, NOW()::text)
+       WHERE timestamp IS NULL OR btrim(timestamp) = ''`,
+  ),
 ];
 
 /**

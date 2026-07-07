@@ -228,6 +228,43 @@ describe("AttachmentsDB", () => {
     });
   });
 
+  describe("feedback", () => {
+    it("creates feedback table with canonical contract fields", () => {
+      const columns = db.raw
+        .prepare("PRAGMA table_info(feedback)")
+        .all() as Array<{ name: string }>;
+      const names = columns.map((column) => column.name);
+
+      expect(names).toContain("service");
+      expect(names).toContain("version");
+      expect(names).toContain("message");
+      expect(names).toContain("email");
+      expect(names).toContain("timestamp");
+    });
+
+    it("inserts and lists feedback rows", () => {
+      db.insertFeedback({
+        id: "fb_test001",
+        service: "attachments",
+        version: "1.2.3",
+        message: "Useful service",
+        email: "user@example.com",
+        timestamp: "2026-07-07T10:11:12.000Z",
+      });
+
+      const rows = db.listFeedback();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toEqual({
+        id: "fb_test001",
+        service: "attachments",
+        version: "1.2.3",
+        message: "Useful service",
+        email: "user@example.com",
+        timestamp: "2026-07-07T10:11:12.000Z",
+      });
+    });
+  });
+
   describe("deleteExpired", () => {
     it("deletes only expired attachments and returns count", () => {
       const now = Date.now();

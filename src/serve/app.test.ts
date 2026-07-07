@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { mintApiKey } from "@hasna/contracts/auth";
 import { createServeApp } from "./app.js";
 import { buildOpenApiDocument } from "./openapi.js";
@@ -38,11 +38,11 @@ function stubClient(): PoolQueryClient {
   return client;
 }
 
-function makeApp() {
+function makeApp(overrides: { store?: PgAttachmentsStore } = {}) {
   const client = stubClient();
   return createServeApp({
     client,
-    store: new PgAttachmentsStore(client),
+    store: overrides.store ?? new PgAttachmentsStore(client),
     config: normalizeConfig({ storage: { backend: "local" } }),
     version: "test",
     mode: "cloud",
@@ -95,6 +95,31 @@ describe("attachments serve app", () => {
     expect(res.status).toBe(401);
   });
 
+  test("POST /v1/feedback stores canonical feedback fields", async () => {
+    const insertFeedback = mock(async (_feedback: unknown) => {});
+    const { token } = mintApiKey({ app: "attachments", scopes: ["attachments:write"], signingSecret: SIGNING });
+    const res = await makeApp({
+      store: { insertFeedback } as unknown as PgAttachmentsStore,
+    }).request("/v1/feedback", {
+      method: "POST",
+      headers: { "x-api-key": token, "content-type": "application/json" },
+      body: JSON.stringify({
+        service: "attachments",
+        version: "1.2.3",
+        message: "The upload page needs better progress",
+        email: "User@Example.com",
+        timestamp: "2026-07-07T12:00:00.000Z",
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.service).toBe("attachments");
+    expect(body.version).toBe("1.2.3");
+    expect(body.email).toBe("user@example.com");
+    expect(insertFeedback).toHaveBeenCalledTimes(1);
+  });
+
   test("openapi document declares the v1 surface", () => {
     const doc = buildOpenApiDocument("0.0.0") as { paths: Record<string, unknown> };
     expect(Object.keys(doc.paths).sort()).toEqual([
@@ -103,6 +128,7 @@ describe("attachments serve app", () => {
       "/v1/attachments",
       "/v1/attachments/{id}",
       "/v1/attachments/{id}/link",
+      "/v1/feedback",
       "/version",
     ]);
   });

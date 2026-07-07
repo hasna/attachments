@@ -18,12 +18,26 @@ attachments --help
 attachments upload report.pdf
 attachments upload report.pdf --expiry 24h --password "$ATTACHMENT_PASSWORD"
 attachments upload archive.zip --encrypt --password "$ATTACHMENT_PASSWORD" --max-downloads 1
+attachments feedback send "Upload progress could be clearer" --email user@example.com
 attachments serve --host 0.0.0.0 --port 3459
 ```
 
 Fresh installs work without S3. Objects are stored under
 `~/.hasna/attachments/objects`, metadata is stored in local SQLite, and share
 links are app-hosted URLs such as `http://localhost:3459/a/<token>`.
+
+## Feedback
+
+```bash
+attachments config set --api-url https://attachments.example.com --api-token-env ATTACHMENTS_API_TOKEN
+attachments feedback send "Upload progress could be clearer" --service attachments --email user@example.com
+```
+
+Feedback is saved locally in SQLite first, then submitted to the configured
+Hasna cloud endpoint. Configure a dedicated endpoint with
+`ATTACHMENTS_FEEDBACK_URL` or let the CLI derive `/api/feedback` from
+`ATTACHMENTS_API_URL` / `HASNA_ATTACHMENTS_API_URL`. The MCP server exposes the
+same flow through `send_feedback`.
 
 For hosted deployments, keep the bucket private and let the app serve public
 download pages and byte streams from `/a/<token>`. Direct presigned S3 links

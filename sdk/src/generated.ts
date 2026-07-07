@@ -14,6 +14,10 @@ export interface VersionInfo { "status": string; "version": string; "mode": stri
 
 export interface CreateAttachmentRequest { "filename": string; "content_base64": string; "expiry"?: string; "tag"?: string; "password"?: string; "max_downloads"?: number; "link_type"?: "presigned" | "server" }
 
+export interface CreateFeedbackRequest { "service"?: string; "version"?: string; "message": string; "email"?: string | null; "timestamp"?: string }
+
+export interface Feedback { "id": string; "service": string; "version": string; "message": string; "email"?: string | null; "timestamp": string }
+
 export interface LinkResponse { "link": string | null; "expires_at"?: number | null }
 
 export interface RegenerateLinkRequest { "expiry"?: string; "password"?: string; "max_downloads"?: number; "link_type"?: "presigned" | "server" }
@@ -145,6 +149,15 @@ export class AttachmentsApiClient {
     /** Regenerate the share link. */
     async regenerateAttachmentLink(id: string, body?: RegenerateLinkRequest, init?: RequestInit): Promise<LinkResponse> {
       return this.request("POST", `/v1/attachments/${encodeURIComponent(String(id))}/link`, {
+        body,
+        query: undefined,
+        init,
+      });
+    }
+
+    /** Create a feedback record. */
+    async createFeedback(body: CreateFeedbackRequest, init?: RequestInit): Promise<Feedback> {
+      return this.request("POST", `/v1/feedback`, {
         body,
         query: undefined,
         init,

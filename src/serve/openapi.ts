@@ -21,6 +21,18 @@ export function buildOpenApiDocument(version: string): Record<string, unknown> {
     },
     required: ["id", "filename", "size", "created_at"],
   };
+  const feedbackSchema = {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      service: { type: "string" },
+      version: { type: "string" },
+      message: { type: "string" },
+      email: { type: "string", nullable: true },
+      timestamp: { type: "string", format: "date-time" },
+    },
+    required: ["id", "service", "version", "message", "timestamp"],
+  };
 
   return {
     openapi: "3.0.3",
@@ -77,6 +89,18 @@ export function buildOpenApiDocument(version: string): Record<string, unknown> {
           },
           required: ["filename", "content_base64"],
         },
+        CreateFeedbackRequest: {
+          type: "object",
+          properties: {
+            service: { type: "string" },
+            version: { type: "string" },
+            message: { type: "string" },
+            email: { type: "string", nullable: true },
+            timestamp: { type: "string", format: "date-time" },
+          },
+          required: ["message"],
+        },
+        Feedback: feedbackSchema,
         LinkResponse: {
           type: "object",
           properties: {
@@ -162,6 +186,20 @@ export function buildOpenApiDocument(version: string): Record<string, unknown> {
           },
           responses: {
             "201": { content: { "application/json": { schema: { $ref: "#/components/schemas/Attachment" } } } },
+          },
+        },
+      },
+      "/v1/feedback": {
+        post: {
+          operationId: "createFeedback",
+          summary: "Create a feedback record.",
+          security: [{ apiKey: [] }],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { $ref: "#/components/schemas/CreateFeedbackRequest" } } },
+          },
+          responses: {
+            "201": { content: { "application/json": { schema: { $ref: "#/components/schemas/Feedback" } } } },
           },
         },
       },
