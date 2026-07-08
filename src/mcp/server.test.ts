@@ -1140,11 +1140,17 @@ describe("MCP Server — complete_task_with_files", () => {
         createdAt: 1699000000000,
       }));
 
-    let capturedUrl = "";
-    let capturedBody = "";
+    const urls: string[] = [];
+    let patchBody = "";
     globalThis.fetch = mock(async (url: unknown, opts: unknown) => {
-      capturedUrl = String(url);
-      capturedBody = (opts as RequestInit).body as string;
+      const method = ((opts as RequestInit | undefined)?.method ?? "GET").toUpperCase();
+      urls.push(String(url));
+      if (method === "GET") {
+        return { ok: true, status: 200, json: async () => ({ id: "TASK-001", version: 1, metadata: {} }), text: async () => "" } as Response;
+      }
+      if (method === "PATCH") {
+        patchBody = (opts as RequestInit).body as string;
+      }
       return { ok: true, status: 200, text: async () => "" } as Response;
     }) as unknown as typeof fetch;
 
@@ -1156,11 +1162,17 @@ describe("MCP Server — complete_task_with_files", () => {
     })) as { content: Array<{ text: string }> };
 
     expect(mockUploadFile).toHaveBeenCalledTimes(2);
-    expect(capturedUrl).toBe("http://localhost:3000/api/tasks/TASK-001/complete");
+    // GET + PATCH the task, then POST /complete
+    expect(urls).toEqual([
+      "http://localhost:3000/api/tasks/TASK-001",
+      "http://localhost:3000/api/tasks/TASK-001",
+      "http://localhost:3000/api/tasks/TASK-001/complete",
+    ]);
 
-    const body = JSON.parse(capturedBody);
-    expect(body.attachment_ids).toEqual(["att_ev001", "att_ev002"]);
-    expect(body.notes).toBeUndefined();
+    // Evidence persisted into the task metadata (retrievable by resolve-evidence).
+    const patch = JSON.parse(patchBody);
+    const evidence = patch.metadata._evidence;
+    expect(evidence.attachments.map((a: { id: string }) => a.id)).toEqual(["att_ev001", "att_ev002"]);
 
     const parsed = JSON.parse(result.content[0]!.text);
     expect(parsed.task_id).toBe("TASK-001");
@@ -1168,7 +1180,7 @@ describe("MCP Server — complete_task_with_files", () => {
     expect(parsed.links).toEqual(["https://example.com/att_ev001", "https://example.com/att_ev002"]);
   });
 
-  it("includes notes in the POST body when provided", async () => {
+  it("stores notes in the persisted evidence metadata when provided", async () => {
     mockUploadFile.mockImplementationOnce(async () => ({
       id: "att_ev003",
       filename: "result.txt",
@@ -1181,9 +1193,15 @@ describe("MCP Server — complete_task_with_files", () => {
       createdAt: 1699000000000,
     }));
 
-    let capturedBody = "";
+    let patchBody = "";
     globalThis.fetch = mock(async (_url: unknown, opts: unknown) => {
-      capturedBody = (opts as RequestInit).body as string;
+      const method = ((opts as RequestInit | undefined)?.method ?? "GET").toUpperCase();
+      if (method === "GET") {
+        return { ok: true, status: 200, json: async () => ({ id: "TASK-002", version: 1, metadata: {} }), text: async () => "" } as Response;
+      }
+      if (method === "PATCH") {
+        patchBody = (opts as RequestInit).body as string;
+      }
       return { ok: true, status: 200, text: async () => "" } as Response;
     }) as unknown as typeof fetch;
 
@@ -1194,8 +1212,8 @@ describe("MCP Server — complete_task_with_files", () => {
       notes: "All tests green",
     });
 
-    const body = JSON.parse(capturedBody);
-    expect(body.notes).toBe("All tests green");
+    const patch = JSON.parse(patchBody);
+    expect(patch.metadata._evidence.notes).toBe("All tests green");
   });
 
   it("returns error when task not found (404)", async () => {

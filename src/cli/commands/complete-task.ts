@@ -15,8 +15,26 @@ export interface CompleteTaskResult {
 }
 
 /**
- * Uploads files and completes a todos task with those attachment IDs as evidence.
- * Uses native fetch — no todos-sdk dependency required.
+ * One evidence entry as persisted into the todos task metadata. This is the
+ * exact shape `resolve-evidence` reads back from `metadata._evidence.attachments`,
+ * so the two commands share a single contract.
+ */
+interface EvidenceAttachmentEntry {
+  id: string;
+  link: string | null;
+  filename: string;
+  size: number;
+}
+
+/**
+ * Uploads files and completes a todos task with those attachments recorded as
+ * retrievable evidence. Uses native fetch — no todos-sdk dependency required.
+ *
+ * The todos `POST /api/tasks/:id/complete` endpoint does NOT read a request body,
+ * so attachment IDs sent there are silently discarded. To make the evidence
+ * durable and retrievable (by `resolve-evidence`), we explicitly persist the full
+ * attachment entries into the task's `metadata._evidence.attachments` via a PATCH,
+ * merging with any existing metadata, before marking the task complete.
  */
 export async function completeTaskWithFiles(
   taskId: string,
@@ -31,9 +49,10 @@ export async function completeTaskWithFiles(
 ): Promise<CompleteTaskResult> {
   const todosUrl = options.todosUrl ?? "http://localhost:3000";
 
-  // Upload each file and collect attachment IDs + links
+  // 1. Upload each file (via the Store) and collect the evidence entries.
   const attachment_ids: string[] = [];
   const links: Array<string | null> = [];
+  const evidence: EvidenceAttachmentEntry[] = [];
 
   const store = storeFactory();
   try {
@@ -41,31 +60,85 @@ export async function completeTaskWithFiles(
       const attachment = await store.uploadFile(filePath, { expiry: options.expiry });
       attachment_ids.push(attachment.id);
       links.push(attachment.link);
+      evidence.push({
+        id: attachment.id,
+        link: attachment.link,
+        filename: attachment.filename,
+        size: attachment.size,
+      });
     }
   } finally {
     store.close();
   }
 
-  // Complete the task via todos REST API
-  const url = `${todosUrl}/api/tasks/${taskId}/complete`;
-  const body: Record<string, unknown> = { attachment_ids };
-  if (options.notes !== undefined) {
-    body.notes = options.notes;
-  }
+  const taskUrl = `${todosUrl}/api/tasks/${taskId}`;
 
-  const response = await fetchFn(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    if (response.status === 404) {
+  // 2. Read the current task so we can merge (not clobber) its metadata and honor
+  //    optimistic concurrency via its version.
+  const getResponse = await fetchFn(taskUrl);
+  if (!getResponse.ok) {
+    if (getResponse.status === 404) {
       throw new Error(`Task not found: ${taskId}`);
     }
-    const responseBody = await response.text().catch(() => "");
+    const responseBody = await getResponse.text().catch(() => "");
     throw new Error(
-      `Failed to complete task ${taskId}: HTTP ${response.status}${responseBody ? ` — ${responseBody}` : ""}`
+      `Failed to fetch task ${taskId}: HTTP ${getResponse.status}${responseBody ? ` — ${responseBody}` : ""}`
+    );
+  }
+  const task = (await getResponse.json()) as Record<string, unknown>;
+
+  const existingMetadata =
+    task.metadata && typeof task.metadata === "object"
+      ? (task.metadata as Record<string, unknown>)
+      : {};
+  const existingEvidence =
+    existingMetadata._evidence && typeof existingMetadata._evidence === "object"
+      ? (existingMetadata._evidence as Record<string, unknown>)
+      : {};
+  const priorAttachments = Array.isArray(existingEvidence.attachments)
+    ? (existingEvidence.attachments as EvidenceAttachmentEntry[])
+    : [];
+
+  const mergedMetadata: Record<string, unknown> = {
+    ...existingMetadata,
+    _evidence: {
+      ...existingEvidence,
+      attachments: [...priorAttachments, ...evidence],
+      completed_at: new Date().toISOString(),
+      ...(options.notes !== undefined ? { notes: options.notes } : {}),
+    },
+  };
+
+  // 3. Persist the evidence into the task metadata.
+  const patchBody: Record<string, unknown> = { metadata: mergedMetadata };
+  if (typeof task.version === "number") {
+    patchBody.version = task.version;
+  }
+  const patchResponse = await fetchFn(taskUrl, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patchBody),
+  });
+  if (!patchResponse.ok) {
+    const responseBody = await patchResponse.text().catch(() => "");
+    throw new Error(
+      `Failed to persist attachment evidence for task ${taskId}: HTTP ${patchResponse.status}${responseBody ? ` — ${responseBody}` : ""}`
+    );
+  }
+
+  // 4. Mark the task complete.
+  const completeResponse = await fetchFn(`${taskUrl}/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!completeResponse.ok) {
+    if (completeResponse.status === 404) {
+      throw new Error(`Task not found: ${taskId}`);
+    }
+    const responseBody = await completeResponse.text().catch(() => "");
+    throw new Error(
+      `Failed to complete task ${taskId}: HTTP ${completeResponse.status}${responseBody ? ` — ${responseBody}` : ""}`
     );
   }
 

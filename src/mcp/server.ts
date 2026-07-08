@@ -10,6 +10,7 @@ import { isStdioMode, resolveMcpHttpPort, startMcpHttpServer } from "./http.js";
 import { nanoid } from "nanoid";
 import { computeReport } from "../cli/commands/report.js";
 import { runHealthCheck } from "../cli/commands/health-check.js";
+import { completeTaskWithFiles } from "../cli/commands/complete-task.js";
 import { resolveStore, LocalStore } from "../core/store.js";
 import { getConfig, parseExpiryStrict, setConfig } from "../core/config.js";
 
@@ -902,47 +903,14 @@ async function handleCompleteTaskWithFiles(args: {
     throw new Error("'paths' must be a non-empty array.");
   }
 
-  const todosUrl = args.todos_url ?? "http://localhost:3000";
-
-  // Upload each file and collect attachment IDs + links
-  const attachment_ids: string[] = [];
-  const links: Array<string | null> = [];
-
-  const uploadStore = resolveStore();
-  try {
-    for (const filePath of args.paths) {
-      const attachment = await uploadStore.uploadFile(filePath, { expiry: args.expiry });
-      attachment_ids.push(attachment.id);
-      links.push(attachment.link);
-    }
-  } finally {
-    uploadStore.close();
-  }
-
-  // Complete the task via todos REST API
-  const url = `${todosUrl}/api/tasks/${args.task_id}/complete`;
-  const body: Record<string, unknown> = { attachment_ids };
-  if (args.notes !== undefined) {
-    body.notes = args.notes;
-  }
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+  // Route through the shared CLI implementation so the MCP tool and CLI command
+  // behave identically — including persisting the attachments as retrievable
+  // todos evidence (`metadata._evidence.attachments`).
+  return completeTaskWithFiles(args.task_id, args.paths, {
+    todosUrl: args.todos_url,
+    expiry: args.expiry,
+    notes: args.notes,
   });
-
-  if (!response.ok) {
-    if (response.status === 404) {
-      throw new Error(`Task not found: ${args.task_id}`);
-    }
-    const responseBody = await response.text().catch(() => "");
-    throw new Error(
-      `Failed to complete task ${args.task_id}: HTTP ${response.status}${responseBody ? ` — ${responseBody}` : ""}`
-    );
-  }
-
-  return { task_id: args.task_id, attachment_ids, links };
 }
 
 async function handleSaveSession(args: {

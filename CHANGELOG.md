@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-07-08
+
+### Fixed
+
+- `complete-task` / `complete_task_with_files` (CLI + MCP) now persist uploaded attachments as retrievable todos evidence. The todos `POST /api/tasks/:id/complete` endpoint ignores its request body, so the attachment IDs sent there were silently discarded and `resolve-evidence` reported "No attachments found in evidence". The command now explicitly merges the full attachment entries into `metadata._evidence.attachments` (the exact shape `resolve-evidence` reads) via a PATCH — preserving existing metadata and honoring optimistic-concurrency versioning — before marking the task complete. Completion notes are recorded under `metadata._evidence.notes`.
+- The MCP `complete_task_with_files` tool now routes through the shared CLI implementation instead of duplicating the (buggy) completion logic, so both surfaces behave identically.
+
 ## [1.0.47] - 2026-06-27
 
 ### Fixed

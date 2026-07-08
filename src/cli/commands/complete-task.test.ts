@@ -44,12 +44,58 @@ const { completeTaskWithFiles, registerCompleteTask } = await import("./complete
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeFetch(status: number, body: string = ""): typeof fetch {
-  return mock(async (_url: unknown, _opts: unknown) => ({
-    ok: status >= 200 && status < 300,
-    status,
-    text: async () => body,
-  })) as unknown as typeof fetch;
+interface FetchSequenceOptions {
+  /** Task object returned by the initial GET /api/tasks/:id. */
+  task?: Record<string, unknown>;
+  getStatus?: number;
+  patchStatus?: number;
+  completeStatus?: number;
+  patchBody?: string;
+  completeBody?: string;
+  getBody?: string;
+}
+
+/**
+ * A fetch mock that understands the GET -> PATCH -> POST /complete sequence the
+ * command performs. Routes each call by method + URL suffix.
+ */
+function makeFetch(opts: FetchSequenceOptions = {}): typeof fetch {
+  const task = opts.task ?? { id: "TASK-001", version: 1, metadata: {} };
+  const getStatus = opts.getStatus ?? 200;
+  const patchStatus = opts.patchStatus ?? 200;
+  const completeStatus = opts.completeStatus ?? 200;
+
+  return mock(async (url: unknown, init?: unknown) => {
+    const method = ((init as RequestInit | undefined)?.method ?? "GET").toUpperCase();
+    const u = String(url);
+
+    if (method === "GET") {
+      return {
+        ok: getStatus >= 200 && getStatus < 300,
+        status: getStatus,
+        json: async () => task,
+        text: async () => opts.getBody ?? JSON.stringify(task),
+      };
+    }
+    if (method === "PATCH") {
+      return {
+        ok: patchStatus >= 200 && patchStatus < 300,
+        status: patchStatus,
+        json: async () => ({ ...task, ...JSON.parse(((init as RequestInit).body as string) || "{}") }),
+        text: async () => opts.patchBody ?? "",
+      };
+    }
+    // POST /complete
+    if (u.endsWith("/complete")) {
+      return {
+        ok: completeStatus >= 200 && completeStatus < 300,
+        status: completeStatus,
+        json: async () => task,
+        text: async () => opts.completeBody ?? "",
+      };
+    }
+    throw new Error(`Unexpected fetch: ${method} ${u}`);
+  }) as unknown as typeof fetch;
 }
 
 function buildProgram() {
@@ -105,6 +151,17 @@ function makeStoreFactory(uploadFile: (path: string, opts?: object) => Promise<M
   })) as unknown as () => import("../../core/store").Store;
 }
 
+/** Extract the parsed body of the first call matching the given HTTP method. */
+function bodyForMethod(fakeFetch: ReturnType<typeof mock>, method: string): Record<string, unknown> | undefined {
+  for (const call of fakeFetch.mock.calls as Array<[string, RequestInit | undefined]>) {
+    const m = (call[1]?.method ?? "GET").toUpperCase();
+    if (m === method && call[1]?.body) {
+      return JSON.parse(call[1].body as string);
+    }
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // completeTaskWithFiles unit tests
 // ---------------------------------------------------------------------------
@@ -114,9 +171,9 @@ describe("completeTaskWithFiles", () => {
     mockUploadFile.mockReset();
   });
 
-  it("uploads files and calls POST /api/tasks/:id/complete with attachment_ids", async () => {
+  it("uploads files, PATCHes evidence into task metadata, then completes", async () => {
     const upload = makeUpload("att_001", "https://example.com/att_001");
-    const fakeFetch = makeFetch(200);
+    const fakeFetch = makeFetch();
 
     const result = await completeTaskWithFiles(
       "TASK-001",
@@ -129,27 +186,73 @@ describe("completeTaskWithFiles", () => {
     expect(upload).toHaveBeenCalledTimes(1);
     expect(upload).toHaveBeenCalledWith("/tmp/file.txt", { expiry: undefined });
 
-    expect(fakeFetch).toHaveBeenCalledTimes(1);
-    const [url, opts] = (fakeFetch as ReturnType<typeof mock>).mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:3000/api/tasks/TASK-001/complete");
-    expect(opts.method).toBe("POST");
+    const calls = (fakeFetch as ReturnType<typeof mock>).mock.calls as Array<[string, RequestInit | undefined]>;
+    // GET -> PATCH -> POST /complete
+    expect(calls).toHaveLength(3);
+    expect(calls[0][0]).toBe("http://localhost:3000/api/tasks/TASK-001");
+    expect((calls[0][1]?.method ?? "GET").toUpperCase()).toBe("GET");
+    expect(calls[1][0]).toBe("http://localhost:3000/api/tasks/TASK-001");
+    expect(calls[1][1]?.method).toBe("PATCH");
+    expect(calls[2][0]).toBe("http://localhost:3000/api/tasks/TASK-001/complete");
+    expect(calls[2][1]?.method).toBe("POST");
 
-    const body = JSON.parse(opts.body as string);
-    expect(body.attachment_ids).toEqual(["att_001"]);
-    expect(body.notes).toBeUndefined();
+    // Evidence persisted in the exact shape resolve-evidence reads.
+    const patchBody = bodyForMethod(fakeFetch as ReturnType<typeof mock>, "PATCH")!;
+    const evidence = (patchBody.metadata as Record<string, unknown>)._evidence as Record<string, unknown>;
+    expect(evidence.attachments).toEqual([
+      { id: "att_001", link: "https://example.com/att_001", filename: "file.txt", size: 1024 },
+    ]);
 
     expect(result.task_id).toBe("TASK-001");
     expect(result.attachment_ids).toEqual(["att_001"]);
     expect(result.links).toEqual(["https://example.com/att_001"]);
   });
 
-  it("uploads multiple files and collects all attachment IDs", async () => {
+  it("merges evidence with existing metadata and prior attachments", async () => {
+    const upload = makeUpload("att_new", "https://example.com/att_new");
+    const fakeFetch = makeFetch({
+      task: {
+        id: "TASK-001",
+        version: 3,
+        metadata: {
+          fingerprint: "abc",
+          _evidence: {
+            attachments: [
+              { id: "att_old", link: "https://old.example.com", filename: "old.txt", size: 10 },
+            ],
+          },
+        },
+      },
+    });
+
+    await completeTaskWithFiles(
+      "TASK-001",
+      ["/tmp/new.txt"],
+      { todosUrl: "http://localhost:3000" },
+      makeStoreFactory(upload),
+      fakeFetch
+    );
+
+    const patchBody = bodyForMethod(fakeFetch as ReturnType<typeof mock>, "PATCH")!;
+    const metadata = patchBody.metadata as Record<string, unknown>;
+    // Existing top-level metadata preserved (not clobbered).
+    expect(metadata.fingerprint).toBe("abc");
+    // Optimistic-concurrency version forwarded.
+    expect(patchBody.version).toBe(3);
+    const evidence = metadata._evidence as Record<string, unknown>;
+    expect(evidence.attachments).toEqual([
+      { id: "att_old", link: "https://old.example.com", filename: "old.txt", size: 10 },
+      { id: "att_new", link: "https://example.com/att_new", filename: "file.txt", size: 1024 },
+    ]);
+  });
+
+  it("uploads multiple files and records all as evidence", async () => {
     let callCount = 0;
     const upload = mock(async (_path: string, _opts?: object): Promise<MockAttachment> => {
       callCount++;
       return {
         id: `att_00${callCount}`,
-        filename: "file.txt",
+        filename: `file${callCount}.txt`,
         s3Key: `key_${callCount}`,
         bucket: "test-bucket",
         size: 1024,
@@ -161,7 +264,7 @@ describe("completeTaskWithFiles", () => {
       };
     });
 
-    const fakeFetch = makeFetch(200);
+    const fakeFetch = makeFetch();
 
     const result = await completeTaskWithFiles(
       "TASK-002",
@@ -178,14 +281,14 @@ describe("completeTaskWithFiles", () => {
       "https://example.com/att_002",
     ]);
 
-    const [, opts] = (fakeFetch as ReturnType<typeof mock>).mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(opts.body as string);
-    expect(body.attachment_ids).toEqual(["att_001", "att_002"]);
+    const patchBody = bodyForMethod(fakeFetch as ReturnType<typeof mock>, "PATCH")!;
+    const evidence = (patchBody.metadata as Record<string, unknown>)._evidence as Record<string, unknown>;
+    expect((evidence.attachments as unknown[]).map((a: any) => a.id)).toEqual(["att_001", "att_002"]);
   });
 
-  it("includes notes in the request body when provided", async () => {
+  it("stores notes in the evidence metadata when provided", async () => {
     const upload = makeUpload("att_001");
-    const fakeFetch = makeFetch(200);
+    const fakeFetch = makeFetch();
 
     await completeTaskWithFiles(
       "TASK-001",
@@ -195,14 +298,14 @@ describe("completeTaskWithFiles", () => {
       fakeFetch
     );
 
-    const [, opts] = (fakeFetch as ReturnType<typeof mock>).mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(opts.body as string);
-    expect(body.notes).toBe("All tests passed");
+    const patchBody = bodyForMethod(fakeFetch as ReturnType<typeof mock>, "PATCH")!;
+    const evidence = (patchBody.metadata as Record<string, unknown>)._evidence as Record<string, unknown>;
+    expect(evidence.notes).toBe("All tests passed");
   });
 
   it("passes expiry to uploadFile", async () => {
     const upload = makeUpload("att_001");
-    const fakeFetch = makeFetch(200);
+    const fakeFetch = makeFetch();
 
     await completeTaskWithFiles(
       "TASK-001",
@@ -215,9 +318,9 @@ describe("completeTaskWithFiles", () => {
     expect(upload).toHaveBeenCalledWith("/tmp/file.txt", { expiry: "7d" });
   });
 
-  it("throws when task not found (404)", async () => {
+  it("throws when task not found (404 on the initial GET)", async () => {
     const upload = makeUpload("att_001");
-    const fakeFetch = makeFetch(404);
+    const fakeFetch = makeFetch({ getStatus: 404 });
 
     await expect(
       completeTaskWithFiles(
@@ -230,9 +333,24 @@ describe("completeTaskWithFiles", () => {
     ).rejects.toThrow("Task not found: TASK-999");
   });
 
-  it("throws with HTTP status on non-200 non-404 response", async () => {
+  it("throws with HTTP status when persisting evidence fails", async () => {
     const upload = makeUpload("att_001");
-    const fakeFetch = makeFetch(500, "Internal Server Error");
+    const fakeFetch = makeFetch({ patchStatus: 409, patchBody: "Version conflict" });
+
+    await expect(
+      completeTaskWithFiles(
+        "TASK-001",
+        ["/tmp/file.txt"],
+        { todosUrl: "http://localhost:3000" },
+        makeStoreFactory(upload),
+        fakeFetch
+      )
+    ).rejects.toThrow("HTTP 409");
+  });
+
+  it("throws with HTTP status when the complete call fails", async () => {
+    const upload = makeUpload("att_001");
+    const fakeFetch = makeFetch({ completeStatus: 500, completeBody: "Internal Server Error" });
 
     await expect(
       completeTaskWithFiles(
@@ -247,7 +365,7 @@ describe("completeTaskWithFiles", () => {
 
   it("defaults todos-url to http://localhost:3000", async () => {
     const upload = makeUpload("att_001");
-    const fakeFetch = makeFetch(200);
+    const fakeFetch = makeFetch();
 
     await completeTaskWithFiles(
       "TASK-001",
@@ -263,7 +381,7 @@ describe("completeTaskWithFiles", () => {
 
   it("handles attachment with null link", async () => {
     const upload = makeUpload("att_001", null);
-    const fakeFetch = makeFetch(200);
+    const fakeFetch = makeFetch();
 
     const result = await completeTaskWithFiles(
       "TASK-001",
@@ -274,13 +392,16 @@ describe("completeTaskWithFiles", () => {
     );
 
     expect(result.links).toEqual([null]);
+    const patchBody = bodyForMethod(fakeFetch as ReturnType<typeof mock>, "PATCH")!;
+    const evidence = (patchBody.metadata as Record<string, unknown>)._evidence as Record<string, unknown>;
+    expect((evidence.attachments as any[])[0].link).toBeNull();
   });
 
-  it("throws if upload fails before calling the todos API", async () => {
+  it("throws if upload fails before touching the todos API", async () => {
     const upload = mock(async () => {
       throw new Error("S3 upload failed");
     });
-    const fakeFetch = makeFetch(200);
+    const fakeFetch = makeFetch();
 
     await expect(
       completeTaskWithFiles(
@@ -320,7 +441,7 @@ describe("complete-task CLI command", () => {
 
   it("outputs success message on completing task with one file", async () => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = makeFetch(200);
+    globalThis.fetch = makeFetch();
 
     const capture = captureOutput();
     try {
@@ -338,7 +459,7 @@ describe("complete-task CLI command", () => {
 
   it("outputs plural 'files' when multiple files are uploaded", async () => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = makeFetch(200);
+    globalThis.fetch = makeFetch();
 
     const capture = captureOutput();
     try {
@@ -355,10 +476,11 @@ describe("complete-task CLI command", () => {
   });
 
   it("uses custom --todos-url when provided", async () => {
-    let capturedUrl = "";
-    globalThis.fetch = mock(async (url: unknown) => {
-      capturedUrl = String(url);
-      return { ok: true, status: 200, text: async () => "" } as Response;
+    const seen: string[] = [];
+    const base = makeFetch();
+    globalThis.fetch = mock(async (url: unknown, init?: unknown) => {
+      seen.push(String(url));
+      return (base as unknown as (u: unknown, i?: unknown) => Promise<Response>)(url, init);
     }) as unknown as typeof fetch;
 
     const capture = captureOutput();
@@ -368,7 +490,7 @@ describe("complete-task CLI command", () => {
         ["complete-task", "TASK-001", "--file", "/tmp/report.pdf", "--todos-url", "http://localhost:4000"],
         { from: "user" }
       );
-      expect(capturedUrl).toContain("http://localhost:4000");
+      expect(seen.every((u) => u.startsWith("http://localhost:4000"))).toBe(true);
     } finally {
       capture.restore();
     }
@@ -376,7 +498,7 @@ describe("complete-task CLI command", () => {
 
   it("writes error to stderr and exits when task not found (404)", async () => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = makeFetch(404);
+    globalThis.fetch = makeFetch({ getStatus: 404 });
 
     const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
@@ -405,7 +527,7 @@ describe("complete-task CLI command", () => {
     });
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = makeFetch(200);
+    globalThis.fetch = makeFetch();
 
     const exitSpy = spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
