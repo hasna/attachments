@@ -10,8 +10,8 @@ import {
   registerTaskJournal,
 } from "./task-journal";
 import type { TaskJournal } from "./task-journal";
-import { AttachmentsDB } from "../../core/db";
 import type { Attachment } from "../../core/db";
+import type { Store } from "../../core/store";
 import { Command } from "commander";
 
 // ---------------------------------------------------------------------------
@@ -43,11 +43,13 @@ function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
   };
 }
 
-function makeDB(attachments: Attachment[]): AttachmentsDB {
+// buildTaskJournal reads attachments via the Store abstraction (store.list),
+// so the factory returns a minimal Store fake exposing list + close.
+function makeStore(attachments: Attachment[]): Store {
   return {
-    findAll: mock((_opts?: object) => attachments),
+    list: mock(async (_opts?: object) => attachments),
     close: mock(() => {}),
-  } as unknown as AttachmentsDB;
+  } as unknown as Store;
 }
 
 function captureOutput() {
@@ -167,13 +169,13 @@ describe("buildTaskJournal", () => {
       };
     }) as unknown as typeof fetch;
 
-    const db = makeDB([att]);
+    const store = makeStore([att]);
 
     const { journal, todosReachable } = await buildTaskJournal(
       "TASK-001",
       { todosUrl: "http://localhost:3000" },
       fakeFetch,
-      () => db
+      () => store
     );
 
     expect(todosReachable).toBe(true);
@@ -185,13 +187,13 @@ describe("buildTaskJournal", () => {
 
   it("falls back gracefully when todos is unreachable", async () => {
     const fakeFetch = mock(async () => { throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch;
-    const db = makeDB([makeAttachment()]);
+    const store = makeStore([makeAttachment()]);
 
     const { journal, todosReachable } = await buildTaskJournal(
       "TASK-001",
       { todosUrl: "http://localhost:3000" },
       fakeFetch,
-      () => db
+      () => store
     );
 
     expect(todosReachable).toBe(false);

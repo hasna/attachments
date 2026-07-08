@@ -34,6 +34,7 @@ mock.module("../../core/upload", () => ({
   uploadFile: mockUploadFile,
   uploadFromBuffer: mock(async () => ({})),
   uploadFromUrl: mock(async () => ({})),
+  uploadStreamAttachment: mock(async () => ({})),
 }));
 
 // Import after mocks
@@ -95,6 +96,15 @@ function makeUpload(id: string, link: string | null = null) {
   }));
 }
 
+// completeTaskWithFiles takes a Store factory; wrap an uploadFile mock in a
+// minimal Store so the command routes uploads through the Store abstraction.
+function makeStoreFactory(uploadFile: (path: string, opts?: object) => Promise<MockAttachment>) {
+  return (() => ({
+    uploadFile,
+    close: () => {},
+  })) as unknown as () => import("../../core/store").Store;
+}
+
 // ---------------------------------------------------------------------------
 // completeTaskWithFiles unit tests
 // ---------------------------------------------------------------------------
@@ -112,7 +122,7 @@ describe("completeTaskWithFiles", () => {
       "TASK-001",
       ["/tmp/file.txt"],
       { todosUrl: "http://localhost:3000" },
-      upload as unknown as typeof import("../../core/upload").uploadFile,
+      makeStoreFactory(upload),
       fakeFetch
     );
 
@@ -157,7 +167,7 @@ describe("completeTaskWithFiles", () => {
       "TASK-002",
       ["/tmp/file1.txt", "/tmp/file2.txt"],
       { todosUrl: "http://localhost:3000" },
-      upload as unknown as typeof import("../../core/upload").uploadFile,
+      makeStoreFactory(upload),
       fakeFetch
     );
 
@@ -181,7 +191,7 @@ describe("completeTaskWithFiles", () => {
       "TASK-001",
       ["/tmp/file.txt"],
       { todosUrl: "http://localhost:3000", notes: "All tests passed" },
-      upload as unknown as typeof import("../../core/upload").uploadFile,
+      makeStoreFactory(upload),
       fakeFetch
     );
 
@@ -198,7 +208,7 @@ describe("completeTaskWithFiles", () => {
       "TASK-001",
       ["/tmp/file.txt"],
       { todosUrl: "http://localhost:3000", expiry: "7d" },
-      upload as unknown as typeof import("../../core/upload").uploadFile,
+      makeStoreFactory(upload),
       fakeFetch
     );
 
@@ -214,7 +224,7 @@ describe("completeTaskWithFiles", () => {
         "TASK-999",
         ["/tmp/file.txt"],
         { todosUrl: "http://localhost:3000" },
-        upload as unknown as typeof import("../../core/upload").uploadFile,
+        makeStoreFactory(upload),
         fakeFetch
       )
     ).rejects.toThrow("Task not found: TASK-999");
@@ -229,7 +239,7 @@ describe("completeTaskWithFiles", () => {
         "TASK-001",
         ["/tmp/file.txt"],
         { todosUrl: "http://localhost:3000" },
-        upload as unknown as typeof import("../../core/upload").uploadFile,
+        makeStoreFactory(upload),
         fakeFetch
       )
     ).rejects.toThrow("HTTP 500");
@@ -243,7 +253,7 @@ describe("completeTaskWithFiles", () => {
       "TASK-001",
       ["/tmp/file.txt"],
       {},
-      upload as unknown as typeof import("../../core/upload").uploadFile,
+      makeStoreFactory(upload),
       fakeFetch
     );
 
@@ -259,7 +269,7 @@ describe("completeTaskWithFiles", () => {
       "TASK-001",
       ["/tmp/file.txt"],
       { todosUrl: "http://localhost:3000" },
-      upload as unknown as typeof import("../../core/upload").uploadFile,
+      makeStoreFactory(upload),
       fakeFetch
     );
 
@@ -277,7 +287,7 @@ describe("completeTaskWithFiles", () => {
         "TASK-001",
         ["/tmp/file.txt"],
         { todosUrl: "http://localhost:3000" },
-        upload as unknown as typeof import("../../core/upload").uploadFile,
+        makeStoreFactory(upload),
         fakeFetch
       )
     ).rejects.toThrow("S3 upload failed");

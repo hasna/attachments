@@ -29,6 +29,11 @@ mock.module("../../core/db", () => ({
 
 const mockS3Send = mock(async (_cmd: unknown) => ({ Contents: [] }));
 
+// core/s3.ts statically imports every command below; the mock must expose all
+// of them (as inert stubs) or those named imports fail to resolve.
+class MockCommand {
+  constructor(public input: unknown) {}
+}
 mock.module("@aws-sdk/client-s3", () => ({
   S3Client: class MockS3Client {
     constructor(_config: unknown) {}
@@ -37,6 +42,14 @@ mock.module("@aws-sdk/client-s3", () => ({
   ListObjectsV2Command: class MockListObjectsV2Command {
     constructor(public input: unknown) {}
   },
+  PutObjectCommand: MockCommand,
+  GetObjectCommand: MockCommand,
+  HeadObjectCommand: MockCommand,
+  DeleteObjectCommand: MockCommand,
+  CreateMultipartUploadCommand: MockCommand,
+  UploadPartCommand: MockCommand,
+  CompleteMultipartUploadCommand: MockCommand,
+  AbortMultipartUploadCommand: MockCommand,
 }));
 
 afterAll(() => mock.restore());

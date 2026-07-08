@@ -68,6 +68,14 @@ export interface RegenerateLinkOptions {
   linkType?: "presigned" | "server";
 }
 
+/** A single feedback note about the service. */
+export interface FeedbackInput {
+  message: string;
+  email?: string | null;
+  category?: string;
+  version?: string | null;
+}
+
 /**
  * The single storage surface every CLI command, MCP tool and SDK method uses.
  * Both {@link LocalStore} and {@link ApiStore} implement it identically so a
@@ -99,6 +107,9 @@ export interface Store {
   regenerateLink(id: string, options: RegenerateLinkOptions): Promise<LinkResult>;
 
   download(idOrUrl: string, output?: string, options?: { password?: string }): Promise<DownloadResult>;
+
+  /** Persist a feedback note about the service (on-box in local mode, `<API_URL>/v1/feedback` in api mode). */
+  saveFeedback(input: FeedbackInput): Promise<void>;
 
   /** Release any held resources (DB handles). Always safe to call. */
   close(): void;
@@ -200,7 +211,10 @@ export class LocalStore implements Store {
     const now = Date.now();
     const expired = db.findAll({ includeExpired: true }).filter((a) => a.expiresAt !== null && a.expiresAt <= now);
     for (const att of expired) {
-      await this.deleteObjectBytes(att).catch(() => undefined);
+      // Delete the bytes first; only drop the DB record once the object is
+      // gone. If object deletion fails, surface the error rather than orphaning
+      // the bytes with a dangling (deleted) record.
+      await this.deleteObjectBytes(att);
       db.delete(att.id);
     }
     return expired.length;
@@ -328,7 +342,7 @@ export class LocalStore implements Store {
   }
 
   /** Persist a feedback note to the on-box feedback table. */
-  saveFeedback(input: { message: string; email?: string | null; category?: string; version?: string | null }): void {
+  async saveFeedback(input: FeedbackInput): Promise<void> {
     this.db().run(
       "INSERT INTO feedback (message, email, category, version) VALUES (?, ?, ?, ?)",
       [input.message, input.email ?? null, input.category ?? "general", input.version ?? null],
@@ -407,6 +421,10 @@ export class ApiStore implements Store {
 
   download(idOrUrl: string, output?: string, options: { password?: string } = {}): Promise<DownloadResult> {
     return this.v1.download(idOrUrl, output, options);
+  }
+
+  saveFeedback(input: FeedbackInput): Promise<void> {
+    return this.v1.saveFeedback(input);
   }
 
   close(): void {

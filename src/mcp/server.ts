@@ -1141,12 +1141,12 @@ export function buildServer(): Server {
           );
           break;
         case "list_attachments":
-          result = handleListAttachments(
+          result = await handleListAttachments(
             args as Parameters<typeof handleListAttachments>[0]
           );
           break;
         case "delete_attachment":
-          result = handleDeleteAttachment(
+          result = await handleDeleteAttachment(
             args as Parameters<typeof handleDeleteAttachment>[0]
           );
           break;
@@ -1181,7 +1181,7 @@ export function buildServer(): Server {
           );
           break;
         case "report_stats":
-          result = handleReportStats(
+          result = await handleReportStats(
             args as Parameters<typeof handleReportStats>[0]
           );
           break;
@@ -1243,9 +1243,9 @@ export function buildServer(): Server {
         }
         case "send_feedback": {
           const fa = args as { message: string; email?: string; category?: string };
-          const fstore = new LocalStore();
+          const fstore = resolveStore();
           try {
-            fstore.saveFeedback({ message: fa.message, email: fa.email, category: fa.category, version: getMcpVersion() });
+            await fstore.saveFeedback({ message: fa.message, email: fa.email, category: fa.category, version: getMcpVersion() });
           } finally {
             fstore.close();
           }

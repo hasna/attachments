@@ -347,5 +347,26 @@ export function createServeApp(deps: ServeAppDeps): Hono {
     return c.json({ link: newLink, expires_at: newExpiresAt });
   });
 
+  app.post("/v1/feedback", async (c) => {
+    const denied = await requireScopes(c, [`${APP_SLUG}:write`]);
+    if (denied) return denied;
+    const body = (await c.req.json().catch(() => ({}))) as {
+      message?: string;
+      email?: string | null;
+      category?: string;
+      version?: string | null;
+    };
+    if (!body.message || typeof body.message !== "string" || body.message.trim() === "") {
+      return c.json({ error: "message is required" }, 400);
+    }
+    await store.saveFeedback({
+      message: body.message,
+      email: typeof body.email === "string" ? body.email : null,
+      category: typeof body.category === "string" ? body.category : "general",
+      version: typeof body.version === "string" ? body.version : null,
+    });
+    return c.json({ ok: true });
+  });
+
   return app;
 }

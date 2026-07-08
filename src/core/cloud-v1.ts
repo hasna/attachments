@@ -76,6 +76,7 @@ export interface AttachmentsV1Store {
     options: { expiry?: string; password?: string; maxDownloads?: number; linkType?: "presigned" | "server" },
   ): Promise<{ link: string | null; expires_at: number | null }>;
   download(id: string, output: string | undefined, options?: { password?: string }): Promise<V1DownloadResult>;
+  saveFeedback(input: { message: string; email?: string | null; category?: string; version?: string | null }): Promise<void>;
 }
 
 export type ResolveAttachmentsV1Result =
@@ -226,6 +227,15 @@ function makeStore(client: HasnaStorageClient, env: NodeJS.ProcessEnv): Attachme
       const path = resolveDownloadPath(output, filename);
       await pipeline(Readable.fromWeb(response.body as never), createWriteStream(path));
       return { path, filename, size: Number(response.headers.get("content-length") || statSync(path).size) };
+    },
+
+    async saveFeedback(input): Promise<void> {
+      await client.transport.post("/feedback", {
+        message: input.message,
+        email: input.email ?? null,
+        category: input.category ?? "general",
+        version: input.version ?? null,
+      });
     },
   };
   return store;

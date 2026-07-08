@@ -25,13 +25,19 @@ const mockFindAll = mock((_opts?: unknown) => [] as MockAttachment[]);
 const mockUpdateLink = mock((_id: string, _link: string, _expiresAt?: number | null) => {});
 const mockDbClose = mock(() => {});
 
+// Store.regenerateLink re-reads the record by id, so findById resolves against
+// whatever findAll currently returns (the per-test attachment set).
+const mockFindById = mock(
+  (id: string) => (mockFindAll() as MockAttachment[]).find((a) => a.id === id) ?? null,
+);
+
 mock.module("../../core/db", () => ({
   AttachmentsDB: class MockAttachmentsDB {
     constructor(_path?: string) {}
     findAll = mockFindAll;
     updateLink = mockUpdateLink;
     close = mockDbClose;
-    findById = mock((_id: string) => null);
+    findById = mockFindById;
     insert = mock((_att: unknown) => {});
     delete = mock((_id: string) => {});
     deleteExpired = mock(() => 0);

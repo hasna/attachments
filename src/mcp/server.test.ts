@@ -340,10 +340,10 @@ describe("MCP Server — upload_attachment", () => {
     })) as { content: Array<{ text: string }> };
 
     expect(mockUploadFile).toHaveBeenCalledTimes(1);
-    expect(mockUploadFile).toHaveBeenCalledWith("/tmp/file.txt", {
-      expiry: "24h",
-      tag: "test-tag",
-    });
+    // LocalStore routes through coreUploadFile(path, options, { db, config }).
+    const call = mockUploadFile.mock.calls[0]!;
+    expect(call[0]).toBe("/tmp/file.txt");
+    expect(call[1]).toMatchObject({ expiry: "24h", tag: "test-tag" });
 
     const parsed = JSON.parse(result.content[0]!.text);
     expect(parsed.id).toBe("att_test001");
@@ -356,10 +356,9 @@ describe("MCP Server — upload_attachment", () => {
     const server = createServer();
     await callTool(server, "upload_attachment", { path: "/tmp/file.txt" });
 
-    expect(mockUploadFile).toHaveBeenCalledWith("/tmp/file.txt", {
-      expiry: undefined,
-      tag: undefined,
-    });
+    const call = mockUploadFile.mock.calls[0]!;
+    expect(call[0]).toBe("/tmp/file.txt");
+    expect(call[1]).toMatchObject({ expiry: undefined, tag: undefined });
   });
 
   it("calls uploadFromUrl when url is provided instead of path", async () => {
@@ -371,10 +370,9 @@ describe("MCP Server — upload_attachment", () => {
     })) as { content: Array<{ text: string }> };
 
     expect(mockUploadFromUrl).toHaveBeenCalledTimes(1);
-    expect(mockUploadFromUrl).toHaveBeenCalledWith("https://example.com/remote-file.txt", {
-      expiry: "24h",
-      tag: undefined,
-    });
+    const urlCall = mockUploadFromUrl.mock.calls[0]!;
+    expect(urlCall[0]).toBe("https://example.com/remote-file.txt");
+    expect(urlCall[1]).toMatchObject({ expiry: "24h", tag: undefined });
     expect(mockUploadFile).not.toHaveBeenCalled();
 
     const parsed = JSON.parse(result.content[0]!.text);
@@ -446,8 +444,10 @@ describe("MCP Server — upload_attachments (batch)", () => {
     })) as { content: Array<{ text: string }> };
 
     expect(mockUploadFile).toHaveBeenCalledTimes(2);
-    expect(mockUploadFile).toHaveBeenCalledWith("/tmp/a.txt", { expiry: "7d", tag: "batch-tag" });
-    expect(mockUploadFile).toHaveBeenCalledWith("/tmp/b.txt", { expiry: "7d", tag: "batch-tag" });
+    expect(mockUploadFile.mock.calls[0]![0]).toBe("/tmp/a.txt");
+    expect(mockUploadFile.mock.calls[0]![1]).toMatchObject({ expiry: "7d", tag: "batch-tag" });
+    expect(mockUploadFile.mock.calls[1]![0]).toBe("/tmp/b.txt");
+    expect(mockUploadFile.mock.calls[1]![1]).toMatchObject({ expiry: "7d", tag: "batch-tag" });
 
     const parsed = JSON.parse(result.content[0]!.text);
     expect(parsed).toHaveLength(2);
@@ -514,10 +514,10 @@ describe("MCP Server — download_attachment", () => {
     })) as { content: Array<{ text: string }> };
 
     expect(mockDownloadAttachment).toHaveBeenCalledTimes(1);
-    expect(mockDownloadAttachment).toHaveBeenCalledWith(
-      "att_test001",
-      "/tmp/downloads/"
-    );
+    // LocalStore routes through downloadAttachment(idOrUrl, output, { db, config }, opts).
+    const dlCall = mockDownloadAttachment.mock.calls[0]!;
+    expect(dlCall[0]).toBe("att_test001");
+    expect(dlCall[1]).toBe("/tmp/downloads/");
 
     const parsed = JSON.parse(result.content[0]!.text);
     expect(parsed.path).toBe("/tmp/test.txt");
@@ -531,10 +531,9 @@ describe("MCP Server — download_attachment", () => {
       id_or_url: "https://localhost:3459/d/att_test001",
     });
 
-    expect(mockDownloadAttachment).toHaveBeenCalledWith(
-      "https://localhost:3459/d/att_test001",
-      undefined
-    );
+    const dlCall = mockDownloadAttachment.mock.calls[0]!;
+    expect(dlCall[0]).toBe("https://localhost:3459/d/att_test001");
+    expect(dlCall[1]).toBeUndefined();
   });
 });
 

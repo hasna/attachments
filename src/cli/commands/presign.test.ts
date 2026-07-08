@@ -120,6 +120,7 @@ describe("presign-upload command", () => {
     mockPresign.mockImplementation(async () => "https://s3.example.com/get-presigned?sig=ready");
     mockHead.mockImplementation(async () => ({ contentLength: 4096, contentType: "application/pdf" }));
     mockDbCreateShareLink.mockImplementation(() => ({ token: "share_token" }));
+    mockS3Delete.mockImplementation(async () => {});
   });
 
   it("generates presigned URL and outputs upload info", async () => {
