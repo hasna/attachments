@@ -126,7 +126,19 @@ const mockUploadFromBuffer = mock(async (_buffer: Buffer, filename: string, _opt
   createdAt: 1699000000000,
 }));
 
-mock.module("../core/upload.js", () => ({ uploadFile: mockUploadFile, uploadFromUrl: mockUploadFromUrl, uploadFromBuffer: mockUploadFromBuffer }));
+const mockUploadStreamAttachment = mock(async (_stream: unknown, filename: string) => ({
+  id: "att_stream001",
+  filename,
+  s3Key: `attachments/2024-01-01/att_stream001/${filename}`,
+  bucket: "my-bucket",
+  size: 256,
+  contentType: "application/octet-stream",
+  link: "https://example.com/presigned-stream",
+  expiresAt: 1700000000000,
+  createdAt: 1699000000000,
+}));
+
+mock.module("../core/upload.js", () => ({ uploadFile: mockUploadFile, uploadFromUrl: mockUploadFromUrl, uploadFromBuffer: mockUploadFromBuffer, uploadStreamAttachment: mockUploadStreamAttachment }));
 mock.module("../core/download.js", () => ({
   downloadAttachment: mockDownloadAttachment,
 }));
@@ -266,9 +278,9 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("get_context");
   });
 
-  it("full profile returns all 26 tools", () => {
+  it("full profile returns all 22 tools", () => {
     const tools = getToolsForProfile("full");
-    expect(tools).toHaveLength(26);
+    expect(tools).toHaveLength(22);
     const names = tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("upload_attachments");
@@ -285,10 +297,10 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("complete_task_with_files");
     expect(names).toContain("save_session");
     expect(names).toContain("check_attachment_health");
-    expect(names).toContain("storage_status");
-    expect(names).toContain("storage_push");
-    expect(names).toContain("storage_pull");
-    expect(names).toContain("storage_sync");
+    expect(names).not.toContain("storage_status");
+    expect(names).not.toContain("storage_push");
+    expect(names).not.toContain("storage_pull");
+    expect(names).not.toContain("storage_sync");
     expect(names).not.toContain(retiredToolName("_status"));
     expect(names).not.toContain(retiredToolName("_push"));
     expect(names).not.toContain(retiredToolName("_pull"));
@@ -308,10 +320,10 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     delete process.env.ATTACHMENTS_PROFILE;
   });
 
-  it("ATTACHMENTS_PROFILE=full env var returns 26 tools", () => {
+  it("ATTACHMENTS_PROFILE=full env var returns 22 tools", () => {
     process.env.ATTACHMENTS_PROFILE = "full";
     const tools = getToolsForProfile();
-    expect(tools).toHaveLength(26);
+    expect(tools).toHaveLength(22);
     delete process.env.ATTACHMENTS_PROFILE;
   });
 });

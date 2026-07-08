@@ -11,7 +11,6 @@ import { nanoid } from "nanoid";
 import { computeReport } from "../cli/commands/report.js";
 import { runHealthCheck } from "../cli/commands/health-check.js";
 import { resolveStore, LocalStore } from "../core/store.js";
-import { STORAGE_TABLES, getStorageStatus, storagePull, storagePush, storageSync } from "../db/storage-sync.js";
 import { getConfig, parseExpiryStrict, setConfig } from "../core/config.js";
 
 // ---------------------------------------------------------------------------
@@ -536,44 +535,6 @@ const LEAN_TOOLS = [
         category: { type: "string", enum: ["bug", "feature", "general"], description: "Feedback category" },
       },
       required: ["message"],
-    },
-  },
-  {
-    name: "storage_status",
-    description: "Show remote storage configuration and sync metadata",
-    inputSchema: {
-      type: "object" as const,
-      properties: {},
-    },
-  },
-  {
-    name: "storage_push",
-    description: "Push local attachment tables to remote Postgres storage",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        tables: { type: "array", items: { type: "string", enum: [...STORAGE_TABLES] } },
-      },
-    },
-  },
-  {
-    name: "storage_pull",
-    description: "Pull attachment tables from remote Postgres storage",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        tables: { type: "array", items: { type: "string", enum: [...STORAGE_TABLES] } },
-      },
-    },
-  },
-  {
-    name: "storage_sync",
-    description: "Push then pull attachment tables with remote Postgres storage",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        tables: { type: "array", items: { type: "string", enum: [...STORAGE_TABLES] } },
-      },
     },
   },
 ];
@@ -1139,15 +1100,6 @@ function handleSearchTools(args: { query: string }) {
   return matches.join("\n");
 }
 
-function readStorageTables(args: Record<string, unknown>): string[] | undefined {
-  return Array.isArray(args["tables"]) ? args["tables"].map(String) : undefined;
-}
-
-function readStorageSyncOptions(args: Record<string, unknown>): { tables?: string[] } | undefined {
-  const tables = readStorageTables(args);
-  return tables ? { tables } : undefined;
-}
-
 // ---------------------------------------------------------------------------
 // Server bootstrap
 // ---------------------------------------------------------------------------
@@ -1287,22 +1239,6 @@ export function buildServer(): Server {
         }
         case "list_agents": {
           result = [...agentRegistry.values()];
-          break;
-        }
-        case "storage_status": {
-          result = getStorageStatus();
-          break;
-        }
-        case "storage_push": {
-          result = await storagePush(readStorageSyncOptions(args));
-          break;
-        }
-        case "storage_pull": {
-          result = await storagePull(readStorageSyncOptions(args));
-          break;
-        }
-        case "storage_sync": {
-          result = await storageSync(readStorageSyncOptions(args));
           break;
         }
         case "send_feedback": {

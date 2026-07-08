@@ -21,16 +21,3 @@ export type { Store, ListOptions, LinkResult, RegenerateLinkOptions, ResolveStor
 export { resolveAttachmentsV1 } from "./core/cloud-v1.js";
 export type { AttachmentsV1Store } from "./core/cloud-v1.js";
 export { createApp, startServer } from "./api/server.js";
-export {
-  STORAGE_TABLES,
-  storagePull,
-  storagePush,
-  storageSync,
-  getStorageDatabaseEnv,
-  getStorageDatabaseUrl,
-  getStorageMode,
-  getStorageStatus,
-  runStorageMigrations,
-  getSyncMetaAll,
-} from "./db/storage-sync.js";
-export type { StorageEnv, StorageMode, SyncMeta, SyncResult } from "./db/storage-sync.js";
