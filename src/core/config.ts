@@ -81,8 +81,14 @@ const DEFAULT_CONFIG: AttachmentsConfig = {
     publicPath: "/a",
   },
   defaults: {
+    // Default to presigned S3 links: they are downloadable directly from S3 and
+    // do NOT depend on the app's public `/a/*` route being wired up in DNS/CDN,
+    // so default share links resolve end-to-end even before the public hostname
+    // is routed to the attachments app. Local-backend uploads (no S3) and
+    // password / max-download / email-gated links automatically fall back to
+    // server-hosted share links (see core/upload.ts and core/store.ts).
     expiry: "7d",
-    linkType: "server",
+    linkType: "presigned",
   },
   client: {
     preferInternal: false,

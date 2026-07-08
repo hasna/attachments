@@ -123,7 +123,7 @@ describe("config show — masked output", () => {
     const config = getConfig();
     expect(config.server.port).toBe(3459);
     expect(config.defaults.expiry).toBe("7d");
-    expect(config.defaults.linkType).toBe("server");
+    expect(config.defaults.linkType).toBe("presigned");
   });
 });
 
