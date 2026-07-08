@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { AttachmentsDB } from "../../core/db";
+import { resolveStore } from "../../core/store";
 
 export interface ResolveEvidenceOptions {
   todosUrl?: string;
@@ -63,18 +63,18 @@ export async function resolveEvidence(
     return [];
   }
 
-  // Resolve each attachment ID in the local DB to get a current link
-  const db = new AttachmentsDB();
+  // Resolve each attachment ID via the store to get a current link
+  const store = resolveStore();
   const resolved: ResolvedAttachment[] = [];
   try {
     for (const entry of attachments) {
-      const dbRecord = db.findById(entry.id);
-      if (dbRecord) {
+      const record = await store.get(entry.id);
+      if (record) {
         resolved.push({
-          id: dbRecord.id,
-          filename: dbRecord.filename,
-          link: dbRecord.link,
-          size: dbRecord.size,
+          id: record.id,
+          filename: record.filename,
+          link: record.link,
+          size: record.size,
         });
       } else {
         // Fall back to whatever was stored in the task evidence
@@ -87,7 +87,7 @@ export async function resolveEvidence(
       }
     }
   } finally {
-    db.close();
+    store.close();
   }
 
   return resolved;

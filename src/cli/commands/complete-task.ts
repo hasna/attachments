@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { uploadFile } from "../../core/upload";
+import { resolveStore, type Store } from "../../core/store";
 
 export interface CompleteTaskOptions {
   file?: string[];
@@ -26,7 +26,7 @@ export async function completeTaskWithFiles(
     expiry?: string;
     notes?: string;
   },
-  uploadFileFn: typeof uploadFile = uploadFile,
+  storeFactory: () => Store = () => resolveStore(),
   fetchFn: typeof fetch = fetch
 ): Promise<CompleteTaskResult> {
   const todosUrl = options.todosUrl ?? "http://localhost:3000";
@@ -35,10 +35,15 @@ export async function completeTaskWithFiles(
   const attachment_ids: string[] = [];
   const links: Array<string | null> = [];
 
-  for (const filePath of filePaths) {
-    const attachment = await uploadFileFn(filePath, { expiry: options.expiry });
-    attachment_ids.push(attachment.id);
-    links.push(attachment.link);
+  const store = storeFactory();
+  try {
+    for (const filePath of filePaths) {
+      const attachment = await store.uploadFile(filePath, { expiry: options.expiry });
+      attachment_ids.push(attachment.id);
+      links.push(attachment.link);
+    }
+  } finally {
+    store.close();
   }
 
   // Complete the task via todos REST API

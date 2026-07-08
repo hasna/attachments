@@ -1,6 +1,6 @@
 import { Command } from "commander";
-import { AttachmentsDB } from "../../core/db";
 import type { Attachment } from "../../core/db";
+import { resolveStore, type Store } from "../../core/store";
 
 export interface TaskJournalOptions {
   todosUrl?: string;
@@ -88,10 +88,10 @@ export async function fetchTaskHistory(
  */
 export function findTaskAttachments(
   taskId: string,
-  db: AttachmentsDB
-): Attachment[] {
+  store: Store
+): Promise<Attachment[]> {
   const tag = `task:${taskId}`;
-  return db.findAll({ tag, includeExpired: true });
+  return store.list({ tag, includeExpired: true });
 }
 
 /**
@@ -104,7 +104,7 @@ export async function buildTaskJournal(
     dbPath?: string;
   },
   fetchFn: typeof fetch = fetch,
-  dbFactory?: () => AttachmentsDB
+  storeFactory?: () => Store
 ): Promise<{ journal: TaskJournal; todosReachable: boolean }> {
   const todosUrl = options.todosUrl ?? "http://localhost:3000";
 
@@ -118,13 +118,13 @@ export async function buildTaskJournal(
 
   const task: TaskMeta = meta ?? { id: taskId };
 
-  // Query local DB
-  const db = dbFactory ? dbFactory() : new AttachmentsDB(options.dbPath);
+  // Query attachments via the resolved store (local db or /v1 API)
+  const store = storeFactory ? storeFactory() : resolveStore();
   let attachments: Attachment[] = [];
   try {
-    attachments = findTaskAttachments(taskId, db);
+    attachments = await findTaskAttachments(taskId, store);
   } finally {
-    db.close();
+    store.close();
   }
 
   return {

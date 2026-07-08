@@ -15,16 +15,11 @@ export { resolveShareAccess, ShareAccessError } from "./core/share.js";
 export { LocalObjectStore, createObjectStore } from "./core/object-storage.js";
 export { buildDeploymentPlan } from "./core/deployment.js";
 export { resolveInternalBaseUrl, resolveInternalBindHost } from "./core/internal-link.js";
-export {
-  deleteCloudAttachment,
-  downloadFromCloud,
-  getCloudAttachmentLink,
-  getCloudHealth,
-  listCloudAttachments,
-  regenerateCloudAttachmentLink,
-  uploadFileToCloudApi,
-  uploadUrlToCloudApi,
-} from "./core/api-client.js";
+// Unified storage abstraction — the single client surface for CLI/MCP/SDK.
+export { LocalStore, ApiStore, resolveStore } from "./core/store.js";
+export type { Store, ListOptions, LinkResult, RegenerateLinkOptions, ResolveStoreOptions } from "./core/store.js";
+export { resolveAttachmentsV1 } from "./core/cloud-v1.js";
+export type { AttachmentsV1Store } from "./core/cloud-v1.js";
 export { createApp, startServer } from "./api/server.js";
 export {
   STORAGE_TABLES,

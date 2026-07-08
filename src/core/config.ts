@@ -26,10 +26,10 @@ export interface AttachmentsConfig {
     linkType: "presigned" | "server";
   };
   client: {
-    mode: "local" | "cloud";
-    apiBaseUrl: string;
-    apiToken: string;
-    apiTokenEnv: string;
+    // self_hosted/cloud is env-driven (HASNA_ATTACHMENTS_API_URL + _API_KEY via
+    // @hasna/contracts). We deliberately do NOT persist an API URL/token in
+    // config.json — no secret-at-rest, no DSN on the client. Only local
+    // internal-link (Tailscale) hints live here.
     internalBaseUrl?: string;
     internalMachineId?: string;
     preferInternal: boolean;
@@ -85,10 +85,6 @@ const DEFAULT_CONFIG: AttachmentsConfig = {
     linkType: "server",
   },
   client: {
-    mode: "local",
-    apiBaseUrl: "",
-    apiToken: "",
-    apiTokenEnv: "ATTACHMENTS_API_TOKEN",
     preferInternal: false,
   },
   domains: [],
@@ -217,31 +213,6 @@ export function getPublicBaseUrl(config?: AttachmentsConfig): string {
   const cfg = config ?? getConfig();
   const primaryDomain = cfg.domains.find((domain) => domain.primary) ?? cfg.domains[0];
   return primaryDomain?.baseUrl ?? cfg.server.baseUrl;
-}
-
-export function getClientApiBaseUrl(config?: AttachmentsConfig): string | null {
-  const cfg = config ?? getConfig();
-  const baseUrl = cfg.client.apiBaseUrl || process.env["ATTACHMENTS_API_URL"] || process.env["HASNA_ATTACHMENTS_API_URL"] || "";
-  return baseUrl ? baseUrl.replace(/\/+$/, "") : null;
-}
-
-export function getClientApiToken(config?: AttachmentsConfig): string | null {
-  const cfg = config ?? getConfig();
-  const envName = cfg.client.apiTokenEnv || "ATTACHMENTS_API_TOKEN";
-  const token =
-    process.env[envName] ||
-    process.env["ATTACHMENTS_API_TOKEN"] ||
-    process.env["HASNA_ATTACHMENTS_API_TOKEN"] ||
-    cfg.client.apiToken ||
-    "";
-  return token || null;
-}
-
-export function isCloudClientMode(config?: AttachmentsConfig): boolean {
-  const cfg = config ?? getConfig();
-  const envMode = process.env["ATTACHMENTS_MODE"] || process.env["ATTACHMENTS_CLIENT_MODE"];
-  const mode = (envMode || cfg.client.mode || "local").toLowerCase();
-  return mode === "cloud" || mode === "api" || mode === "remote";
 }
 
 export function getInternalBaseUrl(config?: AttachmentsConfig): string | null {
