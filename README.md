@@ -96,12 +96,12 @@ Stdio remains the default when no `--http` / `MCP_HTTP=1` is set.
 
 ## Storage Sync
 
-This package supports optional remote storage sync directly against a Postgres/RDS
-database. Local SQLite remains the default.
+This package supports local SQLite by default. For cloud storage, point the
+attachments service at its repo-owned AWS Postgres/RDS database.
 
 ```bash
 export HASNA_ATTACHMENTS_DATABASE_URL=postgres://...
-export HASNA_ATTACHMENTS_STORAGE_MODE=hybrid # local | remote | hybrid
+export HASNA_ATTACHMENTS_STORAGE_MODE=cloud # local | cloud (AWS)
 
 attachments storage status
 attachments storage push
