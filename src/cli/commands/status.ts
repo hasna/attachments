@@ -3,9 +3,8 @@ import { ListObjectsV2Command, S3Client as AWSS3Client } from "@aws-sdk/client-s
 import type { Attachment } from "../../core/db";
 import { getConfig, hasS3Config, CONFIG_PATH } from "../../core/config";
 import { resolveStore } from "../../core/store";
+import { getAttachmentsDbPath } from "../../core/paths";
 import { formatBytes } from "../utils";
-import { join } from "path";
-import { homedir } from "os";
 
 async function checkS3Connection(config: ReturnType<typeof getConfig>): Promise<{
   connected: boolean;
@@ -98,7 +97,7 @@ export function registerStatus(program: Command): void {
       }
 
       // Attachment stats
-      const dbPath = join(homedir(), ".hasna", "attachments", "db.sqlite");
+      const dbPath = getAttachmentsDbPath();
       try {
         const stats = computeStats(await store.list({ includeExpired: true }));
         if (stats.expired > 0) {

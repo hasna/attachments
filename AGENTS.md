@@ -48,6 +48,7 @@ ATTACHMENTS_PROFILE=full    attachments-mcp
 | `ATTACHMENTS_TRACK_COSTS` | _(unset)_ | Set to `1` to log economy/cost data |
 | `ATTACHMENTS_MAX_SIZE` | `10737418240` (10 GB) | Max upload size in bytes; returns 413 above this |
 | `ATTACHMENTS_ECONOMY_URL` | `http://localhost:3460` | Economy service base URL |
+| `HASNA_ATTACHMENTS_DB_PATH` | `~/.hasna/attachments/db.sqlite` | Override SQLite metadata DB path |
 
 ---
 
@@ -181,7 +182,7 @@ REST: `?tag=task:TASK-001` on `GET /api/attachments`
 
 ## Configuration
 
-Stored at `~/.attachments/config.json`. Set via CLI or MCP:
+Stored at `~/.hasna/attachments/config.json`. Set via CLI or MCP:
 
 ```bash
 attachments config set --bucket my-bucket --region us-east-1

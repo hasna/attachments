@@ -52,7 +52,13 @@ mock.module("@aws-sdk/client-s3", () => ({
   AbortMultipartUploadCommand: MockCommand,
 }));
 
-afterAll(() => mock.restore());
+const originalDbPath = process.env["HASNA_ATTACHMENTS_DB_PATH"];
+
+afterAll(() => {
+  mock.restore();
+  if (originalDbPath === undefined) delete process.env["HASNA_ATTACHMENTS_DB_PATH"];
+  else process.env["HASNA_ATTACHMENTS_DB_PATH"] = originalDbPath;
+});
 
 // ---------------------------------------------------------------------------
 // Config — use setConfigPath + setConfig to control config for tests
@@ -126,6 +132,7 @@ function captureOutput() {
 
 describe("status command", () => {
   beforeEach(() => {
+    delete process.env["HASNA_ATTACHMENTS_DB_PATH"];
     mockFindAll.mockReset();
     mockFindAll.mockImplementation(() => []);
     mockDbClose.mockReset();
@@ -280,6 +287,21 @@ describe("status command", () => {
       expect(output).toContain("Config:");
       expect(output).toContain("DB:");
       expect(output).toContain("db.sqlite");
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("shows HASNA_ATTACHMENTS_DB_PATH as the DB path when set", async () => {
+    const dbPath = join(testDir, "custom", "metadata.sqlite");
+    process.env["HASNA_ATTACHMENTS_DB_PATH"] = dbPath;
+
+    const capture = captureOutput();
+    try {
+      const program = buildStatusCmd();
+      await program.parseAsync(["status"], { from: "user" });
+      const output = capture.out.join("");
+      expect(output).toContain(`DB: ${dbPath}`);
     } finally {
       capture.restore();
     }

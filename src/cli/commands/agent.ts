@@ -1,10 +1,12 @@
 import { Command } from "commander";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { homedir } from "os";
+import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 import { randomBytes } from "crypto";
+import { ensureAttachmentsDataDir } from "../../core/paths";
 
-const AGENT_FILE = join(homedir(), ".hasna", "attachments", "agent.json");
+function getAgentFilePath(): string {
+  return join(ensureAttachmentsDataDir(), "agent.json");
+}
 
 interface AgentState {
   id: string;
@@ -14,13 +16,13 @@ interface AgentState {
 }
 
 function loadAgent(): AgentState | null {
-  if (!existsSync(AGENT_FILE)) return null;
-  try { return JSON.parse(readFileSync(AGENT_FILE, "utf-8")); } catch { return null; }
+  const agentFile = getAgentFilePath();
+  if (!existsSync(agentFile)) return null;
+  try { return JSON.parse(readFileSync(agentFile, "utf-8")); } catch { return null; }
 }
 
 function saveAgent(agent: AgentState): void {
-  mkdirSync(join(homedir(), ".hasna", "attachments"), { recursive: true });
-  writeFileSync(AGENT_FILE, JSON.stringify(agent, null, 2));
+  writeFileSync(getAgentFilePath(), JSON.stringify(agent, null, 2));
 }
 
 export function initCommand(): Command {
