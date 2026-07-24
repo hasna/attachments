@@ -1,9 +1,8 @@
 import { Command } from "commander";
 import { ListObjectsV2Command, S3Client as AWSS3Client } from "@aws-sdk/client-s3";
-import { AttachmentsDB } from "../../core/db";
-import { getClientApiBaseUrl, getConfig, hasS3Config, isCloudClientMode, CONFIG_PATH } from "../../core/config";
-import { getCloudHealth } from "../../core/api-client";
-import { resolveAttachmentsV1 } from "../../core/cloud-v1";
+import type { Attachment } from "../../core/db";
+import { getConfig, hasS3Config, CONFIG_PATH } from "../../core/config";
+import { resolveStore } from "../../core/store";
 import { formatBytes } from "../utils";
 import { join } from "path";
 import { homedir } from "os";
@@ -48,23 +47,14 @@ async function checkS3Connection(config: ReturnType<typeof getConfig>): Promise<
   }
 }
 
-function getAttachmentStats(db: AttachmentsDB): {
-  total: number;
-  expired: number;
-  totalSize: number;
-} {
-  const all = db.findAll({ includeExpired: true });
+function computeStats(all: Attachment[]): { total: number; expired: number; totalSize: number } {
   const now = Date.now();
   let expired = 0;
   let totalSize = 0;
-
   for (const att of all) {
     totalSize += att.size;
-    if (att.expiresAt !== null && att.expiresAt <= now) {
-      expired++;
-    }
+    if (att.expiresAt !== null && att.expiresAt <= now) expired++;
   }
-
   return { total: all.length, expired, totalSize };
 }
 
@@ -74,40 +64,23 @@ export function registerStatus(program: Command): void {
     .description("Show system status: S3 connection, attachment stats, config paths")
     .action(async () => {
       const config = getConfig();
-      const v1 = resolveAttachmentsV1();
-      if (v1.transport === "cloud-http") {
+      const store = resolveStore();
+      if (store.transport === "cloud-http") {
         try {
-          const rows = await v1.store.list({ limit: 1 });
-          process.stdout.write(`Mode: self_hosted (/v1)\n`);
-          process.stdout.write(`API: ${v1.store.baseUrl}\n`);
+          const rows = await store.list({ limit: 1 });
+          process.stdout.write(`Mode: self_hosted/cloud (/v1)\n`);
+          process.stdout.write(`API: ${store.baseUrl}\n`);
           process.stdout.write(`Health: reachable (list ok, ${rows.length >= 0 ? "authorized" : "unknown"})\n`);
           process.stdout.write(`Config: ${CONFIG_PATH}\n`);
-          return;
         } catch (error) {
-          process.stdout.write(`Mode: self_hosted (/v1)\n`);
-          process.stdout.write(`API: ${v1.store.baseUrl}\n`);
+          process.stdout.write(`Mode: self_hosted/cloud (/v1)\n`);
+          process.stdout.write(`API: ${store.baseUrl}\n`);
           process.stdout.write(`Health: connection failed (${error instanceof Error ? error.message : String(error)})\n`);
           process.stdout.write(`Config: ${CONFIG_PATH}\n`);
-          return;
+        } finally {
+          store.close();
         }
-      }
-      if (isCloudClientMode(config)) {
-        try {
-          const health = await getCloudHealth();
-          process.stdout.write(`Mode: cloud API\n`);
-          process.stdout.write(`API: ${getClientApiBaseUrl(config) ?? "(not configured)"}\n`);
-          process.stdout.write(`Health: ${health.status ?? "unknown"}\n`);
-          process.stdout.write(`Storage: ${health.storage_backend ?? "unknown"}\n`);
-          process.stdout.write(`Attachments: ${health.attachments ?? "unknown"}\n`);
-          process.stdout.write(`Config: ${CONFIG_PATH}\n`);
-          return;
-        } catch (error) {
-          process.stdout.write(`Mode: cloud API\n`);
-          process.stdout.write(`API: ${getClientApiBaseUrl(config) ?? "(not configured)"}\n`);
-          process.stdout.write(`Health: connection failed (${error instanceof Error ? error.message : String(error)})\n`);
-          process.stdout.write(`Config: ${CONFIG_PATH}\n`);
-          return;
-        }
+        return;
       }
 
       // S3 status
@@ -126,9 +99,8 @@ export function registerStatus(program: Command): void {
 
       // Attachment stats
       const dbPath = join(homedir(), ".hasna", "attachments", "db.sqlite");
-      const db = new AttachmentsDB();
       try {
-        const stats = getAttachmentStats(db);
+        const stats = computeStats(await store.list({ includeExpired: true }));
         if (stats.expired > 0) {
           process.stdout.write(
             `Attachments: ${stats.total} (${stats.expired} expired)\n`
@@ -138,7 +110,7 @@ export function registerStatus(program: Command): void {
         }
         process.stdout.write(`Total size: ${formatBytes(stats.totalSize)}\n`);
       } finally {
-        db.close();
+        store.close();
       }
 
       // Paths

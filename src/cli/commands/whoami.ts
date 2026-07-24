@@ -1,13 +1,13 @@
 import { Command } from "commander";
 import { existsSync } from "fs";
 import { getConfig, CONFIG_PATH } from "../../core/config";
-import { AttachmentsDB } from "../../core/db";
+import { resolveStore } from "../../core/store";
 
 export function registerWhoami(program: Command): void {
   program
     .command("whoami")
     .description("Show setup summary and environment status")
-    .action(() => {
+    .action(async () => {
       // Version — read from package.json relative to the module, fallback to env var
       let version = "unknown";
       try {
@@ -51,18 +51,19 @@ export function registerWhoami(program: Command): void {
         `Link type: ${config.defaults.linkType} (default expiry: ${config.defaults.expiry})`
       );
 
-      // Attachment counts from DB
+      // Attachment counts via the resolved store (local db or /v1 API)
+      const store = resolveStore();
       try {
-        const db = new AttachmentsDB();
-        const all = db.findAll({ includeExpired: true });
+        const all = await store.list({ includeExpired: true });
         const now = Date.now();
         const expired = all.filter(
           (a) => a.expiresAt !== null && a.expiresAt <= now
         ).length;
         lines.push(`Attachments: ${all.length} total, ${expired} expired`);
-        db.close();
       } catch {
-        lines.push(`Attachments: unable to read database`);
+        lines.push(`Attachments: unable to read store`);
+      } finally {
+        store.close();
       }
 
       process.stdout.write(lines.join("\n") + "\n");

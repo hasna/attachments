@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] - 2026-07-24
+
+### Changed
+
+- **Reconciled `main` with the published npm line.** `main` had diverged from the deployed release: npm `latest` was `1.1.3` (a Store-only architecture rewrite) while `main` was stuck at `1.0.51`, so the deployed source of truth was not on `main`. This release merges the published `v1.1.3` history into `main` (preserving both lines, no history rewrite) and bumps above npm latest. `main` now equals deployed reality.
+
+### Included from the previously-published (but never-merged) `1.1.3` line
+
+- **Store-only client architecture.** All client access now routes through a single `Store` abstraction (`LocalStore` + `ApiStore`); the client-side DSN sync path was removed and `send_feedback` routes through the Store.
+- Depend on published `@hasna/contracts@^0.5.2` (quarantine-excluded for the Store-only build).
+- `complete-task` persists attachments as retrievable todos evidence.
+- Default share links are presigned S3 links so default-link downloads work end-to-end.
+
+### Preserved from `main`
+
+- `cloud-v1` test-dependency fix and the task-journal CLI smoke-test hardening (merged; the DB-mock variant of the task-journal test was superseded by the Store-only test, which is now the source of truth for that file).
+
+## [1.1.2] - 2026-07-08
+
+### Fixed
+
+- `complete-task` / `complete_task_with_files` (CLI + MCP) now persist uploaded attachments as retrievable todos evidence. The todos `POST /api/tasks/:id/complete` endpoint ignores its request body, so the attachment IDs sent there were silently discarded and `resolve-evidence` reported "No attachments found in evidence". The command now explicitly merges the full attachment entries into `metadata._evidence.attachments` (the exact shape `resolve-evidence` reads) via a PATCH — preserving existing metadata and honoring optimistic-concurrency versioning — before marking the task complete. Completion notes are recorded under `metadata._evidence.notes`.
+- The MCP `complete_task_with_files` tool now routes through the shared CLI implementation instead of duplicating the (buggy) completion logic, so both surfaces behave identically.
+
 ## [1.0.47] - 2026-06-27
 
 ### Fixed

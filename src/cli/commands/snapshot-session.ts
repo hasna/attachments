@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { uploadFromBuffer } from "../../core/upload";
+import { resolveStore } from "../../core/store";
 import { exitError } from "../utils";
 
 const DEFAULT_SESSIONS_URL = "http://localhost:3458";
@@ -117,15 +117,18 @@ export function registerSnapshotSession(program: Command): void {
         const filename = `session-${sessionId}.${ext}`;
         const buffer = Buffer.from(content, "utf-8");
 
+        const store = resolveStore();
         let attachment;
         try {
-          attachment = await uploadFromBuffer(buffer, filename, {
+          attachment = await store.uploadBuffer(buffer, filename, {
             expiry: options.expiry,
             tag: options.tag,
           });
         } catch (err: unknown) {
           exitError(err instanceof Error ? err.message : String(err));
           return;
+        } finally {
+          store.close();
         }
 
         process.stdout.write(

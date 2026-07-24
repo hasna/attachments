@@ -37,6 +37,7 @@ mock.module("../../core/upload", () => ({
   uploadFromBuffer: mockUploadFromBuffer,
   uploadFile: mock(async () => ({})),
   uploadFromUrl: mock(async () => ({})),
+  uploadStreamAttachment: mock(async () => ({})),
 }));
 
 // Import after mocks

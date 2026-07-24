@@ -113,7 +113,7 @@ describe("getConfig", () => {
     expect(cfg.server.publicPath).toBe("/a");
     expect(cfg.storage.maxSizeBytes).toBe(10 * 1024 * 1024 * 1024);
     expect(cfg.defaults.expiry).toBe("7d");
-    expect(cfg.defaults.linkType).toBe("server");
+    expect(cfg.defaults.linkType).toBe("presigned");
   });
 
   it("merges saved config over defaults", () => {

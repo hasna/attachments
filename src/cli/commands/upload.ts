@@ -1,9 +1,7 @@
 import { Command } from "commander";
 import { execSync } from "child_process";
-import { uploadFile, uploadFromUrl, uploadStreamAttachment } from "../../core/upload";
-import { getConfig, isCloudClientMode, validateStorageConfig } from "../../core/config";
-import { uploadFileToCloudApi, uploadStreamToCloudApi, uploadUrlToCloudApi } from "../../core/api-client";
-import { resolveAttachmentsV1 } from "../../core/cloud-v1";
+import { getConfig } from "../../core/config";
+import { resolveStore } from "../../core/store";
 import { resolveInternalBaseUrl } from "../../core/internal-link";
 import { isValidEmail } from "../../core/security";
 import { formatBytes, formatExpiry, exitError } from "../utils";
@@ -57,18 +55,9 @@ export function registerUpload(program: Command): void {
       if (options.clientMode && options.clientMode !== "local" && options.clientMode !== "cloud") {
         exitError("--client-mode must be local or cloud");
       }
-      // Self-hosted /v1 cloud takes precedence when configured (and not forced local).
-      const v1 = options.clientMode === "local" ? { transport: "local" as const, store: null } : resolveAttachmentsV1();
-      const cloudMode = v1.transport === "cloud-http"
-        ? true
-        : options.clientMode ? options.clientMode === "cloud" : isCloudClientMode(config);
-      if (!cloudMode) {
-        try {
-          validateStorageConfig(config);
-        } catch (err: unknown) {
-          exitError(err instanceof Error ? err.message : String(err));
-        }
-      }
+      // Env drives self_hosted/cloud vs local; `--client-mode local` pins on-box.
+      const store = resolveStore(process.env, { forceLocal: options.clientMode === "local" });
+      const cloudMode = store.transport === "cloud-http";
 
       const maxDownloads = options.maxDownloads ? parseInt(options.maxDownloads, 10) : undefined;
       if (maxDownloads !== undefined && (!Number.isInteger(maxDownloads) || maxDownloads <= 0)) {
@@ -86,17 +75,21 @@ export function registerUpload(program: Command): void {
       if (options.internal && cloudMode) {
         exitError("--internal requires local client mode. Use --client-mode local or set client.mode to local.");
       }
-      if (v1.transport === "cloud-http" && options.encrypt) {
-        exitError("--encrypt is not supported in self_hosted (/v1) mode. Use --client-mode local to encrypt at rest.");
+      if (cloudMode && options.encrypt) {
+        exitError("--encrypt is not supported in self_hosted/cloud mode. Use --client-mode local to encrypt at rest.");
       }
-      const v1UploadOptions = {
+      const internalBaseUrl = options.internal ? (await resolveInternalBaseUrl(config)).baseUrl : undefined;
+      const uploadOptions = {
         expiry: options.expiry,
+        linkType: options.linkType,
         tag: options.tag,
         password: options.password,
+        encrypt: options.encrypt,
         maxDownloads,
-        linkType: options.linkType,
+        requireEmail,
+        allowedEmails,
+        baseUrl: internalBaseUrl,
       };
-      const internalBaseUrl = options.internal ? (await resolveInternalBaseUrl(config)).baseUrl : undefined;
 
       // Helper to upload a single file/url/stdin and output result
       const uploadOne = async (file?: string) => {
@@ -105,58 +98,16 @@ export function registerUpload(program: Command): void {
           if (!options.filename) {
             exitError("--filename is required when using --stdin");
           }
-          const contentType = "application/octet-stream";
-          attachment = v1.transport === "cloud-http"
-            ? await v1.store.uploadStream(process.stdin, options.filename, v1UploadOptions)
-            : cloudMode
-            ? await uploadStreamToCloudApi(process.stdin, options.filename, contentType, {
-              expiry: options.expiry,
-              linkType: options.linkType,
-              tag: options.tag,
-              password: options.password,
-              encrypt: options.encrypt,
-              maxDownloads,
-              filename: options.filename,
-            })
-            : await uploadStreamAttachment(process.stdin, options.filename, contentType, {
-              expiry: options.expiry,
-              linkType: options.linkType,
-              tag: options.tag,
-              password: options.password,
-              encrypt: options.encrypt,
-              maxDownloads,
-              requireEmail,
-              allowedEmails,
-              baseUrl: internalBaseUrl,
-            });
+          attachment = await store.uploadStream(process.stdin, options.filename!, "application/octet-stream", uploadOptions);
         } else if (!file) {
           exitError("A file path is required (or use --stdin)");
           return;
         } else {
           const isUrl = file.startsWith("http://") || file.startsWith("https://");
           if (isUrl) process.stderr.write("Fetching URL...\n");
-          const uploadOptions = {
-            expiry: options.expiry,
-            linkType: options.linkType,
-            tag: options.tag,
-            password: options.password,
-            encrypt: options.encrypt,
-            maxDownloads,
-            requireEmail,
-            allowedEmails,
-            baseUrl: internalBaseUrl,
-          };
-          attachment = v1.transport === "cloud-http"
-            ? isUrl
-              ? await v1.store.uploadUrl(file, v1UploadOptions)
-              : await v1.store.uploadFile(file, v1UploadOptions)
-            : cloudMode
-            ? isUrl
-              ? await uploadUrlToCloudApi(file, uploadOptions)
-              : await uploadFileToCloudApi(file, uploadOptions)
-            : isUrl
-              ? await uploadFromUrl(file, uploadOptions)
-              : await uploadFile(file, uploadOptions);
+          attachment = isUrl
+            ? await store.uploadUrl(file, uploadOptions)
+            : await store.uploadFile(file, uploadOptions);
         }
 
         let copied = false;
@@ -188,6 +139,8 @@ export function registerUpload(program: Command): void {
         }
       } catch (err: unknown) {
         exitError(err instanceof Error ? err.message : String(err));
+      } finally {
+        store.close();
       }
     });
 }

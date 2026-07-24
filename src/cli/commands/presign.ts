@@ -1,12 +1,19 @@
 import { Command } from "commander";
-import { nanoid } from "nanoid";
-import { lookup as mimeLookup } from "mime-types";
-import { AttachmentsDB } from "../../core/db";
-import { S3Client } from "../../core/s3";
-import { getConfig, getPublicBaseUrl, parseExpiryStrict, validateS3Config } from "../../core/config";
-import { generatePresignedLink, generateShareLink } from "../../core/links";
-import { createObjectKey, sanitizeFilename } from "../../core/security";
-import { formatExpiry } from "../utils";
+import { getConfig, parseExpiryStrict } from "../../core/config";
+import { LocalStore, resolveStore } from "../../core/store";
+import { formatExpiry, exitError } from "../utils";
+
+/** Presigned direct-to-S3 upload is a local/S3 capability; self_hosted uses `upload`. */
+function requireLocalStore(): LocalStore {
+  const store = resolveStore();
+  if (!(store instanceof LocalStore)) {
+    store.close();
+    exitError(
+      "presign is only available in local mode (it needs on-box S3 credentials). In self_hosted/cloud mode use `attachments upload`, which streams via the /v1 API.",
+    );
+  }
+  return store;
+}
 
 export function presignUploadCommand(): Command {
   const cmd = new Command("presign-upload")
@@ -15,15 +22,6 @@ export function presignUploadCommand(): Command {
     .option("--expiry <time>", "URL expiry duration (e.g. 1h, 30m, 7d)", "1h")
     .option("--content-type <type>", "Content type for the upload")
     .action(async (filename: string, options) => {
-      const config = getConfig();
-      validateS3Config(config);
-      const safeFilename = sanitizeFilename(filename);
-
-      // Determine content type
-      const contentType =
-        (options.contentType as string | undefined) ??
-        (mimeLookup(safeFilename) || "application/octet-stream");
-
       // Parse expiry
       let expiryMs: number | null;
       try {
@@ -33,48 +31,22 @@ export function presignUploadCommand(): Command {
         process.exit(1);
       }
       if (expiryMs === null) {
-        process.stderr.write(
-          `Error: Presigned upload expiry cannot be never\n`
-        );
+        process.stderr.write(`Error: Presigned upload expiry cannot be never\n`);
         process.exit(1);
       }
 
-      const expirySeconds = Math.floor(expiryMs / 1000);
-
-      // Generate ID and S3 key
-      const id = `att_${nanoid(11)}`;
-      const s3Key = createObjectKey(id, safeFilename);
-
-      // Generate presigned PUT URL
-      const s3 = new S3Client(config.s3);
-      const uploadUrl = await s3.presignPut(s3Key, contentType, expirySeconds);
-
-      // Create DB record with size 0 (pending upload)
-      const now = Date.now();
-      const db = new AttachmentsDB();
+      const store = requireLocalStore();
       try {
-        db.insert({
-          id,
-          filename: safeFilename,
-          s3Key,
-          bucket: config.s3.bucket,
-          size: 0,
-          contentType,
-          link: null,
-          tag: null,
-          expiresAt: now + expiryMs,
-          createdAt: now,
-          storageBackend: "s3",
-          status: "pending",
-        });
+        const result = await store.presignUpload(filename, options.contentType as string | undefined, expiryMs);
+        process.stdout.write(`Upload URL: ${result.uploadUrl} (expires in ${options.expiry})\n`);
+        process.stdout.write(`ID: ${result.id}\n`);
+        process.stdout.write(`Finalize: attachments presign-complete ${result.id}\n`);
+        process.stdout.write(`Usage: curl -X PUT -H "Content-Type: ${result.contentType}" -T ${result.filename} "${result.uploadUrl}"\n`);
+      } catch (err) {
+        exitError(err instanceof Error ? err.message : String(err));
       } finally {
-        db.close();
+        store.close();
       }
-
-      process.stdout.write(`Upload URL: ${uploadUrl} (expires in ${options.expiry})\n`);
-      process.stdout.write(`ID: ${id}\n`);
-      process.stdout.write(`Finalize: attachments presign-complete ${id}\n`);
-      process.stdout.write(`Usage: curl -X PUT -H "Content-Type: ${contentType}" -T ${safeFilename} "${uploadUrl}"\n`);
     });
 
   return cmd;
@@ -92,7 +64,6 @@ export function presignCompleteCommand(): Command {
     .option("--brief", "Only print the generated link")
     .action(async (id: string, options) => {
       const config = getConfig();
-      validateS3Config(config);
 
       const format = String(options.format ?? "human");
       if (!["human", "json"].includes(format)) {
@@ -112,74 +83,29 @@ export function presignCompleteCommand(): Command {
         process.exit(1);
       }
 
-      const db = new AttachmentsDB();
+      let expiryMs: number | null;
       try {
-        const attachment = db.findById(id);
-        if (!attachment) {
-          process.stderr.write(`Error: Pending attachment not found: ${id}\n`);
-          process.exit(1);
-        }
-        if (attachment.status !== "pending") {
-          process.stderr.write(`Error: Attachment upload is already complete: ${id}\n`);
-          process.exit(1);
-        }
+        expiryMs = parseExpiryStrict(options.expiry ?? config.defaults.expiry).milliseconds;
+      } catch (err) {
+        process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exit(1);
+      }
 
-        const s3 = new S3Client(config.s3);
-        const info = await s3.head(attachment.s3Key);
-        const size = info.contentLength ?? attachment.size;
-        if (size > config.storage.maxSizeBytes) {
-          try {
-            await s3.delete(attachment.s3Key);
-          } catch {
-            // Best-effort cleanup; the pending record is removed either way.
-          }
-          db.delete(id);
-          process.stderr.write(`Error: File too large. Maximum size is ${config.storage.maxSizeBytes} bytes.\n`);
-          process.exit(1);
-        }
-
-        let expiryMs: number | null;
-        try {
-          expiryMs = parseExpiryStrict(options.expiry ?? config.defaults.expiry).milliseconds;
-        } catch (err) {
-          process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
-          process.exit(1);
-        }
-        const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
-
-        const mustUseServerLink = !!options.password || maxDownloads !== undefined || linkType !== "presigned";
-        let link: string;
-        if (!mustUseServerLink && (attachment.storageBackend ?? "s3") === "s3") {
-          link = await generatePresignedLink(s3, attachment.s3Key, expiryMs);
-        } else {
-          const { token } = db.createShareLink({
-            attachmentId: attachment.id,
-            expiresAt,
-            password: options.password as string | undefined,
-            maxUses: maxDownloads ?? null,
-          });
-          link = generateShareLink(token, getPublicBaseUrl(config), config.server.publicPath);
-        }
-
-        db.markReady({
-          id: attachment.id,
-          size,
-          contentType: info.contentType ?? attachment.contentType,
-          link,
-          expiresAt,
+      const store = requireLocalStore();
+      try {
+        const { attachment, link, size } = await store.presignComplete(id, {
+          expiryMs,
+          password: options.password as string | undefined,
+          maxDownloads,
+          linkType,
         });
+        const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
 
         if (options.brief) {
           process.stdout.write(`${link}\n`);
         } else if (format === "json") {
           process.stdout.write(
-            JSON.stringify({
-              id: attachment.id,
-              filename: attachment.filename,
-              size,
-              link,
-              expiresAt,
-            }, null, 2) + "\n"
+            JSON.stringify({ id: attachment.id, filename: attachment.filename, size, link, expiresAt }, null, 2) + "\n"
           );
         } else {
           process.stdout.write(`ID:       ${attachment.id}\n`);
@@ -188,8 +114,10 @@ export function presignCompleteCommand(): Command {
           process.stdout.write(`Link:     ${link}\n`);
           process.stdout.write(`Expiry:   ${formatExpiry(expiresAt)}\n`);
         }
+      } catch (err) {
+        exitError(err instanceof Error ? err.message : String(err));
       } finally {
-        db.close();
+        store.close();
       }
     });
 

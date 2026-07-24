@@ -48,12 +48,20 @@ mock.module("../../core/s3", () => ({
 const mockLocalDelete = mock(async (_key: string) => {});
 const mockLocalConstructor = mock((_cfg: unknown) => {});
 
-mock.module("../../core/object-storage", () => ({
-  LocalObjectStore: class MockLocalObjectStore {
+mock.module("../../core/object-storage", () => {
+  class MockLocalObjectStore {
     constructor(cfg: unknown) { mockLocalConstructor(cfg); }
     delete = mockLocalDelete;
-  },
-}));
+  }
+  return {
+    LocalObjectStore: MockLocalObjectStore,
+    // upload.ts / download.ts statically import these from object-storage, so
+    // the mock must expose them or their named imports fail to resolve.
+    createObjectStore: mock((_cfg: unknown) => new MockLocalObjectStore(_cfg)),
+    parseRangeHeader: mock(() => null),
+    resolveLocalObjectPath: mock(() => "/tmp/mock-object"),
+  };
+});
 
 // Use real config module — avoids module cache pollution
 let _deleteTestConfigDir: string;

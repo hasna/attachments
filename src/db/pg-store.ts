@@ -209,6 +209,18 @@ export class PgAttachmentsStore {
     return result.rowCount;
   }
 
+  async saveFeedback(input: {
+    message: string;
+    email?: string | null;
+    category?: string;
+    version?: string | null;
+  }): Promise<void> {
+    await this.client.execute(
+      `INSERT INTO feedback (message, email, category, version) VALUES ($1, $2, $3, $4)`,
+      [input.message, input.email ?? null, input.category ?? "general", input.version ?? null],
+    );
+  }
+
   async createShareLink(input: {
     attachmentId: string;
     expiresAt: number | null;

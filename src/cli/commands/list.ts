@@ -1,8 +1,6 @@
 import { Command } from "commander";
-import { AttachmentsDB, type Attachment } from "../../core/db";
-import { listCloudAttachments } from "../../core/api-client";
-import { getConfig, isCloudClientMode } from "../../core/config";
-import { resolveAttachmentsV1 } from "../../core/cloud-v1";
+import type { Attachment } from "../../core/db";
+import { resolveStore } from "../../core/store";
 import { formatBytes, formatExpiry } from "../utils";
 
 function compactLine(att: Attachment): string {
@@ -65,17 +63,9 @@ export function listCommand(): Command {
 
       const brief = !!options.brief;
 
-      let db: AttachmentsDB | null = null;
+      const store = resolveStore();
       try {
-        const v1 = resolveAttachmentsV1();
-        const attachments = v1.transport === "cloud-http"
-          ? await v1.store.list({ limit, includeExpired, tag })
-          : isCloudClientMode(getConfig())
-          ? await listCloudAttachments({ limit, includeExpired, tag })
-          : (() => {
-              db = new AttachmentsDB();
-              return db.findAll({ limit, includeExpired, tag });
-            })();
+        const attachments = await store.list({ limit, includeExpired, tag });
 
         if (brief) {
           if (attachments.length === 0) {
@@ -105,7 +95,7 @@ export function listCommand(): Command {
           }
         }
       } finally {
-        db?.close();
+        store.close();
       }
     });
 

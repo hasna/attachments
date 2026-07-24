@@ -294,10 +294,12 @@ describe("linkCommand", () => {
     }
   });
 
-  it("uses server link type when getLinkType returns server", async () => {
+  it("uses server link type when config default link type is server", async () => {
     const att = makeAttachment({ id: "att_server" });
     mockFindById.mockImplementation(() => att);
-    mockGetLinkType.mockImplementation(() => "server" as const);
+    // `link` passes the resolved config default link type into the Store, so the
+    // server-link path is driven by config, not a standalone getLinkType() call.
+    setConfig({ defaults: { expiry: "7d", linkType: "server" } });
     mockGenerateShareLink.mockReset();
     mockGenerateShareLink.mockImplementation((token: string, baseUrl: string) => `${baseUrl}/a/${token}`);
 
@@ -310,6 +312,7 @@ describe("linkCommand", () => {
       expect(mockGeneratePresignedLink).not.toHaveBeenCalled();
     } finally {
       capture.restore();
+      setConfig({ defaults: { expiry: "7d", linkType: "presigned" } });
     }
   });
 

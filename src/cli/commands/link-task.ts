@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { AttachmentsDB } from "../../core/db";
+import { resolveStore } from "../../core/store";
 
 export interface LinkTaskOptions {
   todosUrl?: string;
@@ -22,12 +22,12 @@ export async function linkAttachmentToTask(
   todosUrl: string,
   fetchFn: typeof fetch = fetch
 ): Promise<void> {
-  const db = new AttachmentsDB();
-  let att: ReturnType<AttachmentsDB["findById"]>;
+  const store = resolveStore();
+  let att: Awaited<ReturnType<typeof store.get>>;
   try {
-    att = db.findById(attachmentId);
+    att = await store.get(attachmentId);
   } finally {
-    db.close();
+    store.close();
   }
 
   if (!att) {

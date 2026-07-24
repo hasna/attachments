@@ -111,13 +111,23 @@ function makeAttachment(overrides: Partial<MockAttachment> = {}): MockAttachment
   };
 }
 
-function makeDbFactory(attachments: Record<string, MockAttachment | null> = {}) {
-  return () => ({
-    findById: (id: string) => attachments[id] ?? null,
-    updateLink: mockUpdateLink,
-    close: mockDbClose,
-    findAll: mockFindAll,
-  }) as unknown as import("../../core/db").AttachmentsDB;
+// handleTaskEvent / connectAndWatch take a Store factory. The fake Store exposes
+// the methods watch.ts uses: get() to look up a record and regenerateLink() to
+// refresh an expired/dead link. regenerateLink delegates to the DB updateLink
+// mock so tests can assert the link was rewritten.
+function makeStoreFactory(attachments: Record<string, MockAttachment | null> = {}) {
+  return () =>
+    ({
+      transport: "local",
+      baseUrl: null,
+      get: async (id: string) => attachments[id] ?? null,
+      regenerateLink: async (id: string) => {
+        const link = "https://s3.example.com/new-presigned";
+        mockUpdateLink(id, link, Date.now() + 1000);
+        return { link, expires_at: Date.now() + 1000 };
+      },
+      close: mockDbClose,
+    }) as unknown as import("../../core/store").Store;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,13 +182,13 @@ describe("handleTaskEvent", () => {
       task_id: "TASK-001",
       metadata: { _evidence: { attachments: [] } },
     };
-    const result = await handleTaskEvent(event, {}, makeDbFactory());
+    const result = await handleTaskEvent(event, {}, makeStoreFactory());
     expect(result).toBeNull();
   });
 
   it("returns null when metadata._evidence is missing", async () => {
     const event = { type: "task.completed", task_id: "TASK-002" };
-    const result = await handleTaskEvent(event, {}, makeDbFactory());
+    const result = await handleTaskEvent(event, {}, makeStoreFactory());
     expect(result).toBeNull();
   });
 
@@ -193,7 +203,7 @@ describe("handleTaskEvent", () => {
       metadata: { _evidence: { attachments: ["att_h"] } },
     };
 
-    const result = await handleTaskEvent(event, {}, makeDbFactory({ att_h: att }));
+    const result = await handleTaskEvent(event, {}, makeStoreFactory({ att_h: att }));
     expect(result).not.toBeNull();
     expect(result!.checked).toBe(1);
     expect(result!.regenerated).toBe(0);
@@ -210,7 +220,7 @@ describe("handleTaskEvent", () => {
       metadata: { _evidence: { attachments: ["att_exp"] } },
     };
 
-    const result = await handleTaskEvent(event, {}, makeDbFactory({ att_exp: att }));
+    const result = await handleTaskEvent(event, {}, makeStoreFactory({ att_exp: att }));
     expect(result).not.toBeNull();
     expect(result!.checked).toBe(1);
     expect(result!.regenerated).toBe(1);
@@ -233,7 +243,7 @@ describe("handleTaskEvent", () => {
       metadata: { _evidence: { attachments: ["att_dead"] } },
     };
 
-    const result = await handleTaskEvent(event, {}, makeDbFactory({ att_dead: att }));
+    const result = await handleTaskEvent(event, {}, makeStoreFactory({ att_dead: att }));
     expect(result).not.toBeNull();
     expect(result!.checked).toBe(1);
     expect(result!.regenerated).toBe(1);
@@ -246,7 +256,7 @@ describe("handleTaskEvent", () => {
       metadata: { _evidence: { attachments: ["att_missing"] } },
     };
 
-    const result = await handleTaskEvent(event, {}, makeDbFactory({}));
+    const result = await handleTaskEvent(event, {}, makeStoreFactory({}));
     expect(result).not.toBeNull();
     expect(result!.checked).toBe(0);
     expect(result!.regenerated).toBe(0);
@@ -268,7 +278,7 @@ describe("handleTaskEvent", () => {
     const result = await handleTaskEvent(
       event,
       {},
-      makeDbFactory({ att_good: attGood, att_bad: attExpired })
+      makeStoreFactory({ att_good: attGood, att_bad: attExpired })
     );
     expect(result).not.toBeNull();
     expect(result!.checked).toBe(2);
@@ -292,7 +302,7 @@ describe("handleTaskEvent", () => {
         task_id: "TASK-008",
         metadata: { _evidence: { attachments: ["att_log"] } },
       };
-      await handleTaskEvent(event, {}, makeDbFactory({ att_log: att }));
+      await handleTaskEvent(event, {}, makeStoreFactory({ att_log: att }));
       const output = out.join("");
       expect(output).toContain("TASK-008");
       expect(output).toContain("1 attachment");
@@ -314,7 +324,7 @@ describe("handleTaskEvent", () => {
         id: "TASK-ALT-001",
         metadata: { _evidence: { attachments: [] } },
       };
-      await handleTaskEvent(event, { verbose: true }, makeDbFactory());
+      await handleTaskEvent(event, { verbose: true }, makeStoreFactory());
       const output = out.join("");
       expect(output).toContain("TASK-ALT-001");
     } finally {
@@ -364,7 +374,7 @@ describe("connectAndWatch reconnect logic", () => {
         { verbose: false },
         controller.signal,
         mockFetch as unknown as typeof fetch,
-        makeDbFactory(),
+        makeStoreFactory(),
         sleepFn
       );
     } finally {
@@ -405,7 +415,7 @@ describe("connectAndWatch reconnect logic", () => {
         {},
         controller.signal,
         mockFetch as unknown as typeof fetch,
-        makeDbFactory(),
+        makeStoreFactory(),
         sleepFn
       );
     } finally {
@@ -472,7 +482,7 @@ describe("connectAndWatch reconnect logic", () => {
         { verbose: true },
         controller.signal,
         customFetch as unknown as typeof fetch,
-        makeDbFactory({ att_stream: att }),
+        makeStoreFactory({ att_stream: att }),
         async () => {}
       );
     } finally {
@@ -530,7 +540,7 @@ describe("connectAndWatch reconnect logic", () => {
         {},
         controller.signal,
         customFetch as unknown as typeof fetch,
-        makeDbFactory(),
+        makeStoreFactory(),
         async () => {}
       );
     } finally {
