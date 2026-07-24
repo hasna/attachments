@@ -1,6 +1,6 @@
 import { Command } from "commander";
-import { AttachmentsDB } from "../../core/db";
-import { checkAttachment, regenerateLink } from "./health-check";
+import { resolveStore, type Store } from "../../core/store";
+import { checkAttachment } from "./health-check";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,7 +42,7 @@ export interface HandleTaskEventResult {
 export async function handleTaskEvent(
   event: TaskCompletedEvent,
   opts: { verbose?: boolean } = {},
-  dbFactory: () => AttachmentsDB = () => new AttachmentsDB()
+  storeFactory: () => Store = () => resolveStore()
 ): Promise<HandleTaskEventResult | null> {
   const taskId = event.task_id ?? event.id ?? "unknown";
 
@@ -54,7 +54,7 @@ export async function handleTaskEvent(
     return null;
   }
 
-  const db = dbFactory();
+  const store = storeFactory();
   let checked = 0;
   let regenerated = 0;
 
@@ -62,10 +62,10 @@ export async function handleTaskEvent(
     const now = Date.now();
 
     for (const id of attachmentIds) {
-      const att = db.findById(id);
+      const att = await store.get(id);
       if (!att) {
         if (opts.verbose) {
-          process.stdout.write(`[watch] Attachment ${id} not found in local DB — skipping\n`);
+          process.stdout.write(`[watch] Attachment ${id} not found in store — skipping\n`);
         }
         continue;
       }
@@ -75,7 +75,7 @@ export async function handleTaskEvent(
 
       if (result.status === "expired" || result.status === "dead") {
         try {
-          await regenerateLink(att, db);
+          await store.regenerateLink(id, {});
           regenerated++;
           if (opts.verbose) {
             process.stdout.write(
@@ -89,7 +89,7 @@ export async function handleTaskEvent(
       }
     }
   } finally {
-    db.close();
+    store.close();
   }
 
   process.stdout.write(
@@ -133,7 +133,7 @@ export async function connectAndWatch(
   opts: { verbose?: boolean } = {},
   signal?: AbortSignal,
   fetchFn: typeof fetch = fetch,
-  dbFactory: () => AttachmentsDB = () => new AttachmentsDB(),
+  storeFactory: () => Store = () => resolveStore(),
   sleepFn: (ms: number) => Promise<void> = (ms) =>
     new Promise((resolve) => setTimeout(resolve, ms))
 ): Promise<void> {
@@ -191,7 +191,7 @@ export async function connectAndWatch(
             try {
               const payload = JSON.parse(parsed.data) as TaskCompletedEvent;
               payload.type = parsed.event;
-              await handleTaskEvent(payload, opts, dbFactory);
+              await handleTaskEvent(payload, opts, storeFactory);
             } catch (parseErr) {
               const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
               process.stderr.write(`[watch] Failed to parse event data: ${msg}\n`);

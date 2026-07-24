@@ -8,17 +8,11 @@ import {
 import { isStdioMode, resolveMcpHttpPort, startMcpHttpServer } from "./http.js";
 
 import { nanoid } from "nanoid";
-import { lookup as mimeLookup } from "mime-types";
-import { uploadFile, uploadFromUrl, uploadFromBuffer } from "../core/upload.js";
 import { computeReport } from "../cli/commands/report.js";
 import { runHealthCheck } from "../cli/commands/health-check.js";
-import { downloadAttachment } from "../core/download.js";
-import { AttachmentsDB } from "../core/db.js";
-import { STORAGE_TABLES, getStorageStatus, storagePull, storagePush, storageSync } from "../db/storage-sync.js";
-import { getConfig, getPublicBaseUrl, parseExpiryStrict, setConfig, validateS3Config } from "../core/config.js";
-import { generatePresignedLink, generateShareLink, getLinkType } from "../core/links.js";
-import { S3Client } from "../core/s3.js";
-import { createObjectKey, sanitizeFilename } from "../core/security.js";
+import { completeTaskWithFiles } from "../cli/commands/complete-task.js";
+import { resolveStore, LocalStore } from "../core/store.js";
+import { getConfig, parseExpiryStrict, setConfig } from "../core/config.js";
 
 // ---------------------------------------------------------------------------
 // In-memory agent registry (attribution for uploads)
@@ -544,44 +538,6 @@ const LEAN_TOOLS = [
       required: ["message"],
     },
   },
-  {
-    name: "storage_status",
-    description: "Show remote storage configuration and sync metadata",
-    inputSchema: {
-      type: "object" as const,
-      properties: {},
-    },
-  },
-  {
-    name: "storage_push",
-    description: "Push local attachment tables to remote Postgres storage",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        tables: { type: "array", items: { type: "string", enum: [...STORAGE_TABLES] } },
-      },
-    },
-  },
-  {
-    name: "storage_pull",
-    description: "Pull attachment tables from remote Postgres storage",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        tables: { type: "array", items: { type: "string", enum: [...STORAGE_TABLES] } },
-      },
-    },
-  },
-  {
-    name: "storage_sync",
-    description: "Push then pull attachment tables with remote Postgres storage",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        tables: { type: "array", items: { type: "string", enum: [...STORAGE_TABLES] } },
-      },
-    },
-  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -623,6 +579,18 @@ export function getToolsForProfile(
 // Tool handler helpers
 // ---------------------------------------------------------------------------
 
+/** Presigned direct-to-S3 upload needs on-box S3 creds; self_hosted uses upload_attachment. */
+function requireLocalStore(): LocalStore {
+  const store = resolveStore();
+  if (!(store instanceof LocalStore)) {
+    store.close();
+    throw new Error(
+      "presigned direct upload is only available in local mode (needs on-box S3 credentials). In self_hosted/cloud mode use the upload_attachment tool.",
+    );
+  }
+  return store;
+}
+
 async function handleUploadAttachment(args: {
   path?: string;
   url?: string;
@@ -646,42 +614,51 @@ async function handleUploadAttachment(args: {
     encrypt: args.encrypt,
     maxDownloads: args.max_downloads,
   };
-  const attachment = args.url
-    ? await uploadFromUrl(args.url, opts)
-    : await uploadFile(args.path!, opts);
-
-  return {
-    id: attachment.id,
-    link: attachment.link,
-    size: attachment.size,
-    filename: attachment.filename,
-    expires_at: attachment.expiresAt,
-  };
+  const store = resolveStore();
+  try {
+    const attachment = args.url
+      ? await store.uploadUrl(args.url, opts)
+      : await store.uploadFile(args.path!, opts);
+    return {
+      id: attachment.id,
+      link: attachment.link,
+      size: attachment.size,
+      filename: attachment.filename,
+      expires_at: attachment.expiresAt,
+    };
+  } finally {
+    store.close();
+  }
 }
 
 async function handleDownloadAttachment(args: {
   id_or_url: string;
   dest?: string;
 }) {
-  const result = await downloadAttachment(args.id_or_url, args.dest);
-  return {
-    path: result.path,
-    filename: result.filename,
-    size: result.size,
-  };
+  const store = resolveStore();
+  try {
+    const result = await store.download(args.id_or_url, args.dest);
+    return {
+      path: result.path,
+      filename: result.filename,
+      size: result.size,
+    };
+  } finally {
+    store.close();
+  }
 }
 
-function handleListAttachments(args: {
+async function handleListAttachments(args: {
   limit?: number;
   format?: "compact" | "json";
   tag?: string;
 }) {
-  const db = new AttachmentsDB();
-  let attachments: ReturnType<AttachmentsDB["findAll"]>;
+  const store = resolveStore();
+  let attachments;
   try {
-    attachments = db.findAll({ limit: args.limit, tag: args.tag });
+    attachments = await store.list({ limit: args.limit, tag: args.tag });
   } finally {
-    db.close();
+    store.close();
   }
 
   if (args.format === "json") {
@@ -700,12 +677,12 @@ function handleListAttachments(args: {
     .join("\n");
 }
 
-function handleDeleteAttachment(args: { id: string }) {
-  const db = new AttachmentsDB();
+async function handleDeleteAttachment(args: { id: string }) {
+  const store = resolveStore();
   try {
-    db.delete(args.id);
+    await store.delete(args.id);
   } finally {
-    db.close();
+    store.close();
   }
   return `deleted: ${args.id}`;
 }
@@ -715,42 +692,19 @@ async function handleGetLink(args: {
   regenerate?: boolean;
   expiry?: string;
 }) {
-  const db = new AttachmentsDB();
-  const attachment = db.findById(args.id);
-
-  if (!attachment) {
-    db.close();
-    throw new Error(`Attachment not found: ${args.id}`);
+  const store = resolveStore();
+  try {
+    const attachment = await store.get(args.id);
+    if (!attachment) {
+      throw new Error(`Attachment not found: ${args.id}`);
+    }
+    if (!args.regenerate) {
+      return { link: attachment.link, expires_at: attachment.expiresAt };
+    }
+    return store.regenerateLink(args.id, { expiry: args.expiry });
+  } finally {
+    store.close();
   }
-
-  if (!args.regenerate) {
-    db.close();
-    return {
-      link: attachment.link,
-      expires_at: attachment.expiresAt,
-    };
-  }
-
-  // Regenerate
-  const config = getConfig();
-  const linkType = getLinkType(config);
-  const expiryStr = args.expiry ?? config.defaults.expiry;
-  const { milliseconds: expiryMs } = parseExpiryStrict(expiryStr);
-  const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
-
-  let link: string;
-  if (linkType === "presigned" && (attachment.storageBackend ?? "s3") === "s3") {
-    const s3 = new S3Client(config.s3);
-    link = await generatePresignedLink(s3, attachment.s3Key, expiryMs);
-  } else {
-    const { token } = db.createShareLink({ attachmentId: attachment.id, expiresAt });
-    link = generateShareLink(token, getPublicBaseUrl(config), config.server.publicPath);
-  }
-
-  db.updateLink(args.id, link, expiresAt);
-  db.close();
-
-  return { link, expires_at: expiresAt };
 }
 
 async function handleUploadAttachments(args: {
@@ -769,25 +723,30 @@ async function handleUploadAttachments(args: {
     { id: string; link: string | null; filename: string; size: number } | { path: string; error: string }
   > = [];
 
-  for (const filePath of args.paths) {
-    try {
-      const attachment = await uploadFile(filePath, {
-        expiry: args.expiry,
-        tag: args.tag,
-        password: args.password,
-        encrypt: args.encrypt,
-        maxDownloads: args.max_downloads,
-      });
-      results.push({
-        id: attachment.id,
-        link: attachment.link,
-        filename: attachment.filename,
-        size: attachment.size,
-      });
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      results.push({ path: filePath, error: message });
+  const store = resolveStore();
+  try {
+    for (const filePath of args.paths) {
+      try {
+        const attachment = await store.uploadFile(filePath, {
+          expiry: args.expiry,
+          tag: args.tag,
+          password: args.password,
+          encrypt: args.encrypt,
+          maxDownloads: args.max_downloads,
+        });
+        results.push({
+          id: attachment.id,
+          link: attachment.link,
+          filename: attachment.filename,
+          size: attachment.size,
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        results.push({ path: filePath, error: message });
+      }
     }
+  } finally {
+    store.close();
   }
 
   return results;
@@ -798,60 +757,24 @@ async function handlePresignUpload(args: {
   expiry?: string;
   content_type?: string;
 }) {
-  const config = getConfig();
-  const filename = sanitizeFilename(args.filename);
-
-  // Determine content type
-  const contentType =
-    args.content_type ?? (mimeLookup(filename) || "application/octet-stream") as string;
-
   // Parse expiry (default 1h)
-  const expiryStr = args.expiry ?? "1h";
-  const { milliseconds: expiryMs } = parseExpiryStrict(expiryStr);
+  const { milliseconds: expiryMs } = parseExpiryStrict(args.expiry ?? "1h");
   if (expiryMs === null) {
     throw new Error("Presigned upload expiry cannot be never");
   }
-  validateS3Config(config);
 
-  const expirySeconds = Math.floor(expiryMs / 1000);
-
-  // Generate ID and S3 key
-  const id = `att_${nanoid(11)}`;
-  const s3Key = createObjectKey(id, filename);
-
-  // Generate presigned PUT URL
-  const s3 = new S3Client(config.s3);
-  const uploadUrl = await s3.presignPut(s3Key, contentType, expirySeconds);
-
-  // Create DB record with size 0 (pending upload)
-  const now = Date.now();
-  const expiresAt = now + expiryMs;
-  const db = new AttachmentsDB();
+  const store = requireLocalStore();
   try {
-    db.insert({
-      id,
-      filename,
-      s3Key,
-      bucket: config.s3.bucket,
-      size: 0,
-      contentType,
-      link: null,
-      tag: null,
-      expiresAt,
-      createdAt: now,
-      storageBackend: "s3",
-      status: "pending",
-    });
+    const result = await store.presignUpload(args.filename, args.content_type, expiryMs);
+    return {
+      upload_url: result.uploadUrl,
+      id: result.id,
+      expires_at: Date.now() + expiryMs,
+      finalize_tool: "complete_presigned_upload",
+    };
   } finally {
-    db.close();
+    store.close();
   }
-
-  return {
-    upload_url: uploadUrl,
-    id,
-    expires_at: expiresAt,
-    finalize_tool: "complete_presigned_upload",
-  };
 }
 
 async function handleCompletePresignedUpload(args: {
@@ -862,71 +785,29 @@ async function handleCompletePresignedUpload(args: {
   link_type?: "presigned" | "server";
 }) {
   const config = getConfig();
-  validateS3Config(config);
+  const { milliseconds: expiryMs } = parseExpiryStrict(args.expiry ?? config.defaults.expiry);
+  const maxDownloads = typeof args.max_downloads === "number" && args.max_downloads > 0
+    ? Math.floor(args.max_downloads)
+    : undefined;
+  const linkType = args.link_type ?? config.defaults.linkType;
 
-  const db = new AttachmentsDB();
-  const attachment = db.findById(args.id);
-  if (!attachment) {
-    db.close();
-    throw new Error(`Pending attachment not found: ${args.id}`);
-  }
-  if (attachment.status !== "pending") {
-    db.close();
-    throw new Error(`Attachment upload is already complete: ${args.id}`);
-  }
-
+  const store = requireLocalStore();
   try {
-    const s3 = new S3Client(config.s3);
-    const info = await s3.head(attachment.s3Key);
-    const size = info.contentLength ?? attachment.size;
-    if (size > config.storage.maxSizeBytes) {
-      try {
-        await s3.delete(attachment.s3Key);
-      } catch {
-        // Best-effort cleanup; the pending DB row is removed either way.
-      }
-      db.delete(args.id);
-      throw new Error(`File too large. Maximum size is ${config.storage.maxSizeBytes} bytes.`);
-    }
-
-    const { milliseconds: expiryMs } = parseExpiryStrict(args.expiry ?? config.defaults.expiry);
-    const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
-    const maxDownloads = typeof args.max_downloads === "number" && args.max_downloads > 0
-      ? Math.floor(args.max_downloads)
-      : null;
-    const linkType = args.link_type ?? config.defaults.linkType;
-    const mustUseServerLink = !!args.password || maxDownloads !== null || linkType !== "presigned";
-
-    let link: string;
-    if (!mustUseServerLink && (attachment.storageBackend ?? "s3") === "s3") {
-      link = await generatePresignedLink(s3, attachment.s3Key, expiryMs);
-    } else {
-      const { token } = db.createShareLink({
-        attachmentId: attachment.id,
-        expiresAt,
-        password: args.password,
-        maxUses: maxDownloads,
-      });
-      link = generateShareLink(token, getPublicBaseUrl(config), config.server.publicPath);
-    }
-
-    db.markReady({
-      id: attachment.id,
-      size,
-      contentType: info.contentType ?? attachment.contentType,
-      link,
-      expiresAt,
+    const { attachment, link, size } = await store.presignComplete(args.id, {
+      expiryMs,
+      password: args.password,
+      maxDownloads,
+      linkType,
     });
-
     return {
       id: attachment.id,
       filename: attachment.filename,
       size,
       link,
-      expires_at: expiresAt,
+      expires_at: expiryMs !== null ? Date.now() + expiryMs : null,
     };
   } finally {
-    db.close();
+    store.close();
   }
 }
 
@@ -968,12 +849,12 @@ async function handleLinkToTask(args: {
   todos_url?: string;
 }) {
   const todosUrl = args.todos_url ?? "http://localhost:3000";
-  const db = new AttachmentsDB();
-  let att: ReturnType<AttachmentsDB["findById"]>;
+  const store = resolveStore();
+  let att;
   try {
-    att = db.findById(args.attachment_id);
+    att = await store.get(args.attachment_id);
   } finally {
-    db.close();
+    store.close();
   }
 
   if (!att) {
@@ -1022,42 +903,14 @@ async function handleCompleteTaskWithFiles(args: {
     throw new Error("'paths' must be a non-empty array.");
   }
 
-  const todosUrl = args.todos_url ?? "http://localhost:3000";
-
-  // Upload each file and collect attachment IDs + links
-  const attachment_ids: string[] = [];
-  const links: Array<string | null> = [];
-
-  for (const filePath of args.paths) {
-    const attachment = await uploadFile(filePath, { expiry: args.expiry });
-    attachment_ids.push(attachment.id);
-    links.push(attachment.link);
-  }
-
-  // Complete the task via todos REST API
-  const url = `${todosUrl}/api/tasks/${args.task_id}/complete`;
-  const body: Record<string, unknown> = { attachment_ids };
-  if (args.notes !== undefined) {
-    body.notes = args.notes;
-  }
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+  // Route through the shared CLI implementation so the MCP tool and CLI command
+  // behave identically — including persisting the attachments as retrievable
+  // todos evidence (`metadata._evidence.attachments`).
+  return completeTaskWithFiles(args.task_id, args.paths, {
+    todosUrl: args.todos_url,
+    expiry: args.expiry,
+    notes: args.notes,
   });
-
-  if (!response.ok) {
-    if (response.status === 404) {
-      throw new Error(`Task not found: ${args.task_id}`);
-    }
-    const responseBody = await response.text().catch(() => "");
-    throw new Error(
-      `Failed to complete task ${args.task_id}: HTTP ${response.status}${responseBody ? ` — ${responseBody}` : ""}`
-    );
-  }
-
-  return { task_id: args.task_id, attachment_ids, links };
 }
 
 async function handleSaveSession(args: {
@@ -1127,10 +980,16 @@ async function handleSaveSession(args: {
   const filename = `session-${args.session_id}.${ext}`;
   const buffer = Buffer.from(content, "utf-8");
 
-  const attachment = await uploadFromBuffer(buffer, filename, {
-    expiry: args.expiry,
-    tag: args.tag,
-  });
+  const store = resolveStore();
+  let attachment;
+  try {
+    attachment = await store.uploadBuffer(buffer, filename, {
+      expiry: args.expiry,
+      tag: args.tag,
+    });
+  } finally {
+    store.close();
+  }
 
   return {
     id: attachment.id,
@@ -1164,27 +1023,27 @@ async function handleCheckAttachmentHealth(args: {
   };
 }
 
-function handleReportStats(args: { days?: number; tag?: string }) {
+async function handleReportStats(args: { days?: number; tag?: string }) {
   const days = args.days ?? 7;
   if (isNaN(days) || days < 1) {
     throw new Error("days must be a positive integer");
   }
   const nowMs = Date.now();
   const sinceMs = nowMs - days * 24 * 60 * 60 * 1000;
-  const db = new AttachmentsDB();
-  let all: ReturnType<AttachmentsDB["findAll"]>;
+  const store = resolveStore();
+  let all;
   try {
-    all = db.findAll({ includeExpired: true, tag: args.tag });
+    all = await store.list({ includeExpired: true, tag: args.tag });
   } finally {
-    db.close();
+    store.close();
   }
   return computeReport(all, sinceMs, nowMs);
 }
 
 async function handleGetContext(args: { format?: string }) {
-  const db = new AttachmentsDB();
+  const store = resolveStore();
   try {
-    const all = db.findAll({ includeExpired: true });
+    const all = await store.list({ includeExpired: true });
     const active = all.filter(a => !a.expiresAt || a.expiresAt > Date.now());
     const expiringSoon = all.filter(a => a.expiresAt && a.expiresAt > Date.now() && a.expiresAt - Date.now() < 24 * 60 * 60 * 1000);
     const expired = all.filter(a => a.expiresAt && a.expiresAt <= Date.now());
@@ -1197,7 +1056,7 @@ async function handleGetContext(args: { format?: string }) {
     if (args.format === "json") return { attachments: all.length, active: active.length, expired: expired.length, expiring_soon: expiringSoon.length, summary: lines.join("\n") };
     return lines.join("\n");
   } finally {
-    db.close();
+    store.close();
   }
 }
 
@@ -1207,15 +1066,6 @@ function handleSearchTools(args: { query: string }) {
     name.includes(q)
   );
   return matches.join("\n");
-}
-
-function readStorageTables(args: Record<string, unknown>): string[] | undefined {
-  return Array.isArray(args["tables"]) ? args["tables"].map(String) : undefined;
-}
-
-function readStorageSyncOptions(args: Record<string, unknown>): { tables?: string[] } | undefined {
-  const tables = readStorageTables(args);
-  return tables ? { tables } : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -1259,12 +1109,12 @@ export function buildServer(): Server {
           );
           break;
         case "list_attachments":
-          result = handleListAttachments(
+          result = await handleListAttachments(
             args as Parameters<typeof handleListAttachments>[0]
           );
           break;
         case "delete_attachment":
-          result = handleDeleteAttachment(
+          result = await handleDeleteAttachment(
             args as Parameters<typeof handleDeleteAttachment>[0]
           );
           break;
@@ -1299,7 +1149,7 @@ export function buildServer(): Server {
           );
           break;
         case "report_stats":
-          result = handleReportStats(
+          result = await handleReportStats(
             args as Parameters<typeof handleReportStats>[0]
           );
           break;
@@ -1359,29 +1209,13 @@ export function buildServer(): Server {
           result = [...agentRegistry.values()];
           break;
         }
-        case "storage_status": {
-          result = getStorageStatus();
-          break;
-        }
-        case "storage_push": {
-          result = await storagePush(readStorageSyncOptions(args));
-          break;
-        }
-        case "storage_pull": {
-          result = await storagePull(readStorageSyncOptions(args));
-          break;
-        }
-        case "storage_sync": {
-          result = await storageSync(readStorageSyncOptions(args));
-          break;
-        }
         case "send_feedback": {
           const fa = args as { message: string; email?: string; category?: string };
-          const fdb = new AttachmentsDB();
+          const fstore = resolveStore();
           try {
-            fdb.run("INSERT INTO feedback (message, email, category, version) VALUES (?, ?, ?, ?)", [fa.message, fa.email || null, fa.category || "general", getMcpVersion()]);
+            await fstore.saveFeedback({ message: fa.message, email: fa.email, category: fa.category, version: getMcpVersion() });
           } finally {
-            fdb.close();
+            fstore.close();
           }
           result = "Feedback saved. Thank you!";
           break;

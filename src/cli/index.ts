@@ -24,7 +24,6 @@ import { removeCommand } from "./commands/remove";
 import { linkCommand } from "./commands/link";
 import { configCommand } from "./commands/config";
 import { initCommand, heartbeatCommand, focusCommand } from "./commands/agent";
-import { storageCommand } from "./commands/storage";
 import { domainCommand } from "./commands/domain";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -58,7 +57,6 @@ program.addCommand(deleteCommand());
 program.addCommand(removeCommand());
 program.addCommand(linkCommand());
 program.addCommand(configCommand());
-program.addCommand(storageCommand());
 program.addCommand(domainCommand());
 program.addCommand(initCommand());
 program.addCommand(heartbeatCommand());

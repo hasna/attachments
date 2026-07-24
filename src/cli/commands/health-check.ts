@@ -1,8 +1,6 @@
 import { Command } from "commander";
-import { AttachmentsDB, type Attachment } from "../../core/db";
-import { S3Client } from "../../core/s3";
-import { getConfig, getPublicBaseUrl, parseExpiryStrict } from "../../core/config";
-import { generatePresignedLink, generateShareLink, getLinkType } from "../../core/links";
+import { type Attachment } from "../../core/db";
+import { resolveStore } from "../../core/store";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,65 +84,42 @@ export async function checkAttachment(
 }
 
 /**
- * Regenerate a presigned link for an attachment and update the DB.
- * Returns the new link.
- */
-export async function regenerateLink(att: Attachment, db: AttachmentsDB): Promise<string> {
-  const config = getConfig();
-  const linkType = getLinkType(config);
-  const expiryStr = config.defaults.expiry;
-  const { milliseconds: expiryMs } = parseExpiryStrict(expiryStr);
-  const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
-
-  let link: string;
-  if (linkType === "presigned" && (att.storageBackend ?? "s3") === "s3") {
-    const s3 = new S3Client(config.s3);
-    link = await generatePresignedLink(s3, att.s3Key, expiryMs);
-  } else {
-    const { token } = db.createShareLink({ attachmentId: att.id, expiresAt });
-    link = generateShareLink(token, getPublicBaseUrl(config), config.server.publicPath);
-  }
-
-  db.updateLink(att.id, link, expiresAt);
-  return link;
-}
-
-/**
- * Run a full health check across all attachments.
- * If fix=true, regenerates expired links.
+ * Run a full health check across all attachments, routed through the resolved
+ * store (local db or /v1 API). If fix=true, regenerates expired links.
  */
 export async function runHealthCheck(opts: { fix?: boolean } = {}): Promise<HealthCheckSummary> {
-  const db = new AttachmentsDB();
+  const store = resolveStore();
   let attachments: Attachment[];
   try {
-    attachments = db.findAll({ includeExpired: true });
-  } catch (err) {
-    db.close();
-    throw err;
-  }
+    attachments = await store.list({ includeExpired: true });
 
-  const now = Date.now();
-  const results: AttachmentHealthResult[] = [];
+    const now = Date.now();
+    const results: AttachmentHealthResult[] = [];
 
-  for (const att of attachments) {
-    const result = await checkAttachment(att, now);
+    for (const att of attachments) {
+      const result = await checkAttachment(att, now);
 
-    if (opts.fix && result.status === "expired") {
-      try {
-        const newLink = await regenerateLink(att, db);
-        result.fixed = true;
-        result.newLink = newLink;
-        result.status = "healthy";
-      } catch {
-        // If regeneration fails, keep as expired
+      if (opts.fix && result.status === "expired") {
+        try {
+          const { link } = await store.regenerateLink(att.id, {});
+          result.fixed = true;
+          if (link) result.newLink = link;
+          result.status = "healthy";
+        } catch {
+          // If regeneration fails, keep as expired
+        }
       }
+
+      results.push(result);
     }
 
-    results.push(result);
+    return buildSummary(results);
+  } finally {
+    store.close();
   }
+}
 
-  db.close();
-
+function buildSummary(results: AttachmentHealthResult[]): HealthCheckSummary {
   const summary: HealthCheckSummary = {
     healthy: results.filter((r) => r.status === "healthy").length,
     expired: results.filter((r) => r.status === "expired").length,

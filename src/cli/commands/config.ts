@@ -29,10 +29,7 @@ function configShowCommand(): Command {
         storage: config.storage,
         server: config.server,
         defaults: config.defaults,
-        client: {
-          ...config.client,
-          apiToken: maskSecret(config.client.apiToken),
-        },
+        client: config.client,
         domains: config.domains,
         deployment: config.deployment,
       };
@@ -57,10 +54,6 @@ function configSetCommand(): Command {
     .option("--public-path <path>", "Public attachment route prefix, e.g. /a")
     .option("--expiry <expiry>", "Default link expiry (e.g. 7d, 24h, 30m, never)")
     .option("--link-type <linkType>", "Default link type: presigned or server")
-    .option("--client-mode <mode>", "Client mode: local or cloud")
-    .option("--api-url <url>", "Cloud attachments API base URL")
-    .option("--api-token <token>", "Cloud attachments API token")
-    .option("--api-token-env <name>", "Environment variable name that contains the API token")
     .option("--internal-base-url <url>", "Internal LAN/Tailscale attachments base URL")
     .option("--internal-machine <id>", "Machine id to resolve for internal links")
     .option("--prefer-internal", "Prefer internal links when generating local server links")
@@ -136,26 +129,11 @@ function configSetCommand(): Command {
       }
 
       if (
-        options.clientMode ||
-        options.apiUrl ||
-        options.apiToken ||
-        options.apiTokenEnv ||
         options.internalBaseUrl ||
         options.internalMachine ||
         options.preferInternal
       ) {
         partial.client = {};
-        if (options.clientMode) {
-          const mode = String(options.clientMode).toLowerCase();
-          if (mode !== "local" && mode !== "cloud") {
-            process.stderr.write(`Error: --client-mode must be one of: local, cloud\n`);
-            process.exit(1);
-          }
-          partial.client.mode = mode as "local" | "cloud";
-        }
-        if (options.apiUrl) partial.client.apiBaseUrl = String(options.apiUrl).replace(/\/+$/, "");
-        if (options.apiToken) partial.client.apiToken = String(options.apiToken);
-        if (options.apiTokenEnv) partial.client.apiTokenEnv = String(options.apiTokenEnv);
         if (options.internalBaseUrl) partial.client.internalBaseUrl = String(options.internalBaseUrl).replace(/\/+$/, "");
         if (options.internalMachine) partial.client.internalMachineId = String(options.internalMachine);
         if (options.preferInternal) partial.client.preferInternal = true;

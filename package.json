@@ -1,6 +1,6 @@
 {
   "name": "@hasna/attachments",
-  "version": "1.0.51",
+  "version": "1.1.4",
   "description": "Open-source attachment transfer with local or private S3 storage, app-hosted share links, CLI, MCP, and REST API",
   "repository": {
     "type": "git",
@@ -26,12 +26,11 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js",
-    "./storage": "./dist/storage.js"
+    ".": "./dist/index.js"
   },
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "bun run clean && bun build src/index.ts src/storage.ts src/cli/index.ts src/mcp/server.ts src/serve/index.ts --root src --outdir dist --target bun && bun run scripts/write-types.ts",
+    "build": "bun run clean && bun build src/index.ts src/cli/index.ts src/mcp/server.ts src/serve/index.ts --root src --outdir dist --target bun && bun run scripts/write-types.ts",
     "sdk:generate": "bun run scripts/generate-sdk.ts",
     "build:cli": "bun run clean && bun build src/cli/index.ts --outdir dist/cli --target bun",
     "prepare": "bun run build",
@@ -64,7 +63,7 @@
     "@aws-sdk/client-s3": "^3.1007.0",
     "@aws-sdk/lib-storage": "3.1007.0",
     "@aws-sdk/s3-request-presigner": "^3.1007.0",
-    "@hasna/contracts": "0.4.1",
+    "@hasna/contracts": "^0.5.2",
     "@hasna/events": "^0.1.6",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@types/mime-types": "^3.0.1",

@@ -1,13 +1,11 @@
 import { Command } from "commander";
 import { existsSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
 import {
   S3Client as AWSS3Client,
   ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
 import { getConfig, hasS3Config, CONFIG_PATH } from "../../core/config";
-import { AttachmentsDB } from "../../core/db";
+import { resolveStore } from "../../core/store";
 
 // ---------------------------------------------------------------------------
 // Check result types
@@ -101,39 +99,28 @@ export async function checkS3Connection(): Promise<CheckResult> {
   }
 }
 
-export function checkDatabase(): CheckResult {
-  const dbPath = join(homedir(), ".hasna", "attachments", "db.sqlite");
-  if (!existsSync(dbPath)) {
-    return {
-      label: "Database",
-      status: "fail",
-      message: `${dbPath} not found`,
-    };
-  }
+export async function checkDatabase(): Promise<CheckResult> {
+  const store = resolveStore();
+  const label = store.transport === "cloud-http" ? "Store (/v1)" : "Database";
   try {
-    const db = new AttachmentsDB();
-    const attachments = db.findAll({ includeExpired: true });
-    db.close();
+    const attachments = await store.list({ includeExpired: true });
     return {
-      label: "Database",
+      label,
       status: "ok",
       message: `${attachments.length} attachment${attachments.length === 1 ? "" : "s"}`,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return {
-      label: "Database",
-      status: "fail",
-      message: `query failed: ${msg}`,
-    };
+    return { label, status: "fail", message: `query failed: ${msg}` };
+  } finally {
+    store.close();
   }
 }
 
-export function checkExpiredLinks(): CheckResult {
+export async function checkExpiredLinks(): Promise<CheckResult> {
+  const store = resolveStore();
   try {
-    const db = new AttachmentsDB();
-    const attachments = db.findAll({ includeExpired: true });
-    db.close();
+    const attachments = await store.list({ includeExpired: true });
     const now = Date.now();
     const expired = attachments.filter(
       (a) => a.expiresAt !== null && a.expiresAt <= now
@@ -142,20 +129,14 @@ export function checkExpiredLinks(): CheckResult {
       return {
         label: "Expired links",
         status: "warn",
-        message: `${expired.length} attachment${expired.length === 1 ? "" : "s"} have expired presigned links (run: attachments health-check --fix)`,
+        message: `${expired.length} attachment${expired.length === 1 ? "" : "s"} have expired links (run: attachments health-check --fix)`,
       };
     }
-    return {
-      label: "Expired links",
-      status: "ok",
-      message: "none",
-    };
+    return { label: "Expired links", status: "ok", message: "none" };
   } catch {
-    return {
-      label: "Expired links",
-      status: "warn",
-      message: "could not check (database unavailable)",
-    };
+    return { label: "Expired links", status: "warn", message: "could not check (store unavailable)" };
+  } finally {
+    store.close();
   }
 }
 
@@ -262,8 +243,8 @@ export function registerDoctor(program: Command): void {
       results.push(checkConfigFile());
       results.push(checkS3Configured());
       results.push(await checkS3Connection());
-      results.push(checkDatabase());
-      results.push(checkExpiredLinks());
+      results.push(await checkDatabase());
+      results.push(await checkExpiredLinks());
       results.push(await checkMcpInstalled());
       results.push(await checkIntegration("todos", "TODOS_URL", "http://localhost:19427"));
       results.push(await checkIntegration("sessions", "SESSIONS_URL", "http://localhost:3458"));

@@ -1,5 +1,6 @@
 import { Command } from "commander";
-import { AttachmentsDB, type Attachment } from "../../core/db";
+import { type Attachment } from "../../core/db";
+import { resolveStore } from "../../core/store";
 import { formatBytes } from "../utils";
 
 export interface ReportData {
@@ -162,7 +163,7 @@ export function registerReport(program: Command): void {
       "Output format: compact, json, or markdown",
       "compact"
     )
-    .action((options) => {
+    .action(async (options) => {
       const days = parseInt(options.days as string, 10);
       const format = options.format as string;
       const tagFilter = options.project
@@ -184,10 +185,10 @@ export function registerReport(program: Command): void {
       const nowMs = Date.now();
       const sinceMs = nowMs - days * 24 * 60 * 60 * 1000;
 
-      const db = new AttachmentsDB();
+      const store = resolveStore();
       try {
         // Fetch all including expired (we categorise them ourselves)
-        const all = db.findAll({ includeExpired: true, tag: tagFilter });
+        const all = await store.list({ includeExpired: true, tag: tagFilter });
         const report = computeReport(all, sinceMs, nowMs);
 
         let output: string;
@@ -201,7 +202,7 @@ export function registerReport(program: Command): void {
 
         process.stdout.write(output + "\n");
       } finally {
-        db.close();
+        store.close();
       }
     });
 }

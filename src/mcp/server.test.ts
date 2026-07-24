@@ -126,7 +126,19 @@ const mockUploadFromBuffer = mock(async (_buffer: Buffer, filename: string, _opt
   createdAt: 1699000000000,
 }));
 
-mock.module("../core/upload.js", () => ({ uploadFile: mockUploadFile, uploadFromUrl: mockUploadFromUrl, uploadFromBuffer: mockUploadFromBuffer }));
+const mockUploadStreamAttachment = mock(async (_stream: unknown, filename: string) => ({
+  id: "att_stream001",
+  filename,
+  s3Key: `attachments/2024-01-01/att_stream001/${filename}`,
+  bucket: "my-bucket",
+  size: 256,
+  contentType: "application/octet-stream",
+  link: "https://example.com/presigned-stream",
+  expiresAt: 1700000000000,
+  createdAt: 1699000000000,
+}));
+
+mock.module("../core/upload.js", () => ({ uploadFile: mockUploadFile, uploadFromUrl: mockUploadFromUrl, uploadFromBuffer: mockUploadFromBuffer, uploadStreamAttachment: mockUploadStreamAttachment }));
 mock.module("../core/download.js", () => ({
   downloadAttachment: mockDownloadAttachment,
 }));
@@ -266,9 +278,9 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("get_context");
   });
 
-  it("full profile returns all 26 tools", () => {
+  it("full profile returns all 22 tools", () => {
     const tools = getToolsForProfile("full");
-    expect(tools).toHaveLength(26);
+    expect(tools).toHaveLength(22);
     const names = tools.map((t) => t.name);
     expect(names).toContain("upload_attachment");
     expect(names).toContain("upload_attachments");
@@ -285,10 +297,10 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     expect(names).toContain("complete_task_with_files");
     expect(names).toContain("save_session");
     expect(names).toContain("check_attachment_health");
-    expect(names).toContain("storage_status");
-    expect(names).toContain("storage_push");
-    expect(names).toContain("storage_pull");
-    expect(names).toContain("storage_sync");
+    expect(names).not.toContain("storage_status");
+    expect(names).not.toContain("storage_push");
+    expect(names).not.toContain("storage_pull");
+    expect(names).not.toContain("storage_sync");
     expect(names).not.toContain(retiredToolName("_status"));
     expect(names).not.toContain(retiredToolName("_push"));
     expect(names).not.toContain(retiredToolName("_pull"));
@@ -308,10 +320,10 @@ describe("ATTACHMENTS_PROFILE — getToolsForProfile()", () => {
     delete process.env.ATTACHMENTS_PROFILE;
   });
 
-  it("ATTACHMENTS_PROFILE=full env var returns 26 tools", () => {
+  it("ATTACHMENTS_PROFILE=full env var returns 22 tools", () => {
     process.env.ATTACHMENTS_PROFILE = "full";
     const tools = getToolsForProfile();
-    expect(tools).toHaveLength(26);
+    expect(tools).toHaveLength(22);
     delete process.env.ATTACHMENTS_PROFILE;
   });
 });
@@ -328,10 +340,10 @@ describe("MCP Server — upload_attachment", () => {
     })) as { content: Array<{ text: string }> };
 
     expect(mockUploadFile).toHaveBeenCalledTimes(1);
-    expect(mockUploadFile).toHaveBeenCalledWith("/tmp/file.txt", {
-      expiry: "24h",
-      tag: "test-tag",
-    });
+    // LocalStore routes through coreUploadFile(path, options, { db, config }).
+    const call = mockUploadFile.mock.calls[0]!;
+    expect(call[0]).toBe("/tmp/file.txt");
+    expect(call[1]).toMatchObject({ expiry: "24h", tag: "test-tag" });
 
     const parsed = JSON.parse(result.content[0]!.text);
     expect(parsed.id).toBe("att_test001");
@@ -344,10 +356,9 @@ describe("MCP Server — upload_attachment", () => {
     const server = createServer();
     await callTool(server, "upload_attachment", { path: "/tmp/file.txt" });
 
-    expect(mockUploadFile).toHaveBeenCalledWith("/tmp/file.txt", {
-      expiry: undefined,
-      tag: undefined,
-    });
+    const call = mockUploadFile.mock.calls[0]!;
+    expect(call[0]).toBe("/tmp/file.txt");
+    expect(call[1]).toMatchObject({ expiry: undefined, tag: undefined });
   });
 
   it("calls uploadFromUrl when url is provided instead of path", async () => {
@@ -359,10 +370,9 @@ describe("MCP Server — upload_attachment", () => {
     })) as { content: Array<{ text: string }> };
 
     expect(mockUploadFromUrl).toHaveBeenCalledTimes(1);
-    expect(mockUploadFromUrl).toHaveBeenCalledWith("https://example.com/remote-file.txt", {
-      expiry: "24h",
-      tag: undefined,
-    });
+    const urlCall = mockUploadFromUrl.mock.calls[0]!;
+    expect(urlCall[0]).toBe("https://example.com/remote-file.txt");
+    expect(urlCall[1]).toMatchObject({ expiry: "24h", tag: undefined });
     expect(mockUploadFile).not.toHaveBeenCalled();
 
     const parsed = JSON.parse(result.content[0]!.text);
@@ -434,8 +444,10 @@ describe("MCP Server — upload_attachments (batch)", () => {
     })) as { content: Array<{ text: string }> };
 
     expect(mockUploadFile).toHaveBeenCalledTimes(2);
-    expect(mockUploadFile).toHaveBeenCalledWith("/tmp/a.txt", { expiry: "7d", tag: "batch-tag" });
-    expect(mockUploadFile).toHaveBeenCalledWith("/tmp/b.txt", { expiry: "7d", tag: "batch-tag" });
+    expect(mockUploadFile.mock.calls[0]![0]).toBe("/tmp/a.txt");
+    expect(mockUploadFile.mock.calls[0]![1]).toMatchObject({ expiry: "7d", tag: "batch-tag" });
+    expect(mockUploadFile.mock.calls[1]![0]).toBe("/tmp/b.txt");
+    expect(mockUploadFile.mock.calls[1]![1]).toMatchObject({ expiry: "7d", tag: "batch-tag" });
 
     const parsed = JSON.parse(result.content[0]!.text);
     expect(parsed).toHaveLength(2);
@@ -502,10 +514,10 @@ describe("MCP Server — download_attachment", () => {
     })) as { content: Array<{ text: string }> };
 
     expect(mockDownloadAttachment).toHaveBeenCalledTimes(1);
-    expect(mockDownloadAttachment).toHaveBeenCalledWith(
-      "att_test001",
-      "/tmp/downloads/"
-    );
+    // LocalStore routes through downloadAttachment(idOrUrl, output, { db, config }, opts).
+    const dlCall = mockDownloadAttachment.mock.calls[0]!;
+    expect(dlCall[0]).toBe("att_test001");
+    expect(dlCall[1]).toBe("/tmp/downloads/");
 
     const parsed = JSON.parse(result.content[0]!.text);
     expect(parsed.path).toBe("/tmp/test.txt");
@@ -519,10 +531,9 @@ describe("MCP Server — download_attachment", () => {
       id_or_url: "https://localhost:3459/d/att_test001",
     });
 
-    expect(mockDownloadAttachment).toHaveBeenCalledWith(
-      "https://localhost:3459/d/att_test001",
-      undefined
-    );
+    const dlCall = mockDownloadAttachment.mock.calls[0]!;
+    expect(dlCall[0]).toBe("https://localhost:3459/d/att_test001");
+    expect(dlCall[1]).toBeUndefined();
   });
 });
 
@@ -1129,11 +1140,17 @@ describe("MCP Server — complete_task_with_files", () => {
         createdAt: 1699000000000,
       }));
 
-    let capturedUrl = "";
-    let capturedBody = "";
+    const urls: string[] = [];
+    let patchBody = "";
     globalThis.fetch = mock(async (url: unknown, opts: unknown) => {
-      capturedUrl = String(url);
-      capturedBody = (opts as RequestInit).body as string;
+      const method = ((opts as RequestInit | undefined)?.method ?? "GET").toUpperCase();
+      urls.push(String(url));
+      if (method === "GET") {
+        return { ok: true, status: 200, json: async () => ({ id: "TASK-001", version: 1, metadata: {} }), text: async () => "" } as Response;
+      }
+      if (method === "PATCH") {
+        patchBody = (opts as RequestInit).body as string;
+      }
       return { ok: true, status: 200, text: async () => "" } as Response;
     }) as unknown as typeof fetch;
 
@@ -1145,11 +1162,17 @@ describe("MCP Server — complete_task_with_files", () => {
     })) as { content: Array<{ text: string }> };
 
     expect(mockUploadFile).toHaveBeenCalledTimes(2);
-    expect(capturedUrl).toBe("http://localhost:3000/api/tasks/TASK-001/complete");
+    // GET + PATCH the task, then POST /complete
+    expect(urls).toEqual([
+      "http://localhost:3000/api/tasks/TASK-001",
+      "http://localhost:3000/api/tasks/TASK-001",
+      "http://localhost:3000/api/tasks/TASK-001/complete",
+    ]);
 
-    const body = JSON.parse(capturedBody);
-    expect(body.attachment_ids).toEqual(["att_ev001", "att_ev002"]);
-    expect(body.notes).toBeUndefined();
+    // Evidence persisted into the task metadata (retrievable by resolve-evidence).
+    const patch = JSON.parse(patchBody);
+    const evidence = patch.metadata._evidence;
+    expect(evidence.attachments.map((a: { id: string }) => a.id)).toEqual(["att_ev001", "att_ev002"]);
 
     const parsed = JSON.parse(result.content[0]!.text);
     expect(parsed.task_id).toBe("TASK-001");
@@ -1157,7 +1180,7 @@ describe("MCP Server — complete_task_with_files", () => {
     expect(parsed.links).toEqual(["https://example.com/att_ev001", "https://example.com/att_ev002"]);
   });
 
-  it("includes notes in the POST body when provided", async () => {
+  it("stores notes in the persisted evidence metadata when provided", async () => {
     mockUploadFile.mockImplementationOnce(async () => ({
       id: "att_ev003",
       filename: "result.txt",
@@ -1170,9 +1193,15 @@ describe("MCP Server — complete_task_with_files", () => {
       createdAt: 1699000000000,
     }));
 
-    let capturedBody = "";
+    let patchBody = "";
     globalThis.fetch = mock(async (_url: unknown, opts: unknown) => {
-      capturedBody = (opts as RequestInit).body as string;
+      const method = ((opts as RequestInit | undefined)?.method ?? "GET").toUpperCase();
+      if (method === "GET") {
+        return { ok: true, status: 200, json: async () => ({ id: "TASK-002", version: 1, metadata: {} }), text: async () => "" } as Response;
+      }
+      if (method === "PATCH") {
+        patchBody = (opts as RequestInit).body as string;
+      }
       return { ok: true, status: 200, text: async () => "" } as Response;
     }) as unknown as typeof fetch;
 
@@ -1183,8 +1212,8 @@ describe("MCP Server — complete_task_with_files", () => {
       notes: "All tests green",
     });
 
-    const body = JSON.parse(capturedBody);
-    expect(body.notes).toBe("All tests green");
+    const patch = JSON.parse(patchBody);
+    expect(patch.metadata._evidence.notes).toBe("All tests green");
   });
 
   it("returns error when task not found (404)", async () => {

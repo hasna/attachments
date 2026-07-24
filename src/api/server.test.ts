@@ -36,6 +36,10 @@ const mockUploadStreamAttachment = mock(async (_stream: unknown, filename: strin
 mock.module("../core/upload", () => ({
   uploadFile: mockUploadFile,
   uploadStreamAttachment: mockUploadStreamAttachment,
+  // store.ts statically imports these too; stub them so the mocked module
+  // satisfies every named import in the dependency graph.
+  uploadFromUrl: mock(async () => ({})),
+  uploadFromBuffer: mock(async () => ({})),
 }));
 
 const mockAttachment: Attachment = {
@@ -187,6 +191,8 @@ mock.module("../core/download", () => ({
   streamAttachment: mockStreamAttachment,
   openAttachmentStream: mockOpenAttachmentStream,
   isExpired: (att: Attachment) => att.expiresAt !== null && att.expiresAt <= Date.now(),
+  // store.ts statically imports downloadAttachment from this module.
+  downloadAttachment: mock(async () => ({ path: "/tmp/x", filename: "x", size: 0 })),
 }));
 
 // Import after mocks

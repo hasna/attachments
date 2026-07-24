@@ -40,6 +40,11 @@ mock.module("../../core/db", () => ({
 let mockS3Throws: Error | null = null;
 let mockS3Response: object = { KeyCount: 0 };
 
+// core/s3.ts statically imports every command below; the mock must expose all
+// of them (as inert stubs) or those named imports fail to resolve.
+class MockCommand {
+  constructor(public input: unknown) {}
+}
 mock.module("@aws-sdk/client-s3", () => ({
   S3Client: class MockS3Client {
     async send(_cmd: unknown) {
@@ -50,6 +55,14 @@ mock.module("@aws-sdk/client-s3", () => ({
   ListObjectsV2Command: class MockListObjectsV2Command {
     constructor(_input: unknown) {}
   },
+  PutObjectCommand: MockCommand,
+  GetObjectCommand: MockCommand,
+  HeadObjectCommand: MockCommand,
+  DeleteObjectCommand: MockCommand,
+  CreateMultipartUploadCommand: MockCommand,
+  UploadPartCommand: MockCommand,
+  CompleteMultipartUploadCommand: MockCommand,
+  AbortMultipartUploadCommand: MockCommand,
 }));
 
 afterAll(() => mock.restore());
@@ -233,7 +246,12 @@ describe("checkS3Connection", () => {
 // ---------------------------------------------------------------------------
 
 describe("checkDatabase", () => {
-  it("returns ok when DB is accessible with attachments", () => {
+  beforeEach(() => {
+    mockDbThrows = false;
+    mockAttachments = [];
+  });
+
+  it("returns ok when DB is accessible with attachments", async () => {
     const now = Date.now();
     mockAttachments = [
       { id: "1", filename: "a.txt", s3Key: "k1", bucket: "b", size: 100, contentType: "text/plain", link: null, expiresAt: null, createdAt: now },
@@ -247,26 +265,26 @@ describe("checkDatabase", () => {
     mkdirSync(join(tmpdir(), ".hasna", "attachments"), { recursive: true });
     writeFileSync(dbPath, "");
 
-    const result = checkDatabase();
+    const result = await checkDatabase();
     // It may pass or fail depending on whether the real db path exists.
     // Since we can't easily redirect the db path, we test the happy path via the mock only.
     // The result should either be ok (mock db) or fail (path doesn't exist).
     expect(["ok", "fail"]).toContain(result.status);
   });
 
-  it("returns fail when DB throws an error", () => {
+  it("returns fail when DB throws an error", async () => {
     mockDbThrows = true;
     // We need the db file to "exist" so existsSync passes — create a temp file at actual path
     // Since we can't change the DB_PATH for tests easily, we test the error branch by
     // verifying that when DB throws, status is fail.
     // To reach the throw branch, existsSync must return true.
     // We can verify this indirectly: if existsSync passes and db throws, we get fail.
-    const result = checkDatabase();
+    const result = await checkDatabase();
     // If the real ~/.hasna/attachments/db.sqlite doesn't exist, we get fail for "not found" — still fail.
     expect(result.status).toBe("fail");
   });
 
-  it("returns ok message with attachment count", () => {
+  it("returns ok message with attachment count", async () => {
     // We test checkDatabase logic via the exported function.
     // Since the DB path is hard-coded to ~/.hasna/attachments/db.sqlite,
     // we verify that when the mock is used and the file exists we get the count.
@@ -274,7 +292,7 @@ describe("checkDatabase", () => {
     mockAttachments = [
       { id: "1", filename: "x.txt", s3Key: "k", bucket: "b", size: 1, contentType: "t", link: null, expiresAt: null, createdAt: 0 },
     ];
-    const result = checkDatabase();
+    const result = await checkDatabase();
     // Either "1 attachment" (if db file exists and mock runs) or "not found" (if db file absent)
     if (result.status === "ok") {
       expect(result.message).toMatch(/\d+ attachment/);
@@ -289,41 +307,46 @@ describe("checkDatabase", () => {
 // ---------------------------------------------------------------------------
 
 describe("checkExpiredLinks", () => {
-  it("returns ok when no expired links", () => {
+  beforeEach(() => {
+    mockDbThrows = false;
+    mockAttachments = [];
+  });
+
+  it("returns ok when no expired links", async () => {
     const now = Date.now();
     mockAttachments = [
       { id: "1", filename: "a.txt", s3Key: "k", bucket: "b", size: 1, contentType: "t", link: "https://x.com/1", expiresAt: now + 86400000, createdAt: now },
     ];
-    const result = checkExpiredLinks();
+    const result = await checkExpiredLinks();
     expect(result.status).toBe("ok");
     expect(result.message).toBe("none");
   });
 
-  it("returns warn when there are expired links", () => {
+  it("returns warn when there are expired links", async () => {
     const now = Date.now();
     mockAttachments = [
       { id: "1", filename: "a.txt", s3Key: "k", bucket: "b", size: 1, contentType: "t", link: "https://x.com/1", expiresAt: now - 1000, createdAt: now },
       { id: "2", filename: "b.txt", s3Key: "k2", bucket: "b", size: 1, contentType: "t", link: "https://x.com/2", expiresAt: now - 2000, createdAt: now },
     ];
-    const result = checkExpiredLinks();
+    const result = await checkExpiredLinks();
     expect(result.status).toBe("warn");
     expect(result.message).toContain("2 attachments");
     expect(result.message).toContain("health-check --fix");
   });
 
-  it("returns warn when DB throws", () => {
+  it("returns warn when the store is unavailable", async () => {
     mockDbThrows = true;
-    const result = checkExpiredLinks();
+    const result = await checkExpiredLinks();
     expect(result.status).toBe("warn");
-    expect(result.message).toContain("database unavailable");
+    expect(result.message).toContain("store unavailable");
   });
 
-  it("handles null expiresAt as not expired", () => {
+  it("handles null expiresAt as not expired", async () => {
     const now = Date.now();
     mockAttachments = [
       { id: "1", filename: "a.txt", s3Key: "k", bucket: "b", size: 1, contentType: "t", link: "https://x.com/1", expiresAt: null, createdAt: now },
     ];
-    const result = checkExpiredLinks();
+    const result = await checkExpiredLinks();
     expect(result.status).toBe("ok");
   });
 });

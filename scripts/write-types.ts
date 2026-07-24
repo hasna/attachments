@@ -145,19 +145,6 @@ export declare function createObjectStore(config: AttachmentsConfig): LocalObjec
 export declare function buildDeploymentPlan(config?: AttachmentsConfig): unknown;
 export declare function createApp(): unknown;
 export declare function startServer(port: number, hostname?: string): void;
-export declare const STORAGE_TABLES: readonly string[];
-export declare function storagePull(options?: unknown): Promise<unknown>;
-export declare function storagePush(options?: unknown): Promise<unknown>;
-export declare function storageSync(options?: unknown): Promise<unknown>;
-export declare function getStorageStatus(options?: unknown): Promise<unknown>;
-export declare const PG_MIGRATIONS: readonly string[];
-export declare class PgAdapterAsync {
-  constructor(options?: unknown);
-}
-`;
-
-const storageTypes = `export * from "./index";
 `;
 
 writeFileSync("dist/index.d.ts", indexTypes);
-writeFileSync("dist/storage.d.ts", storageTypes);
