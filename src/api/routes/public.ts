@@ -195,7 +195,9 @@ async function serveShareDownload(c: Context, password?: string, grantToken?: st
     if (password) clearPasswordFailures(c, token);
   } catch (err) {
     if (err instanceof ShareAccessError) {
-      if (err.status === 401) recordPasswordFailure(c, token);
+      // Only a submitted-and-wrong password counts toward the lockout; a bare
+      // GET must not be able to lock the link for everyone.
+      if (err.status === 401 && password !== undefined) recordPasswordFailure(c, token);
       if (err.status === 401) {
         try {
           const retryAccess = resolveShareAccess(db, token, { consume: false });

@@ -189,7 +189,9 @@ export function registerCloudPublicRoutes(app: Hono, deps: CloudPublicRoutesDeps
     } catch (err) {
       if (!(err instanceof ShareAccessError)) return fatal(c, err);
       if (err.status !== 401) return errorPage(c, token, err);
-      throttle.recordFailure(key);
+      // Only a submitted-and-wrong password counts. A bare GET (link preview,
+      // prefetch, someone opening the page) must not be able to lock the link.
+      if (password !== undefined) throttle.recordFailure(key);
       try {
         const retry = await resolveShareAccessAsync(store, token, { consume: false });
         return downloadPage(c, token, retry, {

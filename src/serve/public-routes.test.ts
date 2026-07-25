@@ -208,6 +208,20 @@ describe("cloud public share links", () => {
     expect((await attempt()).status).toBe(429);
   });
 
+  test("bare GETs never lock the link — only submitted passwords count", async () => {
+    const created = await upload(app, { expiry: "30d", password: "Parola-Test-1" });
+    const token = tokenOf(created.link);
+    for (let i = 0; i < 15; i++) {
+      expect((await app.request(`/a/${token}/download`)).status).toBe(401);
+    }
+    const ok = await app.request(`/a/${token}/download`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ password: "Parola-Test-1" }).toString(),
+    });
+    expect(ok.status).toBe(200);
+  });
+
   test("a max-downloads link is not burned by a bare GET", async () => {
     const created = await upload(app, { expiry: "30d", max_downloads: 1 });
     const token = tokenOf(created.link);
