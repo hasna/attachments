@@ -41,8 +41,13 @@ export function verifyPasswordHash(password: string, encodedHash: string | null)
 
 export function contentDispositionAttachment(filename: string): string {
   const safe = sanitizeFilename(filename).replace(/["\\]/g, "");
+  // RFC 6266: the quoted `filename` fallback must be ISO-8859-1-safe. A raw
+  // "raport-anexă.txt" is not a legal HTTP header value and made the runtime
+  // throw while writing the header — turning every download of a file with
+  // diacritics into a 500. The exact name still travels in `filename*`.
+  const ascii = safe.replace(/[^\x20-\x7e]/g, "_") || "attachment";
   const encoded = encodeURIComponent(safe).replace(/['()]/g, escape);
-  return `attachment; filename="${safe}"; filename*=UTF-8''${encoded}`;
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
 /** Lowercase + trim an email for consistent comparison/storage. */

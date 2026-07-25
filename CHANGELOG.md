@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] - 2026-07-25
+
+### Fixed
+
+- **Password-protected share links 404'd on the cloud service (D3).** `attachments-serve` minted `<public base>/a/<token>` links — which every password or max-download link is forced to use — but `createServeApp` registered only `/health`, `/ready`, `/version` and `/v1/*`. The public route did not exist in the service at all, so the link could never resolve, no matter which hostname fronted it. The cloud service now serves `GET /a/:token` (metadata + password form), `GET|POST /a/:token/download` and the matching `HEAD` probes against its Postgres store.
+- **Expiry beyond 7 days returned HTTP 500 (D2).** A presigned S3 URL cannot be signed for more than the AWS ceiling of 604800 seconds; the SDK throws and the route answered a bare 500 for `8d`, `14d`, `30d`, `60d`, `720h`. Link-type selection is now a single shared decision (`resolveDeliverableLinkType`) that upgrades to a server-hosted link whenever the request cannot be expressed as a presigned URL — long expiries, `never`, passwords, download caps, email gates, encryption, local backend. `expiry=never` no longer silently hands back a 7-day URL. An unparsable expiry is now a 400 with the reason, not a 500.
+- **`multipart/form-data` uploads corrupted the file (D1c).** There was no multipart branch: the whole MIME envelope (boundary + part headers) was stored as the file body, and the filename and content type were lost (`upload_XXXX`, `application/octet-stream`). Multipart is now parsed properly and carries `expiry` / `password` / `tag` / `link_type` / `max_downloads` form fields.
+- **`--client-mode local` produced dead links (D1b).** An on-box upload built its share link from the configured public host, which on a machine configured for the cloud API is the remote service — the link pointed at a database that does not contain the token. Local uploads now resolve their base URL from the internal/loopback address whenever the configured public host is the remote API origin, and the CLI says so on stderr.
+- **Opaque CLI errors (D1a).** A failed API call surfaced only the response body, so a server 500 became the single word "Internal Server Error". Errors now carry the method, route, HTTP status and the server's `error`/`detail`. API keys are never included.
+- **Downloads of files with non-ASCII names returned 500.** `Content-Disposition` embedded the raw UTF-8 name in the quoted `filename` parameter, which is not a legal header value; the name now falls back to ASCII there while `filename*=UTF-8''` keeps the exact name.
+
+### Changed
+
+- Share-link access policy (`assertShareLinkUsable` / `assertAttachmentUsable`) and the password brute-force throttle are now shared modules consumed by both the on-box SQLite server and the cloud service, so the two deployments cannot drift on revocation, expiry, use counts or lockout.
+- The cloud service applies the same `Content-Security-Policy` / `Cache-Control: no-store` to its public pages as the on-box server, and defaults to trusting proxy headers for throttle identity (it always runs behind an ALB); set `ATTACHMENTS_TRUST_PROXY=0` to disable.
+
+### Security
+
+- **The password lockout could be bypassed, or weaponised, through `x-forwarded-for`.** Caller identity was taken from the leftmost entry of the chain, which is whatever the client sent: a brute-forcer got a fresh 10-attempt bucket per guess. The chain is now read right to left, from the hop the nearest proxy actually appended. `ATTACHMENTS_TRUSTED_PROXIES` (comma separated) names proxies we operate — the public edge in front of the service — so those hops are stepped over instead of collapsing every visitor into one bucket, which would have let a single attacker lock a link for everyone.
+- `scripts/test.sh` is now actually hermetic. It exported `ATTACHMENTS_CLIENT_MODE`, which nothing reads; with a shell configured for the production API, 8 test files failed for environmental reasons on a clean checkout.
+
 ## [1.1.4] - 2026-07-24
 
 ### Changed

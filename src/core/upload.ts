@@ -9,12 +9,17 @@ import { S3Client } from "./s3";
 import { AttachmentsDB, Attachment } from "./db";
 import {
   getConfig,
-  getPublicBaseUrl,
   normalizeConfig,
   parseExpiryStrict,
   resolveStorageBackend,
 } from "./config";
-import { generatePresignedLink, generateShareLink, getLinkType } from "./links";
+import {
+  generatePresignedLink,
+  generateShareLink,
+  getLinkType,
+  resolveDeliverableLinkType,
+  resolveLocalShareBaseUrl,
+} from "./links";
 import { trackUploadCost } from "./economy";
 import { createObjectKey, sanitizeFilename } from "./security";
 import { LocalObjectStore, createObjectStore } from "./object-storage";
@@ -155,10 +160,15 @@ export async function uploadFile(
   const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
 
   // 5. Resolve link type
-  let resolvedLinkType = opts.linkType ?? getLinkType(config);
-  if (storageBackend === "local" || opts.password || opts.encrypt || opts.maxDownloads || opts.requireEmail) {
-    resolvedLinkType = "server";
-  }
+  const resolvedLinkType = resolveDeliverableLinkType({
+    requested: opts.linkType ?? getLinkType(config),
+    backend: storageBackend,
+    expiryMs,
+    password: opts.password,
+    encrypt: opts.encrypt,
+    maxDownloads: opts.maxDownloads,
+    requireEmail: opts.requireEmail,
+  });
 
   if (opts.encrypt && !opts.password) {
     throw new Error("--encrypt requires a password so the file can be decrypted later");
@@ -219,7 +229,11 @@ export async function uploadFile(
               allowedEmails: opts.allowedEmails ?? null,
             })
           : { token: id };
-      link = generateShareLink(token, opts.baseUrl ?? getPublicBaseUrl(config), config.server.publicPath);
+      link = generateShareLink(
+        token,
+        opts.baseUrl ?? resolveLocalShareBaseUrl(config).baseUrl,
+        config.server.publicPath,
+      );
       if ("updateLink" in db) db.updateLink(id, link, expiresAt);
       attachment.link = link;
     }
@@ -255,10 +269,15 @@ export async function uploadStreamAttachment(
   const { milliseconds: expiryMs } = parseExpiryStrict(expiryStr);
   const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
 
-  let resolvedLinkType = opts.linkType ?? getLinkType(config);
-  if (storageBackend === "local" || opts.password || opts.encrypt || opts.maxDownloads || opts.requireEmail) {
-    resolvedLinkType = "server";
-  }
+  const resolvedLinkType = resolveDeliverableLinkType({
+    requested: opts.linkType ?? getLinkType(config),
+    backend: storageBackend,
+    expiryMs,
+    password: opts.password,
+    encrypt: opts.encrypt,
+    maxDownloads: opts.maxDownloads,
+    requireEmail: opts.requireEmail,
+  });
   if (opts.encrypt && !opts.password) {
     throw new Error("--encrypt requires a password so the file can be decrypted later");
   }
@@ -317,7 +336,11 @@ export async function uploadStreamAttachment(
         requireEmail: opts.requireEmail,
         allowedEmails: opts.allowedEmails ?? null,
       });
-      link = generateShareLink(token, opts.baseUrl ?? getPublicBaseUrl(config), config.server.publicPath);
+      link = generateShareLink(
+        token,
+        opts.baseUrl ?? resolveLocalShareBaseUrl(config).baseUrl,
+        config.server.publicPath,
+      );
       db.updateLink(id, link, expiresAt);
       attachment.link = link;
     }

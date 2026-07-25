@@ -172,7 +172,10 @@ export const mockGeneratePresignedLink = mock(
 );
 export const mockGenerateServerLink = mock((id: string, baseUrl: string) => `${baseUrl}/a/${id}`);
 
+const actualLinks = await import("../core/links");
+
 mock.module("../core/links", () => ({
+  ...actualLinks,
   generatePresignedLink: mockGeneratePresignedLink,
   generateServerLink: mockGenerateServerLink,
   generateShareLink: (token: string, baseUrl: string) => `${baseUrl}/a/${token}`,

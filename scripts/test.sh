@@ -5,9 +5,21 @@
 
 set -e
 
-# Keep unit tests hermetic even when the real local CLI is configured to target
-# a cloud production API.
+# Keep unit tests hermetic even when the operator's shell is configured to target
+# the production cloud API.
+#
+# ATTACHMENTS_CLIENT_MODE is read by nothing in this codebase — it never made the
+# suite hermetic. The client flip actually looks at HASNA_ATTACHMENTS_STORAGE_MODE
+# / _MODE and at the API URL + key pair (see core/cloud-v1.ts:resolveStorageClient),
+# so with those exported the CLI/MCP tests silently ran against the real service
+# and 8 test files failed for environmental reasons on a clean checkout.
+export HASNA_ATTACHMENTS_STORAGE_MODE=local
 export ATTACHMENTS_CLIENT_MODE=local
+unset HASNA_ATTACHMENTS_MODE
+unset HASNA_ATTACHMENTS_API_URL
+unset HASNA_ATTACHMENTS_API_KEY
+unset ATTACHMENTS_API_URL
+unset ATTACHMENTS_API_KEY
 
 PASS=0
 FAIL=0

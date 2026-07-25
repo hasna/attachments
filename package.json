@@ -1,6 +1,6 @@
 {
   "name": "@hasna/attachments",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "Open-source attachment transfer with local or private S3 storage, app-hosted share links, CLI, MCP, and REST API",
   "repository": {
     "type": "git",

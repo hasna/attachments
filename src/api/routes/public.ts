@@ -17,45 +17,44 @@ import {
   sharePagePath,
 } from "../public-pages";
 import { toWebBody, trackShareDownloadCompletion } from "../streams";
+import {
+  PasswordThrottle,
+  clientIdentity,
+  parseTrustedProxies,
+  passwordFailureKey,
+} from "../../core/password-throttle";
 
-const PASSWORD_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
-const PASSWORD_ATTEMPT_LIMIT = 10;
-const passwordFailures = new Map<string, { count: number; resetAt: number }>();
+const passwordThrottle = new PasswordThrottle();
 
-function clientAddress(c: Context): string {
-  if (process.env["ATTACHMENTS_TRUST_PROXY"] !== "1") return "remote";
-  const forwarded = c.req.header("cf-connecting-ip") || c.req.header("x-real-ip") || c.req.header("x-forwarded-for") || "";
-  return forwarded.split(",")[0]?.trim() || "unknown";
+function directAddress(c: Context): string | null {
+  const server = (c.env as { server?: { requestIP?: (req: Request) => { address?: string } | null } } | undefined)
+    ?.server;
+  try {
+    return server?.requestIP?.(c.req.raw)?.address ?? null;
+  } catch {
+    return null;
+  }
 }
 
-function passwordFailureKey(c: Context, token: string): string {
-  return `${token}:${clientAddress(c)}`;
+function throttleKey(c: Context, token: string): string {
+  const trustProxy = process.env["ATTACHMENTS_TRUST_PROXY"] === "1";
+  const trustedProxies = parseTrustedProxies(process.env["ATTACHMENTS_TRUSTED_PROXIES"]);
+  return passwordFailureKey(
+    token,
+    clientIdentity(c.req, { trustProxy, trustedProxies, directAddress: directAddress(c) })
+  );
 }
 
 function isPasswordLimited(c: Context, token: string): boolean {
-  const key = passwordFailureKey(c, token);
-  const entry = passwordFailures.get(key);
-  if (!entry) return false;
-  if (entry.resetAt <= Date.now()) {
-    passwordFailures.delete(key);
-    return false;
-  }
-  return entry.count >= PASSWORD_ATTEMPT_LIMIT;
+  return passwordThrottle.isLimited(throttleKey(c, token));
 }
 
 function recordPasswordFailure(c: Context, token: string): void {
-  const key = passwordFailureKey(c, token);
-  const now = Date.now();
-  const current = passwordFailures.get(key);
-  if (!current || current.resetAt <= now) {
-    passwordFailures.set(key, { count: 1, resetAt: now + PASSWORD_ATTEMPT_WINDOW_MS });
-    return;
-  }
-  current.count += 1;
+  passwordThrottle.recordFailure(throttleKey(c, token));
 }
 
 function clearPasswordFailures(c: Context, token: string): void {
-  passwordFailures.delete(passwordFailureKey(c, token));
+  passwordThrottle.clear(throttleKey(c, token));
 }
 
 function isConfirmedDownloadRequest(c: Context): boolean {
@@ -205,7 +204,9 @@ async function serveShareDownload(c: Context, password?: string, grantToken?: st
     if (password) clearPasswordFailures(c, token);
   } catch (err) {
     if (err instanceof ShareAccessError) {
-      if (err.status === 401) recordPasswordFailure(c, token);
+      // Only a submitted-and-wrong password counts toward the lockout; a bare
+      // GET must not be able to lock the link for everyone.
+      if (err.status === 401 && password !== undefined) recordPasswordFailure(c, token);
       if (err.status === 401) {
         try {
           const retryAccess = resolveShareAccess(db, token, { consume: false });

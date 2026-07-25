@@ -29,13 +29,18 @@ import { S3Client } from "./s3";
 import { LocalObjectStore } from "./object-storage";
 import {
   getConfig,
-  getPublicBaseUrl,
   parseExpiryStrict,
   validateS3Config,
   validateStorageConfig,
   type AttachmentsConfig,
 } from "./config";
-import { generatePresignedLink, generateShareLink, getLinkType } from "./links";
+import {
+  generatePresignedLink,
+  generateShareLink,
+  getLinkType,
+  resolveDeliverableLinkType,
+  resolveLocalShareBaseUrl,
+} from "./links";
 import { createObjectKey, sanitizeFilename } from "./security";
 import {
   uploadFile as coreUploadFile,
@@ -240,17 +245,18 @@ export class LocalStore implements Store {
     const att = db.findById(id);
     if (!att) throw new Error(`Attachment not found: ${id}`);
 
-    const linkType = options.linkType ?? getLinkType(this.config);
     const { milliseconds: expiryMs } = parseExpiryStrict(options.expiry ?? this.config.defaults.expiry);
     const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
+    const linkType = resolveDeliverableLinkType({
+      requested: options.linkType ?? getLinkType(this.config),
+      backend: att.storageBackend ?? "s3",
+      expiryMs,
+      password: options.password,
+      maxDownloads: options.maxDownloads,
+    });
 
     let link: string;
-    if (
-      linkType === "presigned" &&
-      (att.storageBackend ?? "s3") === "s3" &&
-      !options.password &&
-      !options.maxDownloads
-    ) {
+    if (linkType === "presigned") {
       link = await generatePresignedLink(new S3Client(this.config.s3), att.s3Key, expiryMs);
     } else {
       const { token } = db.createShareLink({
@@ -259,7 +265,11 @@ export class LocalStore implements Store {
         password: options.password,
         maxUses: options.maxDownloads ?? null,
       });
-      link = generateShareLink(token, getPublicBaseUrl(this.config), this.config.server.publicPath);
+      link = generateShareLink(
+        token,
+        resolveLocalShareBaseUrl(this.config).baseUrl,
+        this.config.server.publicPath,
+      );
     }
     db.updateLink(att.id, link, expiresAt);
     return { link, expires_at: expiresAt };
@@ -324,9 +334,15 @@ export class LocalStore implements Store {
     }
 
     const expiresAt = options.expiryMs !== null ? Date.now() + options.expiryMs : null;
-    const mustUseServerLink = !!options.password || options.maxDownloads !== undefined || options.linkType !== "presigned";
+    const linkType = resolveDeliverableLinkType({
+      requested: options.linkType,
+      backend: attachment.storageBackend ?? "s3",
+      expiryMs: options.expiryMs,
+      password: options.password,
+      maxDownloads: options.maxDownloads,
+    });
     let link: string;
-    if (!mustUseServerLink && (attachment.storageBackend ?? "s3") === "s3") {
+    if (linkType === "presigned") {
       link = await generatePresignedLink(s3, attachment.s3Key, options.expiryMs);
     } else {
       const { token } = db.createShareLink({
@@ -335,7 +351,11 @@ export class LocalStore implements Store {
         password: options.password,
         maxUses: options.maxDownloads ?? null,
       });
-      link = generateShareLink(token, getPublicBaseUrl(this.config), this.config.server.publicPath);
+      link = generateShareLink(
+        token,
+        resolveLocalShareBaseUrl(this.config).baseUrl,
+        this.config.server.publicPath,
+      );
     }
     db.markReady({ id: attachment.id, size, contentType: info.contentType ?? attachment.contentType, link, expiresAt });
     return { attachment, link, size };

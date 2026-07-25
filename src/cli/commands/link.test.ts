@@ -63,7 +63,10 @@ const mockGeneratePresignedLink = mock(async (_s3: unknown, _key: string, _expir
 const mockGenerateServerLink = mock((id: string, baseUrl: string) => `${baseUrl}/a/${id}`);
 const mockGenerateShareLink = mock((token: string, baseUrl: string) => `${baseUrl}/a/${token}`);
 
+const actualLinks = await import("../../core/links");
+
 mock.module("../../core/links", () => ({
+  ...actualLinks,
   generatePresignedLink: mockGeneratePresignedLink,
   generateServerLink: mockGenerateServerLink,
   generateShareLink: mockGenerateShareLink,
