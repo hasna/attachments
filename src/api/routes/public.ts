@@ -17,7 +17,12 @@ import {
   sharePagePath,
 } from "../public-pages";
 import { toWebBody, trackShareDownloadCompletion } from "../streams";
-import { PasswordThrottle, clientIdentity, passwordFailureKey } from "../../core/password-throttle";
+import {
+  PasswordThrottle,
+  clientIdentity,
+  parseTrustedProxies,
+  passwordFailureKey,
+} from "../../core/password-throttle";
 
 const passwordThrottle = new PasswordThrottle();
 
@@ -33,7 +38,11 @@ function directAddress(c: Context): string | null {
 
 function throttleKey(c: Context, token: string): string {
   const trustProxy = process.env["ATTACHMENTS_TRUST_PROXY"] === "1";
-  return passwordFailureKey(token, clientIdentity(c.req, { trustProxy, directAddress: directAddress(c) }));
+  const trustedProxies = parseTrustedProxies(process.env["ATTACHMENTS_TRUSTED_PROXIES"]);
+  return passwordFailureKey(
+    token,
+    clientIdentity(c.req, { trustProxy, trustedProxies, directAddress: directAddress(c) })
+  );
 }
 
 function isPasswordLimited(c: Context, token: string): boolean {

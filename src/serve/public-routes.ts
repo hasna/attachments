@@ -29,7 +29,12 @@ import {
   type AsyncShareAccessSource,
   type ShareAccessResult,
 } from "../core/share.js";
-import { PasswordThrottle, clientIdentity, passwordFailureKey } from "../core/password-throttle.js";
+import {
+  PasswordThrottle,
+  clientIdentity,
+  parseTrustedProxies,
+  passwordFailureKey,
+} from "../core/password-throttle.js";
 import {
   renderDownloadPage,
   renderPublicErrorPage,
@@ -47,6 +52,13 @@ export interface CloudPublicRoutesDeps {
    * that), so it defaults to on; set ATTACHMENTS_TRUST_PROXY=0 to disable.
    */
   trustProxy?: boolean;
+  /**
+   * Addresses of proxies we operate in front of this service (the Caddy that
+   * fronts the public attachment domain). Hops matching these are stepped over
+   * when identifying a caller, so a shared edge does not bucket every visitor
+   * together. Defaults to ATTACHMENTS_TRUSTED_PROXIES (comma separated).
+   */
+  trustedProxies?: readonly string[];
   throttle?: PasswordThrottle;
 }
 
@@ -75,10 +87,15 @@ export function registerCloudPublicRoutes(app: Hono, deps: CloudPublicRoutesDeps
   const { store, config } = deps;
   const publicPath = normalizePublicPath(config.server.publicPath);
   const trustProxy = resolveTrustProxy(deps.trustProxy);
+  const trustedProxies =
+    deps.trustedProxies ?? parseTrustedProxies(process.env["ATTACHMENTS_TRUSTED_PROXIES"]);
   const throttle = deps.throttle ?? new PasswordThrottle();
 
   const identity = (c: Context, token: string) =>
-    passwordFailureKey(token, clientIdentity(c.req, { trustProxy, directAddress: directAddress(c) }));
+    passwordFailureKey(
+      token,
+      clientIdentity(c.req, { trustProxy, trustedProxies, directAddress: directAddress(c) })
+    );
 
   const errorPage = (c: Context, token: string, err: ShareAccessError) =>
     c.html(renderShareAccessError(token, err, publicPath), err.status);

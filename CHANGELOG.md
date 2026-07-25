@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Share-link access policy (`assertShareLinkUsable` / `assertAttachmentUsable`) and the password brute-force throttle are now shared modules consumed by both the on-box SQLite server and the cloud service, so the two deployments cannot drift on revocation, expiry, use counts or lockout.
 - The cloud service applies the same `Content-Security-Policy` / `Cache-Control: no-store` to its public pages as the on-box server, and defaults to trusting proxy headers for throttle identity (it always runs behind an ALB); set `ATTACHMENTS_TRUST_PROXY=0` to disable.
+
+### Security
+
+- **The password lockout could be bypassed, or weaponised, through `x-forwarded-for`.** Caller identity was taken from the leftmost entry of the chain, which is whatever the client sent: a brute-forcer got a fresh 10-attempt bucket per guess. The chain is now read right to left, from the hop the nearest proxy actually appended. `ATTACHMENTS_TRUSTED_PROXIES` (comma separated) names proxies we operate — the public edge in front of the service — so those hops are stepped over instead of collapsing every visitor into one bucket, which would have let a single attacker lock a link for everyone.
 - `scripts/test.sh` is now actually hermetic. It exported `ATTACHMENTS_CLIENT_MODE`, which nothing reads; with a shell configured for the production API, 8 test files failed for environmental reasons on a clean checkout.
 
 ## [1.1.4] - 2026-07-24

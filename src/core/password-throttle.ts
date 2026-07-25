@@ -64,6 +64,20 @@ export interface HeaderReader {
 }
 
 /**
+ * Parse the trusted-proxy allowlist (`ATTACHMENTS_TRUSTED_PROXIES`).
+ *
+ * Each entry is the address a proxy in front of this service appears as to the
+ * hop behind it — e.g. the public address of the Caddy that fronts `has.na`.
+ */
+export function parseTrustedProxies(raw: string | undefined | null): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+/**
  * Identify the caller for throttling purposes.
  *
  * `trustProxy` must only be true when the service is genuinely behind a proxy
@@ -71,19 +85,35 @@ export interface HeaderReader {
  * to the socket address if the runtime exposes one; the literal `"remote"`
  * bucket is the last resort and is shared, so callers should prefer providing
  * `directAddress`.
+ *
+ * The chain is read RIGHT TO LEFT. Everything a client sends in
+ * `x-forwarded-for` survives into the header the origin sees, so the leftmost
+ * entry is attacker-controlled: keying on it hands out a fresh throttle bucket
+ * per guess and defeats the password lockout entirely. The rightmost entry is
+ * the one the nearest proxy appended, i.e. the socket peer it actually saw.
+ * `trustedProxies` names the hops that are ours (Caddy in front of the ALB), so
+ * we can step over them and land on the real visitor instead of bucketing every
+ * visitor together — which would turn the lockout into a denial of service.
  */
 export function clientIdentity(
   req: HeaderReader,
-  opts: { trustProxy: boolean; directAddress?: string | null }
+  opts: { trustProxy: boolean; trustedProxies?: readonly string[]; directAddress?: string | null }
 ): string {
   if (opts.trustProxy) {
-    const forwarded =
-      req.header("cf-connecting-ip") ||
-      req.header("x-real-ip") ||
-      req.header("x-forwarded-for") ||
-      "";
-    const first = forwarded.split(",")[0]?.trim();
-    if (first) return first;
+    const chain = parseTrustedProxies(req.header("x-forwarded-for"));
+    if (chain.length > 0) {
+      const trusted = new Set(opts.trustedProxies ?? []);
+      for (let i = chain.length - 1; i >= 0; i--) {
+        const hop = chain[i]!;
+        if (!trusted.has(hop)) return hop;
+      }
+      // Every hop is one of ours: nothing better to key on than the far end.
+      return chain[0]!;
+    }
+    // No chain at all — these single-value headers are only meaningful when the
+    // edge sets them, and they cannot be layered the way x-forwarded-for is.
+    const single = req.header("cf-connecting-ip")?.trim() || req.header("x-real-ip")?.trim();
+    if (single) return single;
   }
   return opts.directAddress?.trim() || "remote";
 }
