@@ -165,7 +165,9 @@ beforeAll(() => {
     defaults: { expiry: "7d", linkType: "presigned" },
   });
 });
+const actualLinks = await import("../core/links.js");
 mock.module("../core/links.js", () => ({
+  ...actualLinks,
   generatePresignedLink: mockGeneratePresignedLink,
   generateServerLink: mockGenerateServerLink,
   generateShareLink: mockGenerateShareLink,

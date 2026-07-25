@@ -20,15 +20,23 @@ import type { Attachment } from "../core/db.js";
 import type { AttachmentsConfig } from "../core/config.js";
 import {
   getPublicBaseUrl,
+  normalizePublicPath,
   parseExpiryStrict,
   resolveStorageBackend,
 } from "../core/config.js";
 import { createObjectStore } from "../core/object-storage.js";
 import { S3Client } from "../core/s3.js";
 import { openAttachmentStream, isExpired } from "../core/download.js";
-import { generatePresignedLink, generateShareLink, getLinkType } from "../core/links.js";
+import {
+  PresignExpiryError,
+  generatePresignedLink,
+  generateShareLink,
+  getLinkType,
+  resolveDeliverableLinkType,
+} from "../core/links.js";
 import { createObjectKey, sanitizeFilename, contentDispositionAttachment } from "../core/security.js";
 import { buildOpenApiDocument } from "./openapi.js";
+import { registerCloudPublicRoutes } from "./public-routes.js";
 
 export interface ServeAppDeps {
   client: PoolQueryClient;
@@ -53,6 +61,71 @@ function toApiAttachment(a: Attachment) {
     tag: a.tag,
     expires_at: a.expiresAt,
     created_at: a.createdAt,
+  };
+}
+
+/** Thrown for caller mistakes that must surface as HTTP 400, never a bare 500. */
+class BadRequestError extends Error {}
+
+/**
+ * Turn a handler failure into a response. Caller mistakes become 400 with the
+ * reason; anything else is logged in full and answered with a 500 that still
+ * carries the message — these routes are API-key authenticated, and the opaque
+ * "Internal Server Error" was exactly what made D1/D2 undiagnosable from the CLI.
+ */
+function badRequestOrRethrow(c: Context, err: unknown): Response {
+  if (err instanceof BadRequestError || err instanceof PresignExpiryError) {
+    return c.json({ error: err.message }, 400);
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  console.error("[v1]", c.req.method, c.req.path, message);
+  return c.json({ error: "Internal Server Error", detail: message }, 500);
+}
+
+function parseExpiryOr400(expiry: string): { milliseconds: number | null; never: boolean } {
+  try {
+    return parseExpiryStrict(expiry);
+  } catch (err) {
+    throw new BadRequestError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+interface ParsedMultipartUpload {
+  filename: string;
+  buffer: Buffer;
+  contentType?: string;
+  fields: Record<string, string>;
+}
+
+/**
+ * Parse a `multipart/form-data` upload.
+ *
+ * D1(c): the old code had no multipart branch at all — it fell through to the
+ * raw-body reader and stored the whole encoded envelope (boundary + part
+ * headers) as the file, corrupting every multipart upload while also losing the
+ * filename and content type.
+ */
+async function parseMultipartUpload(c: Context): Promise<ParsedMultipartUpload> {
+  const form = await c.req.raw.formData();
+  const fields: Record<string, string> = {};
+  let file: File | null = null;
+  for (const [key, value] of form.entries()) {
+    if (typeof value === "string") {
+      fields[key] = value;
+    } else if (!file || key === "file") {
+      file = value;
+    }
+  }
+  if (!file) throw new BadRequestError("multipart/form-data upload requires a file part");
+  const declaredName = file.name && file.name !== "blob" ? file.name : undefined;
+  const filename = sanitizeFilename(
+    declaredName ?? fields["filename"] ?? c.req.query("filename") ?? `upload_${nanoid(8)}`,
+  );
+  return {
+    filename,
+    buffer: Buffer.from(await file.arrayBuffer()),
+    ...(file.type && file.type !== "application/octet-stream" ? { contentType: file.type } : {}),
+    fields,
   };
 }
 
@@ -82,13 +155,32 @@ export function createServeApp(deps: ServeAppDeps): Hono {
     ...(deps.audit ? { audit: deps.audit as never } : {}),
   });
 
+  const publicPath = normalizePublicPath(config.server.publicPath);
+
   app.use("*", async (c, next) => {
     await next();
     c.header("X-Content-Type-Options", "nosniff");
     c.header("X-Frame-Options", "DENY");
     c.header("Referrer-Policy", "no-referrer");
     c.header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+    if (c.req.path === publicPath || c.req.path.startsWith(`${publicPath}/`)) {
+      // Same policy the on-box server applies to its public pages. `form-action
+      // 'self'` is what lets the password form post back through whatever host
+      // fronts this service.
+      c.header(
+        "Content-Security-Policy",
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      );
+      c.header("Cache-Control", "no-store");
+      if (publicBaseUrl.startsWith("https://") || c.req.header("x-forwarded-proto") === "https") {
+        c.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+      }
+    }
   });
+
+  // Public share links (`/a/:token`). Registered before /v1 so the service that
+  // MINTS these links is also the service that SERVES them (D3).
+  registerCloudPublicRoutes(app, { store, config });
 
   // Authenticate + enforce scopes for a /v1 request. Returns a Response on
   // failure (caller should return it), or null on success.
@@ -150,6 +242,7 @@ export function createServeApp(deps: ServeAppDeps): Hono {
     const contentType = c.req.header("content-type") ?? "";
     let filename: string;
     let buffer: Buffer;
+    let declaredContentType: string | undefined;
     let opts: {
       expiry?: string;
       tag?: string;
@@ -158,7 +251,28 @@ export function createServeApp(deps: ServeAppDeps): Hono {
       linkType?: "presigned" | "server";
     } = {};
 
-    if (contentType.includes("application/json")) {
+    const parseLinkType = (value: string | undefined): "presigned" | "server" | undefined =>
+      value === "presigned" || value === "server" ? value : undefined;
+    const parseCount = (value: string | undefined): number | undefined => {
+      if (value === undefined || value === "") return undefined;
+      const parsed = parseInt(value, 10);
+      return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+    };
+
+    try {
+    if (contentType.includes("multipart/form-data")) {
+      const parsed = await parseMultipartUpload(c);
+      filename = parsed.filename;
+      buffer = parsed.buffer;
+      declaredContentType = parsed.contentType;
+      opts = {
+        expiry: parsed.fields["expiry"] ?? c.req.query("expiry") ?? undefined,
+        tag: parsed.fields["tag"] ?? c.req.query("tag") ?? undefined,
+        password: parsed.fields["password"] ?? c.req.header("x-attachments-password") ?? undefined,
+        maxDownloads: parseCount(parsed.fields["max_downloads"] ?? c.req.query("max_downloads") ?? undefined),
+        linkType: parseLinkType(parsed.fields["link_type"] ?? c.req.query("link_type") ?? undefined),
+      };
+    } else if (contentType.includes("application/json")) {
       const body = (await c.req.json().catch(() => null)) as
         | {
             filename?: string;
@@ -209,20 +323,25 @@ export function createServeApp(deps: ServeAppDeps): Hono {
     }
 
     const resolvedType =
-      (mimeLookup(filename) || "application/octet-stream") as string;
+      declaredContentType ?? ((mimeLookup(filename) || "application/octet-stream") as string);
     const id = `att_${nanoid(10)}`;
     const objectKey = createObjectKey(id, filename);
     const backend = resolveStorageBackend(config);
-    const { milliseconds: expiryMs } = parseExpiryStrict(opts.expiry ?? config.defaults.expiry);
+    const { milliseconds: expiryMs } = parseExpiryOr400(opts.expiry ?? config.defaults.expiry);
     const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
 
-    let linkType = opts.linkType ?? getLinkType(config);
-    if (backend === "local" || opts.password || opts.maxDownloads) linkType = "server";
+    const linkType = resolveDeliverableLinkType({
+      requested: opts.linkType ?? getLinkType(config),
+      backend,
+      expiryMs,
+      password: opts.password,
+      maxDownloads: opts.maxDownloads,
+    });
 
     await uploadBufferToStore(config, objectKey, buffer, resolvedType);
 
     let link: string | null = null;
-    if (linkType === "presigned" && backend === "s3") {
+    if (linkType === "presigned") {
       link = await generatePresignedLink(new S3Client(config.s3), objectKey, expiryMs);
     }
 
@@ -260,6 +379,9 @@ export function createServeApp(deps: ServeAppDeps): Hono {
     }
 
     return c.json(toApiAttachment(attachment), 201);
+    } catch (err) {
+      return badRequestOrRethrow(c, err);
+    }
   });
 
   app.get("/v1/attachments/:id", async (c) => {
@@ -327,24 +449,34 @@ export function createServeApp(deps: ServeAppDeps): Hono {
       max_downloads?: number;
       link_type?: "presigned" | "server";
     };
-    const { milliseconds: expiryMs } = parseExpiryStrict(body.expiry ?? config.defaults.expiry);
-    const newExpiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
-    const linkType = body.link_type ?? config.defaults.linkType;
-
-    let newLink: string;
-    if (linkType === "presigned" && (attachment.storageBackend ?? "s3") === "s3" && !body.password) {
-      newLink = await generatePresignedLink(new S3Client(config.s3), attachment.s3Key, expiryMs);
-    } else {
-      const { token } = await store.createShareLink({
-        attachmentId: id,
-        expiresAt: newExpiresAt,
+    try {
+      const { milliseconds: expiryMs } = parseExpiryOr400(body.expiry ?? config.defaults.expiry);
+      const newExpiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
+      const linkType = resolveDeliverableLinkType({
+        requested: body.link_type ?? config.defaults.linkType,
+        backend: attachment.storageBackend ?? "s3",
+        expiryMs,
         password: body.password,
-        maxUses: body.max_downloads ?? null,
+        maxDownloads: body.max_downloads,
       });
-      newLink = generateShareLink(token, publicBaseUrl, config.server.publicPath);
+
+      let newLink: string;
+      if (linkType === "presigned") {
+        newLink = await generatePresignedLink(new S3Client(config.s3), attachment.s3Key, expiryMs);
+      } else {
+        const { token } = await store.createShareLink({
+          attachmentId: id,
+          expiresAt: newExpiresAt,
+          password: body.password,
+          maxUses: body.max_downloads ?? null,
+        });
+        newLink = generateShareLink(token, publicBaseUrl, config.server.publicPath);
+      }
+      await store.updateLink(id, newLink, newExpiresAt);
+      return c.json({ link: newLink, expires_at: newExpiresAt, link_type: linkType });
+    } catch (err) {
+      return badRequestOrRethrow(c, err);
     }
-    await store.updateLink(id, newLink, newExpiresAt);
-    return c.json({ link: newLink, expires_at: newExpiresAt });
   });
 
   app.post("/v1/feedback", async (c) => {

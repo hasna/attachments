@@ -1,5 +1,16 @@
 import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
-import { generatePresignedLink, generateServerLink, getLinkType } from "./links";
+import {
+  AWS_MAX_PRESIGN_SECONDS,
+  PresignExpiryError,
+  exceedsPresignLimit,
+  generatePresignedLink,
+  generateServerLink,
+  generateShareLink,
+  getLinkType,
+  resolveDeliverableLinkType,
+  resolveLocalShareBaseUrl,
+} from "./links";
+import { normalizeConfig } from "./config";
 
 // ---------------------------------------------------------------------------
 // generatePresignedLink
@@ -89,5 +100,114 @@ describe("getLinkType", () => {
       defaults: { expiry: "7d", linkType: "server" as const },
     };
     expect(getLinkType(config)).toBe("server");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D2 — the AWS presign ceiling
+// ---------------------------------------------------------------------------
+
+describe("presign expiry ceiling", () => {
+  beforeEach(() => {
+    mockPresign.mockReset();
+    mockPresign.mockImplementation(async () => "https://presigned.url/key?sig=test");
+  });
+
+  it("exposes the AWS limit as 604800 seconds", () => {
+    expect(AWS_MAX_PRESIGN_SECONDS).toBe(604800);
+  });
+
+  it("flags anything longer than 7 days, and 'never', as un-presignable", () => {
+    expect(exceedsPresignLimit(7 * 86_400_000)).toBe(false);
+    expect(exceedsPresignLimit(7 * 86_400_000 + 1000)).toBe(true);
+    expect(exceedsPresignLimit(30 * 86_400_000)).toBe(true);
+    expect(exceedsPresignLimit(null)).toBe(true);
+  });
+
+  it("throws a typed, actionable error instead of calling S3 past the limit", async () => {
+    await expect(generatePresignedLink(fakeS3, "k", 30 * 86_400_000)).rejects.toThrow(PresignExpiryError);
+    await expect(generatePresignedLink(fakeS3, "k", 30 * 86_400_000)).rejects.toThrow(/link_type/);
+    expect(mockPresign).toHaveBeenCalledTimes(0);
+  });
+
+  it("still signs exactly at the limit", async () => {
+    await generatePresignedLink(fakeS3, "k", 604_800_000);
+    expect(mockPresign.mock.calls[0]![1]).toBe(604800);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D2 — a single deliverable-link-type decision
+// ---------------------------------------------------------------------------
+
+describe("resolveDeliverableLinkType", () => {
+  const base = { requested: "presigned" as const, backend: "s3" as const, expiryMs: 86_400_000 };
+
+  it("keeps presigned for a plain, short-lived S3 link", () => {
+    expect(resolveDeliverableLinkType(base)).toBe("presigned");
+  });
+
+  it("falls back to a server link past the AWS ceiling", () => {
+    expect(resolveDeliverableLinkType({ ...base, expiryMs: 30 * 86_400_000 })).toBe("server");
+    expect(resolveDeliverableLinkType({ ...base, expiryMs: null })).toBe("server");
+  });
+
+  it("falls back to a server link for anything S3 cannot express", () => {
+    expect(resolveDeliverableLinkType({ ...base, password: "x" })).toBe("server");
+    expect(resolveDeliverableLinkType({ ...base, maxDownloads: 1 })).toBe("server");
+    expect(resolveDeliverableLinkType({ ...base, requireEmail: true })).toBe("server");
+    expect(resolveDeliverableLinkType({ ...base, encrypt: true })).toBe("server");
+    expect(resolveDeliverableLinkType({ ...base, backend: "local" })).toBe("server");
+    expect(resolveDeliverableLinkType({ ...base, requested: "server" })).toBe("server");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D1(b) — a local upload must never mint a link to the remote service
+// ---------------------------------------------------------------------------
+
+describe("resolveLocalShareBaseUrl", () => {
+  const config = (over: Record<string, unknown> = {}) =>
+    normalizeConfig({
+      server: { host: "localhost", port: 3459, baseUrl: "https://attachments.example.com", publicPath: "/a" },
+      domains: [{ hostname: "attachments.example.com", baseUrl: "https://attachments.example.com", primary: true }],
+      ...over,
+    });
+
+  it("keeps the configured public base URL when no remote API is configured", () => {
+    const resolved = resolveLocalShareBaseUrl(config(), {});
+    expect(resolved.baseUrl).toBe("https://attachments.example.com");
+    expect(resolved.rejectedBaseUrl).toBeUndefined();
+  });
+
+  it("keeps it when the remote API is a different origin", () => {
+    const resolved = resolveLocalShareBaseUrl(config(), {
+      HASNA_ATTACHMENTS_API_URL: "https://other.example.com",
+    });
+    expect(resolved.baseUrl).toBe("https://attachments.example.com");
+  });
+
+  it("rejects it when that host IS the remote API — the link would 404", () => {
+    const resolved = resolveLocalShareBaseUrl(config(), {
+      HASNA_ATTACHMENTS_API_URL: "https://attachments.example.com/",
+    });
+    expect(resolved.rejectedBaseUrl).toBe("https://attachments.example.com");
+    expect(resolved.baseUrl).toBe("http://localhost:3459");
+  });
+
+  it("prefers a configured internal base URL over loopback", () => {
+    const resolved = resolveLocalShareBaseUrl(
+      config({ client: { internalBaseUrl: "http://box.tailnet.ts.net:3459", preferInternal: true } }),
+      { HASNA_ATTACHMENTS_API_URL: "https://attachments.example.com" },
+    );
+    expect(resolved.baseUrl).toBe("http://box.tailnet.ts.net:3459");
+  });
+
+  it("never produces a share link on the remote host", () => {
+    const resolved = resolveLocalShareBaseUrl(config(), {
+      HASNA_ATTACHMENTS_API_URL: "https://attachments.example.com",
+    });
+    expect(generateShareLink("tok", resolved.baseUrl, "/a")).toBe("http://localhost:3459/a/tok");
+    expect(generateShareLink("tok", resolved.baseUrl, "/a")).not.toContain("attachments.example.com");
   });
 });

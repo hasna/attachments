@@ -173,6 +173,38 @@ function resolveStorageClient(
   return { transport: "cloud-http", client: createStorageClient(apiUrl, apiKey, overrides.fetchImpl ?? fetch) };
 }
 
+/**
+ * Build a diagnosable client-side error for a failed API call.
+ *
+ * D1(a): the previous message was just the raw response body, so a server that
+ * answered `Internal Server Error` produced a CLI error of exactly
+ * "Internal Server Error" — no status, no route, no server-side reason. Every
+ * failure then required CloudWatch to identify. The API key is never included.
+ */
+export function describeApiFailure(
+  method: string,
+  path: string,
+  status: number,
+  body: string,
+): string {
+  const route = `${method.toUpperCase()} /v1${path}`;
+  let reason = body.trim();
+  if (reason.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(reason) as { error?: unknown; detail?: unknown; message?: unknown };
+      const parts = [parsed.error, parsed.detail ?? parsed.message]
+        .filter((v): v is string => typeof v === "string" && v.trim() !== "");
+      if (parts.length > 0) reason = Array.from(new Set(parts)).join(" — ");
+    } catch {
+      /* keep the raw body */
+    }
+  }
+  if (reason.length > 500) reason = `${reason.slice(0, 500)}…`;
+  return reason
+    ? `${route} failed: HTTP ${status} — ${reason}`
+    : `${route} failed: HTTP ${status}`;
+}
+
 function createStorageClient(apiUrl: string, apiKey: string, fetchImpl: JsonFetch): HasnaStorageClient {
   const baseUrl = `${apiUrl.replace(/\/+$/, "")}/v1`;
   const request = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
@@ -188,7 +220,10 @@ function createStorageClient(apiUrl: string, apiKey: string, fetchImpl: JsonFetc
     if (response.status === 404) throw Object.assign(new Error("Not found"), { status: 404 });
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw Object.assign(new Error(text || `HTTP ${response.status}`), { status: response.status });
+      throw Object.assign(new Error(describeApiFailure(init.method ?? "GET", path, response.status, text)), {
+        status: response.status,
+        body: text,
+      });
     }
     const text = await response.text();
     if (!text) return undefined as T;

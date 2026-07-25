@@ -9,9 +9,19 @@ function htmlEscape(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
-export function sharePagePath(token: string): string {
-  const publicPath = getConfig().server.publicPath.replace(/\/+$/, "") || "/a";
-  return `${publicPath}/${encodeURIComponent(token)}`;
+/**
+ * Resolve the public route prefix. Callers that own their config (the cloud
+ * `attachments-serve` service) MUST pass it explicitly — the service runs with
+ * an env-built config and must never fall back to reading the operator's
+ * on-disk `config.json`.
+ */
+function resolvePublicPath(publicPath?: string): string {
+  const raw = publicPath ?? getConfig().server.publicPath;
+  return raw.replace(/\/+$/, "") || "/a";
+}
+
+export function sharePagePath(token: string, publicPath?: string): string {
+  return `${resolvePublicPath(publicPath)}/${encodeURIComponent(token)}`;
 }
 
 export function renderDownloadPage(input: {
@@ -26,8 +36,10 @@ export function renderDownloadPage(input: {
   maxUses?: number | null;
   usedCount?: number;
   error?: string;
+  /** Route prefix for the form actions; defaults to the on-disk config. */
+  publicPath?: string;
 }): string {
-  const publicPath = getConfig().server.publicPath.replace(/\/+$/, "") || "/a";
+  const publicPath = resolvePublicPath(input.publicPath);
   const expiry = input.expiresAt
     ? new Date(input.expiresAt).toLocaleString("en", { dateStyle: "medium", timeStyle: "short" })
     : "Never";
@@ -142,7 +154,11 @@ export function renderPublicErrorPage(input: {
 </html>`;
 }
 
-export function renderShareAccessError(token: string, err: ShareAccessError): string {
+export function renderShareAccessError(
+  token: string,
+  err: ShareAccessError,
+  publicPath?: string
+): string {
   if (err.message.includes("already been used") || err.message.includes("no longer available")) {
     return renderPublicErrorPage({
       title: "This attachment link has already been used",
@@ -172,7 +188,7 @@ export function renderShareAccessError(token: string, err: ShareAccessError): st
       title: "Password required",
       message: "This attachment is protected. Open the attachment page and enter the password from the sender.",
       status: err.status,
-      actionHref: sharePagePath(token),
+      actionHref: sharePagePath(token, publicPath),
       actionLabel: "Open Attachment Page",
     });
   }

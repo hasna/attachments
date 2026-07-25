@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveAttachmentsV1 } from "./cloud-v1";
+import { describeApiFailure, resolveAttachmentsV1 } from "./cloud-v1";
 
 const BASE = "https://attachments.hasna.xyz";
 const KEY = "hasna_attachments_testkey_0000";
@@ -99,5 +99,71 @@ describe("resolveAttachmentsV1", () => {
     await r.store.delete("att_x");
     expect(calls[0]!.method).toBe("DELETE");
     expect(calls[0]!.url).toBe(`${BASE}/v1/attachments/att_x`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D1(a) — CLI errors must be diagnosable without reading CloudWatch
+// ---------------------------------------------------------------------------
+
+describe("describeApiFailure", () => {
+  test("names the route and the HTTP status", () => {
+    expect(describeApiFailure("post", "/attachments", 500, "")).toBe(
+      "POST /v1/attachments failed: HTTP 500",
+    );
+  });
+
+  test("surfaces the server's JSON error instead of an opaque body", () => {
+    const message = describeApiFailure(
+      "POST",
+      "/attachments",
+      400,
+      JSON.stringify({ error: "Invalid expiry format: 604800s" }),
+    );
+    expect(message).toContain("POST /v1/attachments");
+    expect(message).toContain("HTTP 400");
+    expect(message).toContain("Invalid expiry format: 604800s");
+  });
+
+  test("keeps the server detail alongside a generic error label", () => {
+    const message = describeApiFailure(
+      "POST",
+      "/attachments",
+      500,
+      JSON.stringify({ error: "Internal Server Error", detail: "presign failed" }),
+    );
+    expect(message).toContain("Internal Server Error");
+    expect(message).toContain("presign failed");
+    // The old behaviour was exactly this string and nothing else.
+    expect(message).not.toBe("Internal Server Error");
+  });
+
+  test("falls back to the raw body for non-JSON responses", () => {
+    expect(describeApiFailure("GET", "/attachments", 502, "Bad Gateway")).toContain("Bad Gateway");
+  });
+
+  test("truncates a very long body", () => {
+    const message = describeApiFailure("GET", "/attachments", 500, "x".repeat(5000));
+    expect(message.length).toBeLessThan(600);
+  });
+});
+
+describe("cloud upload failures reach the caller with context", () => {
+  test("a 500 from the upload route is reported with route and status", async () => {
+    const { fetchImpl } = mockFetch(() => ({ status: 500, body: { error: "Internal Server Error" } }));
+    const resolved = resolveAttachmentsV1(
+      { HASNA_ATTACHMENTS_API_URL: BASE, HASNA_ATTACHMENTS_API_KEY: KEY },
+      { fetchImpl },
+    );
+    if (resolved.transport !== "cloud-http") throw new Error("expected cloud transport");
+    const error = await resolved.store
+      .uploadBuffer("x.txt", new Uint8Array([1, 2, 3]), { expiry: "30d" })
+      .then(() => null)
+      .catch((err: Error) => err);
+    expect(error).not.toBeNull();
+    expect(error!.message).toContain("POST /v1/attachments");
+    expect(error!.message).toContain("HTTP 500");
+    expect(error!.message).not.toBe("Internal Server Error");
+    expect(error!.message).not.toContain(KEY);
   });
 });

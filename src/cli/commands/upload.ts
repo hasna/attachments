@@ -3,6 +3,7 @@ import { execSync } from "child_process";
 import { getConfig } from "../../core/config";
 import { resolveStore } from "../../core/store";
 import { resolveInternalBaseUrl } from "../../core/internal-link";
+import { resolveLocalShareBaseUrl } from "../../core/links";
 import { isValidEmail } from "../../core/security";
 import { formatBytes, formatExpiry, exitError } from "../utils";
 
@@ -77,6 +78,20 @@ export function registerUpload(program: Command): void {
       }
       if (cloudMode && options.encrypt) {
         exitError("--encrypt is not supported in self_hosted/cloud mode. Use --client-mode local to encrypt at rest.");
+      }
+      // D1(b): an on-box upload whose configured public host is really the remote
+      // API would produce a link that can never resolve. core/upload rewrites the
+      // base URL; tell the operator, because the link they get is NOT the public
+      // one their config advertises.
+      if (!cloudMode && !options.internal) {
+        const resolved = resolveLocalShareBaseUrl(config);
+        if (resolved.rejectedBaseUrl) {
+          process.stderr.write(
+            `! Local upload: ${resolved.rejectedBaseUrl} is the remote attachments API, not this machine.\n` +
+              `  Share links will point at ${resolved.baseUrl} (served by \`attachments serve\`).\n` +
+              `  Drop --client-mode local to upload to ${resolved.rejectedBaseUrl} instead.\n`,
+          );
+        }
       }
       const internalBaseUrl = options.internal ? (await resolveInternalBaseUrl(config)).baseUrl : undefined;
       const uploadOptions = {
