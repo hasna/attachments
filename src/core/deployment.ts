@@ -24,6 +24,7 @@ export function buildDeploymentPlan(config: AttachmentsConfig = getConfig()) {
 
   return {
     public_base_url: publicBaseUrl,
+    public_hostname: hostname,
     public_path: publicPath,
     attachment_url_template: `${publicBaseUrl}${publicPath}/:token`,
     domains: config.domains,
@@ -94,6 +95,24 @@ export function classifyAttachmentRouteProbe(input: AttachmentRouteProbeInput): 
   const body = input.body.trim();
   const lowerBody = body.toLowerCase();
 
+  // Reaching the attachments app is necessary but not sufficient. The public
+  // routes render the same "Attachment unavailable" page for a 500 as for a
+  // missing token (public-routes.ts:fatal), so a probe that only looked at the
+  // body would report OK while every share link was failing — the deploy gate
+  // would go green on a dead service.
+  const attachmentsHit = (): AttachmentRouteProbeResult =>
+    input.status >= 500
+      ? {
+          ok: false,
+          service: "attachments",
+          reason: `The attachment prefix reaches the attachments app, but it answered HTTP ${input.status}. The route is right; the service is not healthy.`,
+        }
+      : {
+          ok: true,
+          service: "attachments",
+          reason: "The attachment prefix is handled by the attachments app.",
+        };
+
   if (contentType.includes("application/json")) {
     try {
       const parsed = JSON.parse(body) as { error?: unknown; slug?: unknown };
@@ -107,11 +126,7 @@ export function classifyAttachmentRouteProbe(input: AttachmentRouteProbeInput): 
         };
       }
       if (error.includes("share link not found") || error.includes("attachment")) {
-        return {
-          ok: true,
-          service: "attachments",
-          reason: "The attachment prefix is handled by the attachments app.",
-        };
+        return attachmentsHit();
       }
     } catch {
       // Fall through to content-based classification.
@@ -122,11 +137,7 @@ export function classifyAttachmentRouteProbe(input: AttachmentRouteProbeInput): 
     contentType.includes("text/html") &&
     (lowerBody.includes("attachment unavailable") || lowerBody.includes("share link not found"))
   ) {
-    return {
-      ok: true,
-      service: "attachments",
-      reason: "The attachment prefix is handled by the attachments app.",
-    };
+    return attachmentsHit();
   }
 
   return {

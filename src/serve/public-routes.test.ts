@@ -13,7 +13,7 @@ import { join } from "path";
 import { mintApiKey } from "@hasna/contracts/auth";
 import { createServeApp } from "./app.js";
 import { normalizeConfig, type AttachmentsConfig } from "../core/config.js";
-import { classifyAttachmentRouteProbe } from "../core/deployment.js";
+import { buildDeploymentPlan, classifyAttachmentRouteProbe } from "../core/deployment.js";
 import type { PoolQueryClient } from "../generated/storage-kit/query.js";
 import type { PgAttachmentsStore } from "../db/pg-store.js";
 import { InMemoryAttachmentsStore, stubQueryClient } from "./serve.test-harness.test";
@@ -74,6 +74,20 @@ async function upload(
 
 function tokenOf(link: string): string {
   return link.split("/a/")[1]!;
+}
+
+// The path `attachments domain verify` actually requests, taken from the plan
+// rather than restated, so the probe URL and the served route cannot drift.
+function probePath(): string {
+  return new URL(buildDeploymentPlan(makeConfig()).routing.validation.attachment_probe_url).pathname;
+}
+
+async function classifyResponse(res: Response) {
+  return classifyAttachmentRouteProbe({
+    status: res.status,
+    contentType: res.headers.get("content-type"),
+    body: await res.text(),
+  });
 }
 
 describe("cloud public share links", () => {
@@ -176,14 +190,27 @@ describe("cloud public share links", () => {
   });
 
   test("the exact domain-verification probe is classified as the attachments service", async () => {
-    const res = await app.request("/a/__attachments_probe__");
-    const classification = classifyAttachmentRouteProbe({
-      status: res.status,
-      contentType: res.headers.get("content-type"),
-      body: await res.text(),
-    });
+    const res = await app.request(probePath());
+    const classification = await classifyResponse(res);
 
     expect(classification.ok).toBe(true);
+    expect(classification.service).toBe("attachments");
+  });
+
+  test("the probe fails the deploy gate when the app itself is broken", async () => {
+    // The route can be wired correctly and the service still be dead: `fatal`
+    // answers 500 with the same "Attachment unavailable" page as a missing token.
+    // If the probe passed that, `attachments domain verify` would exit 0 and the
+    // incident would close while every share link kept failing.
+    store.findShareLinkByToken = async () => {
+      throw new Error("store unavailable");
+    };
+
+    const res = await app.request(probePath());
+    const classification = await classifyResponse(res);
+
+    expect(res.status).toBe(500);
+    expect(classification.ok).toBe(false);
     expect(classification.service).toBe("attachments");
   });
 

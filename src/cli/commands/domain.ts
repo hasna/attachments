@@ -1,6 +1,9 @@
 import { Command } from "commander";
+import { mkdirSync, writeFileSync } from "fs";
+import { join } from "path";
 import { getConfig, normalizePublicPath, setConfig, type AttachmentsConfig } from "../../core/config";
 import { buildDeploymentPlan, classifyAttachmentRouteProbe } from "../../core/deployment";
+import { buildEdgeRoutingArtifacts, EdgeRoutingConfigError, type EdgeRoutingArtifacts } from "../../core/edge-routing";
 
 function trimOrigin(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -106,6 +109,57 @@ function planCommand(): Command {
     });
 }
 
+function renderCommand(): Command {
+  return new Command("render")
+    .description("Render the deployable edge worker + routes that put the attachment prefix ahead of the fallback route")
+    .option("--format <format>", "json, wrangler, or worker", "json")
+    .option("--out <dir>", "Write wrangler.toml and worker.js into this directory instead of stdout")
+    .action((options) => {
+      const format = String(options.format ?? "json");
+      if (format !== "json" && format !== "wrangler" && format !== "worker") {
+        process.stderr.write("Error: --format must be json, wrangler, or worker\n");
+        process.exitCode = 1;
+        return;
+      }
+
+      let artifacts: EdgeRoutingArtifacts;
+      try {
+        artifacts = buildEdgeRoutingArtifacts();
+      } catch (err) {
+        // A placeholder artifact deploys cleanly and leaves the prefix dead, so
+        // refuse to emit one and name the config the operator still owes us.
+        if (err instanceof EdgeRoutingConfigError) {
+          process.stderr.write(`Error: ${err.message}\n`);
+          process.exitCode = 1;
+          return;
+        }
+        throw err;
+      }
+
+      if (options.out) {
+        const dir = String(options.out);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "wrangler.toml"), artifacts.wrangler_toml, "utf-8");
+        writeFileSync(join(dir, "worker.js"), artifacts.worker_script, "utf-8");
+        process.stdout.write(
+          `Wrote ${join(dir, "wrangler.toml")} and ${join(dir, "worker.js")}.\n` +
+            `Deploy with 'wrangler deploy', then run 'attachments domain verify'.\n`
+        );
+        return;
+      }
+
+      if (format === "wrangler") {
+        process.stdout.write(artifacts.wrangler_toml);
+        return;
+      }
+      if (format === "worker") {
+        process.stdout.write(artifacts.worker_script);
+        return;
+      }
+      process.stdout.write(JSON.stringify(artifacts, null, 2) + "\n");
+    });
+}
+
 function verifyCommand(): Command {
   return new Command("verify")
     .description("Probe the public attachment prefix and verify it reaches the attachments app")
@@ -191,6 +245,7 @@ export function domainCommand(): Command {
   const cmd = new Command("domain").description("Manage public domain metadata");
   cmd.addCommand(configureCommand());
   cmd.addCommand(planCommand());
+  cmd.addCommand(renderCommand());
   cmd.addCommand(verifyCommand());
   return cmd;
 }

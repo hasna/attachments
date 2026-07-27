@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { Command } from "commander";
-import { existsSync, mkdirSync, rmSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { setConfigPath } from "../../core/config";
@@ -39,6 +39,36 @@ async function runDomainCommand(args: string[]): Promise<string> {
   }
 
   return chunks.join("");
+}
+
+async function runDomainCommandCapturingStderr(args: string[]): Promise<{ stdout: string; stderr: string }> {
+  const errors: string[] = [];
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => {
+    errors.push(String(chunk));
+    return true;
+  });
+
+  try {
+    const stdout = await runDomainCommand(args);
+    return { stdout, stderr: errors.join("") };
+  } finally {
+    stderr.mockRestore();
+  }
+}
+
+async function configureHasNa(extra: string[] = []): Promise<void> {
+  await runDomainCommand([
+    "configure",
+    "--hostname",
+    "has.na",
+    "--base-url",
+    "https://has.na",
+    "--path-prefix",
+    "/a",
+    "--provider",
+    "cloudflare",
+    ...extra,
+  ]);
 }
 
 describe("domain command", () => {
@@ -94,6 +124,48 @@ describe("domain command", () => {
 
     expect(plan.routing.attachment_route_pattern).toBe("has.na/a/*");
     expect(plan.routing.missing).toContain("deployment.routing.attachmentsOrigin");
+  });
+
+  it("render emits the attachment route ahead of the fallback with real origins", async () => {
+    await configureHasNa([
+      "--attachments-origin",
+      "https://attachments-origin.example.com",
+      "--fallback-origin",
+      "https://shortlinks-origin.example.com",
+    ]);
+
+    const output = await runDomainCommand(["render", "--format", "json"]);
+    const artifacts = JSON.parse(output);
+
+    expect(artifacts.routes[0]).toMatchObject({
+      pattern: "has.na/a/*",
+      origin: "https://attachments-origin.example.com",
+    });
+    expect(artifacts.routes[1]?.pattern).toBe("has.na/*");
+    expect(artifacts.worker_script).toContain("https://attachments-origin.example.com");
+    expect(process.exitCode).toBe(0);
+  });
+
+  it("render writes a deployable wrangler.toml and worker.js", async () => {
+    await configureHasNa(["--attachments-origin", "https://attachments-origin.example.com"]);
+    const outDir = join(TEST_DIR, "edge");
+
+    await runDomainCommand(["render", "--out", outDir]);
+
+    expect(existsSync(join(outDir, "wrangler.toml"))).toBe(true);
+    expect(existsSync(join(outDir, "worker.js"))).toBe(true);
+    expect(readFileSync(join(outDir, "wrangler.toml"), "utf-8")).toContain('pattern = "has.na/a/*"');
+    expect(process.exitCode).toBe(0);
+  });
+
+  it("render refuses to emit a placeholder artifact and exits 1", async () => {
+    await configureHasNa();
+
+    const { stdout, stderr } = await runDomainCommandCapturingStderr(["render", "--format", "json"]);
+
+    expect(stdout).toBe("");
+    expect(stderr).toContain("deployment.routing.attachmentsOrigin");
+    expect(process.exitCode).toBe(1);
   });
 
   it("verify detects a shortlinks slug-a response", async () => {

@@ -95,4 +95,19 @@ describe("classifyAttachmentRouteProbe", () => {
     expect(result.ok).toBe(true);
     expect(result.service).toBe("attachments");
   });
+
+  it("does not pass the deploy gate when the attachments app answers a 5xx", () => {
+    // public-routes.ts:fatal renders the same "Attachment unavailable" page for a
+    // server error as for a missing token, so a body-only check would report the
+    // route healthy while every share link failed.
+    const result = classifyAttachmentRouteProbe({
+      status: 500,
+      contentType: "text/html; charset=UTF-8",
+      body: "<html><h1>Attachment unavailable</h1><p>Something went wrong while opening this attachment.</p></html>",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.service).toBe("attachments");
+    expect(result.reason).toContain("500");
+  });
 });

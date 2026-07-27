@@ -63,6 +63,7 @@ attachments domain configure \
 attachments domain plan --format json
 attachments domain plan --format opendomains
 attachments domain plan --format cloudflare
+attachments domain render --out ./edge
 attachments domain verify --format json
 ```
 
@@ -70,8 +71,18 @@ The generated plan contains no credentials and does not mutate DNS. For shared
 domains, route the attachment prefix before any generic redirect/shortlink
 route; for example, `files.example.com/a/*` should target the attachments app
 and `files.example.com/*` can remain pointed at an existing shortlink service.
+
+`attachments domain render` turns that plan into the deployable artifact:
+a `wrangler.toml` whose `/a/*` route is more specific than the generic route,
+plus the `worker.js` that forwards the prefix to the attachments origin and
+everything else to the fallback origin. It exits 1 rather than emitting an
+artifact with placeholder origins, because such an artifact deploys cleanly and
+still leaves the prefix dead.
+
 `attachments domain verify` probes the configured `.../a/__attachments_probe__`
-URL and fails if the prefix is still handled by a shortlink route.
+URL and fails if the prefix is still handled by a shortlink route, or if the
+attachments app itself answers 5xx. Run it as the gate after deploying the
+worker — see [docs/public-route-runbook.md](docs/public-route-runbook.md).
 
 ## MCP Server
 

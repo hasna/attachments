@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The public `/a/*` route 404'd on a shared hostname, killing every server-hosted share link.** 1.1.5 made the service *serve* `/a/:token`, but on a hostname whose generic `*` edge route already belongs to a shortlinks service the request never reached the attachments app at all — Cloudflare handed `/a/<token>` to shortlinks, which 404s. The repo described the required route order (`buildDeploymentPlan`) and even named the worker environment for it, but shipped no artifact that could carry the route, so the remediation was never actually deployable from here. `attachments domain render` now emits the real thing: a `wrangler.toml` whose `<hostname>/a/*` route is more specific than the generic route (Cloudflare matches most-specific-first) and the `worker.js` that forwards the prefix to the attachments origin. `--out <dir>` writes both files; `--format wrangler|worker|json` prints them.
+- **`domain render` refuses to emit placeholder artifacts.** `domain plan` happily printed `<attachments-origin>` when `deployment.routing.attachmentsOrigin` was unset — an artifact built from it deploys cleanly and leaves the prefix dead. `render` exits 1 and names the missing config key instead.
+- **`domain verify` passed a dead service.** The public routes render the same "Attachment unavailable" page for a 500 as for an unknown token, so `classifyAttachmentRouteProbe` reported `ok: true` for a probe that came back HTTP 500 — the deploy gate went green while every share link failed. A 5xx probe is now `ok: false` (still `service: "attachments"`, since the route itself is correct).
+
+### Added
+
+- `docs/public-route-runbook.md` — symptom, cause, remediation and the verification checklist for the shared-hostname `/a/*` outage.
+- The `/a/*` route claims the catch-all `<hostname>/*` pattern only when a fallback origin is configured. Binding the catch-all without somewhere to forward it would 502 the shortlinks traffic — a wider outage than the one being fixed.
+
 ## [1.1.5] - 2026-07-25
 
 ### Fixed

@@ -69,8 +69,12 @@ without credentials:
 ```bash
 attachments domain plan --format json
 attachments domain plan --format cloudflare
-attachments domain verify --format json
+attachments domain render --out ./edge      # deployable wrangler.toml + worker.js
+attachments domain verify --format json     # deploy gate; exit 1 if /a/* is not ours
 ```
+
+`domain render` refuses to emit an artifact while `deployment.routing.attachmentsOrigin`
+or the public hostname is unset. See `docs/public-route-runbook.md`.
 
 ---
 

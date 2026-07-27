@@ -38,6 +38,7 @@
     "test": "bash scripts/test.sh",
     "test:coverage": "bash scripts/test.sh --coverage",
     "verify:release": "bun run typecheck && bun run test && bun run build",
+    "verify:public-route": "bun run src/cli/index.ts domain verify --format json",
     "prepublishOnly": "bun run verify:release",
     "dev": "bun run src/cli/index.ts",
     "dashboard": "cd dashboard && bun run dev",
