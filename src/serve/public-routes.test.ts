@@ -13,6 +13,7 @@ import { join } from "path";
 import { mintApiKey } from "@hasna/contracts/auth";
 import { createServeApp } from "./app.js";
 import { normalizeConfig, type AttachmentsConfig } from "../core/config.js";
+import { classifyAttachmentRouteProbe } from "../core/deployment.js";
 import type { PoolQueryClient } from "../generated/storage-kit/query.js";
 import type { PgAttachmentsStore } from "../db/pg-store.js";
 import { InMemoryAttachmentsStore, stubQueryClient } from "./serve.test-harness.test";
@@ -172,6 +173,18 @@ describe("cloud public share links", () => {
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toContain("text/html");
     expect(await res.text()).toContain("Attachment unavailable");
+  });
+
+  test("the exact domain-verification probe is classified as the attachments service", async () => {
+    const res = await app.request("/a/__attachments_probe__");
+    const classification = classifyAttachmentRouteProbe({
+      status: res.status,
+      contentType: res.headers.get("content-type"),
+      body: await res.text(),
+    });
+
+    expect(classification.ok).toBe(true);
+    expect(classification.service).toBe("attachments");
   });
 
   test("an expired share link is 410", async () => {
