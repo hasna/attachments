@@ -3,12 +3,27 @@ import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { getConfig, normalizePublicPath, setConfig, type AttachmentsConfig } from "../../core/config";
 import { buildDeploymentPlan, classifyAttachmentRouteProbe } from "../../core/deployment";
-import { buildEdgeRoutingArtifacts, EdgeRoutingConfigError, type EdgeRoutingArtifacts } from "../../core/edge-routing";
+import {
+  buildEdgeRoutingArtifacts,
+  describeInvalidOrigin,
+  EdgeRoutingConfigError,
+  type EdgeRoutingArtifacts,
+} from "../../core/edge-routing";
 
 function trimOrigin(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim().replace(/\/+$/, "");
   return trimmed || undefined;
+}
+
+// Reject an unroutable origin at write time as well as at render time. Trimming
+// alone accepts `<attachments-origin>` and scheme-less hosts, and a config that
+// holds one only fails later, at the edge, on every share link.
+function reportInvalidOrigin(flag: string, value: string | undefined): boolean {
+  const reason = value ? describeInvalidOrigin(value) : null;
+  if (!reason) return false;
+  process.stderr.write(`Error: ${flag} ${reason}\n`);
+  return true;
 }
 
 function configureCommand(): Command {
@@ -35,11 +50,22 @@ function configureCommand(): Command {
       const provider = options.provider as AttachmentsConfig["deployment"]["provider"];
       const managedBy = options.managedBy as AttachmentsConfig["deployment"]["managedBy"];
       const recordType = options.record as "A" | "AAAA" | "CNAME" | undefined;
+      const attachmentsOrigin = trimOrigin(options.attachmentsOrigin);
+      const fallbackOrigin = trimOrigin(options.fallbackOrigin) ?? trimOrigin(options.shortlinksOrigin);
+      const fallbackFlag = trimOrigin(options.fallbackOrigin) ? "--fallback-origin" : "--shortlinks-origin";
+
+      // Report both flags rather than short-circuiting, so one run names every
+      // origin the operator has to fix.
+      const badAttachmentsOrigin = reportInvalidOrigin("--attachments-origin", attachmentsOrigin);
+      const badFallbackOrigin = reportInvalidOrigin(fallbackFlag, fallbackOrigin);
+      if (badAttachmentsOrigin || badFallbackOrigin) {
+        process.exitCode = 1;
+        return;
+      }
+
       const config = getConfig();
       const dns: AttachmentsConfig["deployment"]["dns"] = {};
       const routing: AttachmentsConfig["deployment"]["routing"] = {};
-      const attachmentsOrigin = trimOrigin(options.attachmentsOrigin);
-      const fallbackOrigin = trimOrigin(options.fallbackOrigin) ?? trimOrigin(options.shortlinksOrigin);
 
       if (options.zone) dns.zone = String(options.zone);
       if (recordType) dns.recordType = recordType;

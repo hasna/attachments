@@ -118,6 +118,103 @@ describe("buildEdgeRoutingArtifacts", () => {
   });
 });
 
+/**
+ * A present-but-unroutable origin is the dangerous case: it satisfies the
+ * "is the key set?" check, so the artifact renders, deploys, claims `<host>/a/*`
+ * from the shortlinks route, and then fails every request. That is strictly
+ * worse than the 404 this branch is fixing, so each of these configs must throw
+ * rather than produce an artifact.
+ */
+describe("buildEdgeRoutingArtifacts origin validation", () => {
+  function expectRejectedOrigin(config: AttachmentsConfig, key: string): EdgeRoutingConfigError {
+    expect(() => buildEdgeRoutingArtifacts(config)).toThrow(EdgeRoutingConfigError);
+    try {
+      buildEdgeRoutingArtifacts(config);
+    } catch (err) {
+      expect(err).toBeInstanceOf(EdgeRoutingConfigError);
+      expect((err as EdgeRoutingConfigError).invalid).toContain(key);
+      return err as EdgeRoutingConfigError;
+    }
+    throw new Error("expected buildEdgeRoutingArtifacts to reject the origin");
+  }
+
+  it("refuses the literal <attachments-origin> placeholder that domain plan prints", () => {
+    const config = baseConfig();
+    config.deployment.routing = { attachmentsOrigin: "<attachments-origin>" };
+
+    const err = expectRejectedOrigin(config, "deployment.routing.attachmentsOrigin");
+    expect(err.message).toContain("<attachments-origin>");
+  });
+
+  it("refuses a scheme-less origin, which the emitted worker cannot resolve a path against", () => {
+    // The canonical self-hosted origin is an ALB DNS name, which is exactly what
+    // an operator pastes without a scheme. `new URL("/a/tok", host)` throws
+    // ERR_INVALID_URL, which Cloudflare serves as a 1101 on every share link.
+    expect(() => new URL("/a/tok_1", "attachments-origin.hasna.xyz")).toThrow();
+
+    const config = baseConfig();
+    config.deployment.routing = { attachmentsOrigin: "attachments-origin.hasna.xyz" };
+
+    expectRejectedOrigin(config, "deployment.routing.attachmentsOrigin");
+  });
+
+  it("refuses an origin carrying a path, because the worker silently drops it", () => {
+    // new URL("/a/tok_1", "https://origin.example.net/base") is
+    // https://origin.example.net/a/tok_1 — the /base mount point disappears.
+    const config = baseConfig();
+    config.deployment.routing = { attachmentsOrigin: "https://attachments-origin.example.net/base" };
+
+    expectRejectedOrigin(config, "deployment.routing.attachmentsOrigin");
+  });
+
+  it("refuses a non-http scheme", () => {
+    const config = baseConfig();
+    config.deployment.routing = { attachmentsOrigin: "ftp://attachments-origin.example.net" };
+
+    expectRejectedOrigin(config, "deployment.routing.attachmentsOrigin");
+  });
+
+  it("refuses an unroutable fallback origin as well", () => {
+    const config = baseConfig();
+    config.deployment.routing = {
+      attachmentsOrigin: "https://attachments-origin.example.net",
+      fallbackOrigin: "shortlinks-origin.example.net",
+    };
+
+    expectRejectedOrigin(config, "deployment.routing.fallbackOrigin");
+  });
+
+  it("names every unroutable origin in one error", () => {
+    const config = baseConfig();
+    config.deployment.routing = {
+      attachmentsOrigin: "<attachments-origin>",
+      fallbackOrigin: "<existing-shortlinks-origin>",
+    };
+
+    try {
+      buildEdgeRoutingArtifacts(config);
+      throw new Error("expected buildEdgeRoutingArtifacts to reject the origins");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EdgeRoutingConfigError);
+      expect((err as EdgeRoutingConfigError).invalid).toEqual([
+        "deployment.routing.attachmentsOrigin",
+        "deployment.routing.fallbackOrigin",
+      ]);
+    }
+  });
+
+  it("accepts a bare http origin and an origin with an explicit port", () => {
+    const config = baseConfig();
+    config.deployment.routing = {
+      attachmentsOrigin: "http://attachments-origin.example.net:8080",
+      fallbackOrigin: "https://shortlinks-origin.example.net",
+    };
+
+    const artifacts = buildEdgeRoutingArtifacts(config);
+    expect(artifacts.environment.ATTACHMENTS_ORIGIN).toBe("http://attachments-origin.example.net:8080");
+  });
+});
+
 describe("the emitted edge worker", () => {
   it("forwards /a/<token> to the attachments origin, not the shortlinks origin", async () => {
     const artifacts = buildEdgeRoutingArtifacts(baseConfig());

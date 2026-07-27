@@ -76,8 +76,11 @@ and `files.example.com/*` can remain pointed at an existing shortlink service.
 a `wrangler.toml` whose `/a/*` route is more specific than the generic route,
 plus the `worker.js` that forwards the prefix to the attachments origin and
 everything else to the fallback origin. It exits 1 rather than emitting an
-artifact with placeholder origins, because such an artifact deploys cleanly and
-still leaves the prefix dead.
+artifact whose origins are missing or unusable, because such an artifact deploys
+cleanly and still leaves the prefix dead. Each origin must be an absolute
+`http(s)` origin with no path — the worker resolves request paths against it, so
+a scheme-less host fails every request and a path is silently dropped.
+`attachments domain configure` rejects the same values at write time.
 
 `attachments domain verify` probes the configured `.../a/__attachments_probe__`
 URL and fails if the prefix is still handled by a shortlink route, or if the

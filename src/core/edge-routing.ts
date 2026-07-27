@@ -8,8 +8,8 @@
  * route, so the fix is a real `<host><prefix>/*` route bound to a worker that
  * forwards to the attachments origin. This module renders that worker and its
  * `wrangler.toml` from the configured deployment metadata, and refuses to render
- * placeholders — an artifact containing `<attachments-origin>` deploys cleanly and
- * still leaves the prefix dead.
+ * an origin it cannot route to — a `<attachments-origin>` placeholder or a
+ * scheme-less host deploys cleanly and still leaves the prefix dead.
  */
 import { buildDeploymentPlan } from "./deployment";
 import { getConfig, type AttachmentsConfig } from "./config";
@@ -42,17 +42,69 @@ export interface EdgeRoutingArtifacts {
   worker_script: string;
 }
 
+export interface EdgeRoutingOriginProblem {
+  key: string;
+  reason: string;
+}
+
 export class EdgeRoutingConfigError extends Error {
   readonly missing: string[];
+  readonly invalid: string[];
 
-  constructor(missing: string[]) {
+  constructor(missing: string[], invalid: EdgeRoutingOriginProblem[] = []) {
+    const parts: string[] = [];
+    if (missing.length > 0) parts.push(`Missing: ${missing.join(", ")}.`);
+    if (invalid.length > 0) {
+      parts.push(`Unusable: ${invalid.map((problem) => `${problem.key} ${problem.reason}`).join(". ")}.`);
+    }
     super(
-      `Edge routing configuration incomplete. Missing: ${missing.join(", ")}. ` +
+      `Edge routing configuration is not deployable. ${parts.join(" ")} ` +
         `Run 'attachments domain configure --hostname <hostname> --attachments-origin <url>' first.`
     );
     this.name = "EdgeRoutingConfigError";
     this.missing = missing;
+    this.invalid = invalid.map((problem) => problem.key);
   }
+}
+
+/**
+ * Describe why an origin cannot carry the edge route, or `null` when it can.
+ *
+ * A present-but-unusable origin is worse than a missing one: it passes the
+ * nullish checks that build `plan.routing.missing`, so the artifact renders and
+ * deploys cleanly, and only then does every request fail. The emitted worker
+ * resolves each request with `new URL(path, origin)`, so a scheme-less host —
+ * the shape of the canonical ALB DNS name an operator pastes — throws
+ * `ERR_INVALID_URL`, which Cloudflare serves as a 1101 on 100% of `/a/<token>`.
+ * The literal `<attachments-origin>` placeholder fails the same way, and an
+ * origin carrying a path has that path silently dropped by the same resolution.
+ */
+export function describeInvalidOrigin(origin: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return `"${origin}" is not an absolute URL; use a full origin such as https://attachments.internal.example.com`;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return `"${origin}" must use http:// or https://`;
+  }
+  if (url.pathname !== "/" || url.search || url.hash) {
+    return `"${origin}" must be a bare origin with no path, query or fragment (the worker resolves request paths against it, so anything extra is dropped)`;
+  }
+  return null;
+}
+
+function collectOriginProblems(
+  candidates: ReadonlyArray<readonly [string, string | null | undefined]>
+): EdgeRoutingOriginProblem[] {
+  const problems: EdgeRoutingOriginProblem[] = [];
+  for (const [key, value] of candidates) {
+    if (!value) continue;
+    const reason = describeInvalidOrigin(value);
+    if (reason) problems.push({ key, reason });
+  }
+  return problems;
 }
 
 // Wrangler routes need the zone, which is not the hostname on a subdomain. Use
@@ -127,7 +179,16 @@ ATTACHMENTS_PATH_PREFIX = ${tomlString(artifacts.environment.ATTACHMENTS_PATH_PR
 
 export function buildEdgeRoutingArtifacts(config: AttachmentsConfig = getConfig()): EdgeRoutingArtifacts {
   const plan = buildDeploymentPlan(config);
-  if (plan.routing.missing.length > 0) throw new EdgeRoutingConfigError(plan.routing.missing);
+  // `plan.routing.missing` only asks whether the key is set, so it lets through
+  // every value that is set but cannot be an origin. Check the values too, or the
+  // guard below waves through the exact artifact this module exists to prevent.
+  const invalidOrigins = collectOriginProblems([
+    ["deployment.routing.attachmentsOrigin", plan.routing.attachments_origin],
+    ["deployment.routing.fallbackOrigin", plan.routing.fallback_origin],
+  ]);
+  if (plan.routing.missing.length > 0 || invalidOrigins.length > 0) {
+    throw new EdgeRoutingConfigError(plan.routing.missing, invalidOrigins);
+  }
 
   const hostname = plan.public_hostname!;
   const attachmentsOrigin = plan.routing.attachments_origin!;

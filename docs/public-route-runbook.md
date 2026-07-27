@@ -41,6 +41,11 @@ The generic `<hostname>/*` route can stay exactly as it is.
    `<hostname>/*` as well; leave it out and only the `/a/*` route is claimed,
    which is the smaller change and leaves existing shortlinks traffic untouched.
 
+   Both origins must be absolute `http(s)` origins with no path. `configure`
+   rejects anything else and stores nothing. This matters for the canonical
+   self-hosted deployment, where the origin is an ALB DNS name: paste it without
+   `https://` and the worker cannot resolve a request path against it.
+
 2. Render the edge artifacts:
 
    ```bash
@@ -48,9 +53,11 @@ The generic `<hostname>/*` route can stay exactly as it is.
    ```
 
    This writes `edge/wrangler.toml` and `edge/worker.js`. The command **exits 1
-   and writes nothing** if the attachments origin or public hostname is missing —
-   a placeholder artifact deploys cleanly and leaves the prefix dead, which is
-   how this outage stayed open.
+   and writes nothing** if the public hostname is missing, or if either origin is
+   missing or is not an absolute `http(s)` origin — such an artifact deploys
+   cleanly and leaves the prefix dead, which is how this outage stayed open. An
+   unusable origin is the worse failure: the worker takes `/a/*` from the
+   shortlinks route and then 1101s on every share link.
 
 3. Deploy the worker:
 

@@ -3,7 +3,7 @@ import { Command } from "commander";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { setConfigPath } from "../../core/config";
+import { setConfig, setConfigPath } from "../../core/config";
 import { domainCommand } from "./domain";
 
 const TEST_DIR = join(tmpdir(), `attachments-domain-test-${Date.now()}`);
@@ -165,6 +165,86 @@ describe("domain command", () => {
 
     expect(stdout).toBe("");
     expect(stderr).toContain("deployment.routing.attachmentsOrigin");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("configure rejects an origin that is not an absolute URL and stores nothing", async () => {
+    // The canonical self-hosted origin is an ALB DNS name; pasted without a
+    // scheme it used to be stored verbatim, render cleanly, and then throw
+    // ERR_INVALID_URL at the edge on every share link.
+    const { stderr } = await runDomainCommandCapturingStderr([
+      "configure",
+      "--hostname",
+      "has.na",
+      "--base-url",
+      "https://has.na",
+      "--path-prefix",
+      "/a",
+      "--provider",
+      "cloudflare",
+      "--attachments-origin",
+      "attachments-origin.has.na",
+    ]);
+
+    expect(stderr).toContain("--attachments-origin");
+    expect(process.exitCode).toBe(1);
+    expect(existsSync(TEST_CONFIG_PATH)).toBe(false);
+  });
+
+  it("configure rejects the literal <attachments-origin> placeholder", async () => {
+    const { stderr } = await runDomainCommandCapturingStderr([
+      "configure",
+      "--hostname",
+      "has.na",
+      "--attachments-origin",
+      "<attachments-origin>",
+    ]);
+
+    expect(stderr).toContain("<attachments-origin>");
+    expect(process.exitCode).toBe(1);
+    expect(existsSync(TEST_CONFIG_PATH)).toBe(false);
+  });
+
+  it("configure rejects an unusable fallback origin", async () => {
+    const { stderr } = await runDomainCommandCapturingStderr([
+      "configure",
+      "--hostname",
+      "has.na",
+      "--attachments-origin",
+      "https://attachments-origin.example.com",
+      "--fallback-origin",
+      "shortlinks-origin.example.com",
+    ]);
+
+    expect(stderr).toContain("--fallback-origin");
+    expect(process.exitCode).toBe(1);
+    expect(existsSync(TEST_CONFIG_PATH)).toBe(false);
+  });
+
+  it("render exits 1 when a stored origin is set but unroutable", async () => {
+    await configureHasNa(["--attachments-origin", "https://attachments-origin.example.com"]);
+    // A config written by an older CLI — or edited by hand — can still hold an
+    // origin that configure would reject today. render is the last gate before
+    // the artifact reaches Cloudflare, so it has to check the value too.
+    setConfig({ deployment: { routing: { attachmentsOrigin: "<attachments-origin>" } } });
+
+    const { stdout, stderr } = await runDomainCommandCapturingStderr(["render", "--format", "wrangler"]);
+
+    expect(stdout).toBe("");
+    expect(stderr).toContain("deployment.routing.attachmentsOrigin");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("render --out writes nothing when a stored origin is unroutable", async () => {
+    await configureHasNa(["--attachments-origin", "https://attachments-origin.example.com"]);
+    setConfig({ deployment: { routing: { attachmentsOrigin: "attachments-origin.has.na" } } });
+    const outDir = join(TEST_DIR, "edge-invalid");
+
+    const { stderr } = await runDomainCommandCapturingStderr(["render", "--out", outDir]);
+
+    expect(stderr).toContain("deployment.routing.attachmentsOrigin");
+    expect(existsSync(join(outDir, "wrangler.toml"))).toBe(false);
+    expect(existsSync(join(outDir, "worker.js"))).toBe(false);
     expect(process.exitCode).toBe(1);
   });
 
