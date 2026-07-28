@@ -3,29 +3,66 @@
   "name": "attachments",
   "class": "cli-with-store",
   "contractVersion": "v1",
-  "kitVersion": "0.4.1",
+  "kitVersion": "0.8.2",
   "description": "Open-source attachment transfer with local or private S3 storage, app-hosted share links, CLI, MCP, REST API (attachments-serve), and a generated SDK. Cloud service is PURE REMOTE (Amendment A1): reads/writes RDS Postgres and S3 directly.",
   "bins": ["attachments", "attachments-mcp", "attachments-serve"],
+  "hosting": ["user-hosted"],
+  "deploymentModes": ["local", "self_hosted"],
   "storage": {
     "mode": "cloud",
+    "engines": ["sqlite", "postgres"],
     "envPrefix": "HASNA_ATTACHMENTS_",
     "aliasEnvPrefix": "ATTACHMENTS_",
-    "databaseUrlSecretRef": "hasna/oss/attachments/database-url",
-    "sqlitePath": "~/.hasna/attachments/db.sqlite"
+    "pgTestGate": {
+      "envVar": "HASNA_ATTACHMENTS_TEST_DATABASE_URL",
+      "command": "HASNA_ATTACHMENTS_DATABASE_URL=\"${HASNA_ATTACHMENTS_TEST_DATABASE_URL:?point it at a throwaway Postgres; the live-PG gate must not pass without one}\" HASNA_ATTACHMENTS_STORAGE_MODE=cloud ATTACHMENTS_REQUIRE_POSTGRES=1 bun test src/db"
+    }
   },
-  "metadata": {
-    "surfaces": {
-      "cli": "attachments",
-      "mcp": "attachments-mcp",
-      "serve": "attachments-serve",
-      "sdk": "@hasna/attachments-sdk"
+  "serviceSurfaces": [
+    {
+      "name": "attachments-api",
+      "kind": "api",
+      "status": "supported",
+      "bin": "attachments-serve",
+      "authMode": "api-key",
+      "deploymentModes": ["self_hosted"],
+      "health": { "method": "GET", "path": "/health", "public": true },
+      "readiness": { "method": "GET", "path": "/ready", "public": true },
+      "version": { "method": "GET", "path": "/version", "public": true },
+      "apiBasePath": "/v1",
+      "openApiPath": "/openapi.json"
     },
-    "serve": {
-      "port": 8080,
-      "probes": ["/health", "/ready", "/version"],
-      "openapi": "/openapi.json",
-      "apiVersion": "v1",
-      "auth": "api-key (@hasna/contracts)"
+    {
+      "name": "attachments-sdk",
+      "kind": "sdk",
+      "status": "supported",
+      "authMode": "none",
+      "deploymentModes": ["local", "self_hosted"],
+      "exportSubpath": ".",
+      "generatedFrom": "/openapi.json"
+    },
+    {
+      "name": "attachments-mcp",
+      "kind": "mcp",
+      "status": "supported",
+      "mcpBin": "attachments-mcp",
+      "authMode": "local-only",
+      "deploymentModes": ["local", "self_hosted"]
+    },
+    {
+      "name": "attachments-cli",
+      "kind": "cli",
+      "status": "supported",
+      "bin": "attachments",
+      "authMode": "local-only",
+      "deploymentModes": ["local", "self_hosted"]
+    }
+  ],
+  "metadata": {
+    "release": {
+      "artifactScan": {
+        "script": "scan:artifact"
+      }
     }
   }
 }
