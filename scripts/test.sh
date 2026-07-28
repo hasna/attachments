@@ -37,7 +37,7 @@ if [[ "$1" == "--coverage" ]]; then
   COVERAGE_FLAG="--coverage"
 fi
 
-mapfile -t TEST_FILES < <(find src sdk -type f -name "*.test.ts" | sort)
+mapfile -t TEST_FILES < <(find src sdk scripts -type f -name "*.test.ts" | sort)
 
 for file in "${TEST_FILES[@]}"; do
   if bun test $COVERAGE_FLAG "$file" 2>&1; then
