@@ -186,7 +186,7 @@ mock.module("../core/s3.js", () => ({
 }));
 
 // Import server AFTER mocks are set up
-const { createServer, getToolsForProfile } = await import("./server.js");
+const { createServer, getMcpHelp, getToolsForProfile } = await import("./server.js");
 
 // Restore all mocks after this file's tests complete
 afterAll(() => {
@@ -252,6 +252,16 @@ describe("MCP Server — tools/list", () => {
     expect(names).toContain("save_session");
     expect(names).toContain("report_stats");
     expect(names).toContain("get_context");
+  });
+});
+
+describe("MCP Server — help", () => {
+  it("documents the default HTTP transport and port", () => {
+    const help = getMcpHelp();
+    expect(help).toContain("Streamable HTTP transport by default");
+    expect(help).toContain("--stdio");
+    expect(help).toContain("default: 8850");
+    expect(help).not.toContain("default: 8800");
   });
 });
 

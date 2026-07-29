@@ -173,7 +173,7 @@ const FULL_SCHEMAS: Record<string, object> = {
   },
   describe_tools: {
     name: "describe_tools",
-    description: "Return full verbose schemas for one or all tools. Set the ATTACHMENTS_PROFILE env var to control which tools are exposed in tools/list: 'minimal' (upload_attachment, download_attachment, get_link), 'standard' (default, adds list_attachments, delete_attachment, complete_task_with_files), or 'full' (all 12 tools).",
+    description: "Return verbose attachment-workflow schemas for one or all tools. ATTACHMENTS_PROFILE controls tools/list: minimal exposes 3 tools, standard (default) exposes 13, and full exposes all 22 tools.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1251,19 +1251,22 @@ function hasFlag(...flags: string[]): boolean {
   return process.argv.some((arg) => flags.includes(arg));
 }
 
-function printHelp(): void {
-  process.stdout.write(
-    `Usage: attachments-mcp [options]
+export function getMcpHelp(): string {
+  return `Usage: attachments-mcp [options]
 
-Attachments MCP server (stdio transport by default)
+Attachments MCP server (Streamable HTTP transport by default)
 
 Options:
-  --http           Serve MCP over Streamable HTTP (127.0.0.1)
-  --port <number>  HTTP port (default: 8800, env: MCP_HTTP_PORT)
+  --http           Explicitly use Streamable HTTP (127.0.0.1)
+  --stdio          Use stdio transport (env: MCP_STDIO=1)
+  --port <number>  HTTP port (default: 8850, env: MCP_HTTP_PORT)
   -h, --help       Show help
   -V, --version    Show version
-`,
-  );
+`;
+}
+
+function printHelp(): void {
+  process.stdout.write(getMcpHelp());
 }
 
 async function main(): Promise<void> {
