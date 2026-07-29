@@ -13,7 +13,7 @@ set -e
 # / _MODE and at the API URL + key pair (see core/cloud-v1.ts:resolveStorageClient),
 # so with those exported the CLI/MCP tests silently ran against the real service
 # and 8 test files failed for environmental reasons on a clean checkout.
-export HASNA_ATTACHMENTS_STORAGE_MODE=local
+export HASNA_ATTACHMENTS_STORAGE_MODE=sqlite
 export ATTACHMENTS_CLIENT_MODE=local
 unset HASNA_ATTACHMENTS_MODE
 unset HASNA_ATTACHMENTS_API_URL

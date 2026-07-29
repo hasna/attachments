@@ -26,7 +26,7 @@ services:
         condition: service_healthy
     environment:
       PORT: "8080"
-      HASNA_ATTACHMENTS_STORAGE_MODE: cloud
+      HASNA_ATTACHMENTS_STORAGE_MODE: postgres
       HASNA_ATTACHMENTS_DATABASE_URL: postgres://attachments:attachments@postgres:5432/attachments
       HASNA_ATTACHMENTS_API_SIGNING_KEY: local-dev-signing-secret-change-me
       ATTACHMENTS_PUBLIC_BASE_URL: http://localhost:8080

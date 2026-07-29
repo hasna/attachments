@@ -18,7 +18,7 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 }
 
-/** Strip a leading range operator so "^0.8.2" and "0.8.2" compare equal. */
+/** Strip a leading range operator so "^0.8.4" and "0.8.4" compare equal. */
 function rangeBaseVersion(range: string): string {
   return range.replace(/^[\^~=v]+/, "");
 }

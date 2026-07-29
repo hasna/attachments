@@ -37,15 +37,28 @@ describe("resolveAttachmentsV1", () => {
     expect(r.transport).toBe("local");
   });
 
-  test("returns cloud-http when URL+KEY set (mode implied self_hosted)", () => {
+  test("returns cloud-http when URL+KEY set (postgres implied)", () => {
     const r = resolveAttachmentsV1(cloudEnv);
     expect(r.transport).toBe("cloud-http");
     if (r.transport === "cloud-http") expect(r.store.baseUrl).toBe(`${BASE}/v1`);
   });
 
-  test("explicit STORAGE_MODE=local forces local even with URL+KEY", () => {
-    const r = resolveAttachmentsV1({ ...cloudEnv, HASNA_ATTACHMENTS_STORAGE_MODE: "local" } as NodeJS.ProcessEnv);
+  test("explicit STORAGE_MODE=sqlite forces local even with URL+KEY", () => {
+    const r = resolveAttachmentsV1({ ...cloudEnv, HASNA_ATTACHMENTS_STORAGE_MODE: "sqlite" } as NodeJS.ProcessEnv);
     expect(r.transport).toBe("local");
+  });
+
+  test("explicit STORAGE_MODE=postgres selects HTTP with URL+KEY", () => {
+    const r = resolveAttachmentsV1({ ...cloudEnv, HASNA_ATTACHMENTS_STORAGE_MODE: "postgres" } as NodeJS.ProcessEnv);
+    expect(r.transport).toBe("cloud-http");
+  });
+
+  test("rejects removed placement words instead of silently mapping them", () => {
+    for (const mode of ["local", "cloud", "remote", "self_hosted", "hybrid"]) {
+      expect(() =>
+        resolveAttachmentsV1({ ...cloudEnv, HASNA_ATTACHMENTS_STORAGE_MODE: mode } as NodeJS.ProcessEnv),
+      ).toThrow(/runtime-placement axis was removed/);
+    }
   });
 
   test("list routes GET /v1/attachments with bearer key and maps the envelope", async () => {

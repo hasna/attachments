@@ -8,7 +8,7 @@
         "@aws-sdk/client-s3": "^3.1007.0",
         "@aws-sdk/lib-storage": "3.1007.0",
         "@aws-sdk/s3-request-presigner": "^3.1007.0",
-        "@hasna/contracts": "^0.8.2",
+        "@hasna/contracts": "^0.8.4",
         "@hasna/events": "^0.1.6",
         "@modelcontextprotocol/sdk": "^1.27.1",
         "@types/mime-types": "^3.0.1",
@@ -67,7 +67,7 @@
 
     "@aws/lambda-invoke-store": ["@aws/lambda-invoke-store@0.3.0", "", {}, "sha512-sl4Bm6yiMNYrZKkqqDFWN0UfnWhlS8ivKxrYl+6t0gCLrqr8y3B2IqZZbFRkfaVVp7C/baApyh71P+LeE1A2sQ=="],
 
-    "@hasna/contracts": ["@hasna/contracts@0.8.2", "", { "dependencies": { "commander": "^13.1.0", "zod": "^3.25.76" }, "bin": { "contracts": "dist/cli/index.js", "contracts-cli": "dist/cli/contracts-cli.js" } }, "sha512-oi+Q1QyxARpTRmE2za1rCzETi7DqB0EeimI3hIh2iMKV2Sh0D2Mi6KkDqNLnYsRZKjxEH5VapFoprb1Vi+R9+Q=="],
+    "@hasna/contracts": ["@hasna/contracts@0.8.4", "", { "dependencies": { "commander": "^13.1.0", "zod": "^3.25.76" }, "bin": { "contracts": "dist/cli/index.js", "contracts-cli": "dist/cli/contracts-cli.js" } }, "sha512-a/flLzdu8cbCUrScNQT3VBMl2HgwbjUYWrmwQ45x19X6F8FPiOf2gbb43MT0vlKTLUPEonh5jSoEPdjp44nAGw=="],
 
     "@hasna/events": ["@hasna/events@0.1.13", "", { "dependencies": { "commander": "13.1.0" }, "bin": { "events": "dist/cli/index.js", "hasna-events": "dist/cli/index.js" } }, "sha512-DzmEiDrBoibxzCBeZPEmdpWsNh+5SXTSnilqCeHxi0Do3a9mQJ43ZSxq/Ipzw/xNa2rShAx48KzduCZrGDHi9g=="],
 

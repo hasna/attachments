@@ -25,7 +25,7 @@ FROM oven/bun:1-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=8080 \
-    HASNA_ATTACHMENTS_STORAGE_MODE=cloud
+    HASNA_ATTACHMENTS_STORAGE_MODE=postgres
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist

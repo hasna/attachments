@@ -25,7 +25,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { createPgPool, createCloudPoolFromEnv } from "../generated/storage-kit/pool.js";
+import { createPgPool, createServerPoolFromEnv } from "../generated/storage-kit/pool.js";
 import { createQueryClient, type PoolQueryClient } from "../generated/storage-kit/query.js";
 
 const APP_SLUG = "attachments";
@@ -93,7 +93,7 @@ export interface LiveSchema {
 /**
  * Create an isolated schema and a kit client scoped to it.
  *
- * The scoped client is built through `createCloudPoolFromEnv`, the same
+ * The scoped client is built through `createServerPoolFromEnv`, the same
  * entrypoint `attachments-serve` uses, so mode resolution, TLS handling and the
  * pool wiring are all exercised rather than bypassed.
  */
@@ -116,10 +116,10 @@ export async function createLiveSchema(label: string, baseUrl?: string): Promise
   let client: PoolQueryClient | null = null;
   try {
     await admin.execute(`CREATE SCHEMA "${schema}"`);
-    client = createCloudPoolFromEnv(APP_SLUG, {
+    client = createServerPoolFromEnv(APP_SLUG, {
       env: {
         ...process.env,
-        HASNA_ATTACHMENTS_STORAGE_MODE: "cloud",
+        HASNA_ATTACHMENTS_STORAGE_MODE: "postgres",
         HASNA_ATTACHMENTS_DATABASE_URL: withSearchPath(connectionString, schema),
       },
       max: 4,

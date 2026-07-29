@@ -101,7 +101,7 @@ attachments service at its repo-owned AWS Postgres/RDS database.
 
 ```bash
 export HASNA_ATTACHMENTS_DATABASE_URL=postgres://...
-export HASNA_ATTACHMENTS_STORAGE_MODE=cloud # local | cloud (AWS)
+export HASNA_ATTACHMENTS_STORAGE_MODE=postgres # sqlite | postgres
 
 attachments storage status
 attachments storage push

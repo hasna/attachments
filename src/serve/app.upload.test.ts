@@ -61,7 +61,7 @@ function makeApp() {
       defaults: { linkType: "presigned", expiry: "7d" },
     }),
     version: "test",
-    mode: "cloud",
+    mode: "postgres",
     signingSecret: SIGNING,
   });
 }

@@ -12,7 +12,7 @@
  *   attachments-serve --no-migrate  Serve without running migrations on boot.
  */
 
-import { createCloudPoolFromEnv } from "../generated/storage-kit/pool.js";
+import { createServerPoolFromEnv } from "../generated/storage-kit/pool.js";
 import { MigrationLedger } from "../generated/storage-kit/migrations.js";
 import type { TypedQueryClient } from "../generated/storage-kit/query.js";
 import { ApiKeyStore } from "@hasna/contracts/auth";
@@ -86,7 +86,7 @@ async function main(): Promise<void> {
   const skipMigrate = args.includes("--no-migrate") || process.env.ATTACHMENTS_SKIP_MIGRATE === "1";
 
   const modeResolution = resolveStorageMode(APP_SLUG);
-  const { client, connectionSource } = createCloudPoolFromEnv(APP_SLUG, {
+  const { client, connectionSource } = createServerPoolFromEnv(APP_SLUG, {
     applicationName: "attachments-serve",
   });
 

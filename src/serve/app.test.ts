@@ -45,7 +45,7 @@ function makeApp() {
     store: new PgAttachmentsStore(client),
     config: normalizeConfig({ storage: { backend: "local" } }),
     version: "test",
-    mode: "cloud",
+    mode: "postgres",
     signingSecret: SIGNING,
   });
 }
@@ -57,7 +57,7 @@ describe("attachments serve app", () => {
     const body = await res.json();
     expect(body.status).toBe("ok");
     expect(body.version).toBe("test");
-    expect(body.mode).toBe("cloud");
+    expect(body.mode).toBe("postgres");
   });
 
   test("GET /health probes the database", async () => {
