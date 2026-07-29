@@ -43,8 +43,10 @@ back to local object storage otherwise.
 ## Public Domains
 
 Domain support is declarative and does not depend on `@hasna/domains` at
-runtime. Configure a public base URL and export a DNS plan for manual,
-Cloudflare, OpenDomains, or other automation.
+runtime. `domain configure` only stores local metadata; it does not deploy DNS,
+Cloudflare Workers, or provider routes. Configure a public base URL, export a
+plan for manual, Cloudflare, OpenDomains, or other automation, deploy that plan,
+then use `domain verify` to check the public route.
 
 ```bash
 attachments domain configure \

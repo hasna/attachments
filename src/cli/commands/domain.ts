@@ -66,7 +66,12 @@ function configureCommand(): Command {
         },
       });
 
-      process.stdout.write(`Configured ${baseUrl}${pathPrefix} as the attachment public route.\n`);
+      const planFormat = provider === "cloudflare" || provider === "opendomains" ? provider : "json";
+      process.stdout.write(
+        `Saved public-domain metadata for ${baseUrl}${pathPrefix}.\n` +
+          "No DNS records, Cloudflare Workers, or provider routes were deployed.\n" +
+          `Next: run \`attachments domain plan --format ${planFormat}\`, deploy the printed plan, then run \`attachments domain verify\`.\n`
+      );
     });
 }
 
