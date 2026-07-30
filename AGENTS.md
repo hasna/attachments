@@ -1,223 +1,92 @@
-# AGENTS.md — open-attachments
+# AGENTS.md — `@hasna/attachments`
 
-AI agent reference guide for `@hasna/attachments` and its MCP server.
+Agent-facing quick reference. Use the maintained references for complete
+behavior:
 
----
+- [CLI](docs/cli.md)
+- [MCP](docs/mcp.md)
+- [HTTP APIs](docs/api.md)
+- [Configuration and deployment](docs/configuration.md)
 
-## MCP Setup
-
-Install all tools into Claude Code (user scope):
+## Setup
 
 ```bash
+npm install -g @hasna/attachments
 attachments mcp --claude
-```
-
-For Codex or Gemini:
-
-```bash
 attachments mcp --codex
 attachments mcp --gemini
-attachments mcp --all        # all three agents at once
+attachments mcp --all
 attachments mcp --uninstall --all
 ```
 
----
+`attachments-mcp` defaults to Streamable HTTP at
+`http://127.0.0.1:8850/mcp`. Use `--stdio` or `MCP_STDIO=1` for stdio clients.
 
-## Token Optimization — ATTACHMENTS_PROFILE
+## MCP Profiles
 
-Set `ATTACHMENTS_PROFILE` before starting the MCP server to control how many tools appear in `tools/list`. Lean stubs are always served; use `describe_tools` to get full schemas on demand.
+`tools/list` returns lean schemas. Set `ATTACHMENTS_PROFILE` before startup.
 
-| Profile | Tools exposed | Best for |
-|---------|--------------|----------|
-| `minimal` | 3 | Agents that only upload/download |
-| `standard` | 7 (default) | General-purpose agent workflows |
-| `full` | 14 | Power users, auditing, batch ops |
+| Profile | Count | Scope |
+|---------|------:|-------|
+| `minimal` | 3 | Upload, download, link retrieval |
+| `standard` | 13 | Default transfer, task, report, context, and agent tools |
+| `full` | 22 | Every MCP tool |
 
-```bash
-ATTACHMENTS_PROFILE=minimal attachments-mcp
-ATTACHMENTS_PROFILE=full    attachments-mcp
+Use `describe_tools` for verbose attachment-workflow schemas and `search_tools`
+to find tools by name. The full list is in [docs/mcp.md](docs/mcp.md).
+
+## Standard Workflow
+
+```text
+1. Upload evidence with upload_attachment or attachments upload.
+2. Tag it with task:ID, session:ID, project:NAME, or agent:NAME.
+3. Use link_to_task, or complete_task_with_files to upload and complete.
+4. Use save_session when a transcript must be preserved.
+5. Run check_attachment_health or attachments health-check periodically.
 ```
 
----
+Todos integrations default to `http://localhost:3000`; sessions defaults to
+`http://localhost:3458`. Supply `todos_url` or `sessions_url` to override them.
 
-## Environment Variables
+## Storage
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ATTACHMENTS_PROFILE` | `standard` | Tool set: `minimal`, `standard`, or `full` |
-| `ATTACHMENTS_TRACK_COSTS` | _(unset)_ | Set to `1` to log economy/cost data |
-| `ATTACHMENTS_MAX_SIZE` | `10737418240` (10 GB) | Max upload size in bytes; returns 413 above this |
-| `ATTACHMENTS_ECONOMY_URL` | `http://localhost:3460` | Economy service base URL |
-| `HASNA_ATTACHMENTS_DB_PATH` | `~/.hasna/attachments/db.sqlite` | Override SQLite metadata DB path |
+Fresh local installs use SQLite and local objects without S3 configuration.
+With an S3 bucket and region, `auto` storage selects S3. The default link
+preference is `presigned`, with automatic server-link fallback for local
+objects, protected links, download limits, email gates, encryption, long
+expiry, and non-expiring links.
 
----
+The `attachments-serve` binary is pure remote: it reads/writes Postgres and
+object storage directly. There are no attachment `storage push`, `pull`, or
+`sync` commands and no MCP storage-sync tools.
 
-## REST API
-
-Default port: **3459**
-Default bind: `localhost`
-Default public route: `/a/<share-token>`
+## Local Service
 
 ```bash
 attachments serve --port 3459
 ```
 
-For a shared redirect domain, use a path route such as `/a/*` for attachments
-before the generic shortlinks route. Export a provider-neutral or Cloudflare plan
-without credentials:
+- Public health: `GET /api/health`
+- Authenticated-when-configured API: `/api/*`
+- Public shares: `/a/<token>`
+- Context: `GET /api/context`
+- Report: `GET /api/report`
+
+Set `ATTACHMENTS_API_TOKEN` or `HASNA_ATTACHMENTS_API_TOKEN` to require bearer
+or `X-API-Key` authentication for local `/api/*` routes other than health.
+
+## Useful Commands
 
 ```bash
-attachments domain plan --format json
-attachments domain plan --format cloudflare
-attachments domain verify --format json
+attachments status
+attachments whoami
+attachments doctor
+attachments list --tag task:TASK-042
+attachments complete-task TASK-042 --file report.pdf --notes "Verified"
+attachments snapshot-session SESSION-ID --tag session:SESSION-ID
+attachments health-check --fix
+attachments report --days 7 --format markdown
 ```
 
----
-
-## All 14 MCP Tools
-
-Quick-reference table. Use `describe_tools` (with `tool_name`) to get the full JSON Schema for any tool.
-
-| Tool | Profile | Required params | Description |
-|------|---------|-----------------|-------------|
-| `upload_attachment` | minimal+ | `path` OR `url` | Upload a local file or URL → shareable link |
-| `download_attachment` | minimal+ | `id_or_url` | Download attachment to local disk |
-| `get_link` | minimal+ | `id` | Get (or regenerate) shareable link |
-| `list_attachments` | standard+ | _(none)_ | List attachments; filter by `tag` |
-| `delete_attachment` | standard+ | `id` | Delete attachment record from DB |
-| `complete_task_with_files` | standard+ | `task_id`, `paths` | Upload files then complete a todos task with them as evidence |
-| `save_session` | standard+ | `session_id` | Snapshot a session transcript → attachment link |
-| `upload_attachments` | full | `paths` | Batch upload multiple files |
-| `configure_s3` | full | `bucket`, `region`, `access_key`, `secret_key` | Save S3 credentials to config |
-| `presign_upload` | full | `filename` | Generate a presigned PUT URL for direct client-to-S3 upload |
-| `link_to_task` | full | `attachment_id`, `task_id` | Link an attachment to a todos task metadata |
-| `check_attachment_health` | full | _(none)_ | Audit all links (expired / dead / healthy); `fix:true` to regenerate |
-| `describe_tools` | standard+ | _(none)_ | Return full verbose JSON Schema for one or all tools |
-| `search_tools` | standard+ | `query` | Search tool names by keyword |
-
-### Optional params common to several tools
-
-- `expiry` — link lifetime: `"30m"`, `"24h"`, `"7d"`, `"never"`
-- `tag` — string tag attached to the attachment record
-- `todos_url` — todos REST base URL (default `http://localhost:3000`)
-- `sessions_url` — sessions REST base URL (default `http://localhost:3458`)
-
----
-
-## Tag Conventions
-
-Tags are free-form strings. Recommended conventions:
-
-| Tag format | Example | Purpose |
-|------------|---------|---------|
-| `task:ID` | `task:TASK-042` | Link evidence to a task |
-| `session:ID` | `session:abc123` | Group attachments from a session |
-| `project:NAME` | `project:alumia` | Namespace by project |
-| `agent:NAME` | `agent:maximus` | Track which agent uploaded |
-
-CLI: `attachments upload file.png --tag task:TASK-001`
-MCP: pass `tag: "task:TASK-001"` to any upload tool
-REST: `?tag=task:TASK-001` on `GET /api/attachments`
-
----
-
-## Standard Agent Workflow
-
-### Session start
-
-```
-1. Run health check — verify S3 + DB are reachable
-   attachments health-check
-
-2. Recall any relevant attachments for this session
-   → list_attachments (tag: "session:<your-session-id>")
-```
-
-### Upload evidence
-
-```
-3. Upload a file or screenshot
-   → upload_attachment { path: "/tmp/screenshot.png", tag: "task:TASK-007" }
-
-4. Link it to the task (optional, or use complete_task_with_files)
-   → link_to_task { attachment_id: "att_xxx", task_id: "TASK-007" }
-```
-
-### Complete a task with evidence
-
-```
-5. Upload files and complete in one step
-   → complete_task_with_files {
-       task_id: "TASK-007",
-       paths: ["/tmp/report.pdf", "/tmp/screenshot.png"],
-       notes: "Implementation verified, tests passing"
-     }
-```
-
-### Snapshot session
-
-```
-6. Save session transcript as an attachment
-   → save_session { session_id: "<id>", expiry: "7d", tag: "session:<id>" }
-```
-
----
-
-## Integration Commands (CLI)
-
-| Command | Description |
-|---------|-------------|
-| `attachments health-check` | Check S3 + DB connectivity and link health |
-| `attachments watch` | Watch for todo tasks with attachment links and react |
-| `attachments link-task <att-id> <task-id>` | Link an attachment to a todos task |
-| `attachments complete-task <task-id> <files...>` | Upload files and complete task with evidence |
-| `attachments snapshot-session <session-id>` | Snapshot a session transcript → S3 |
-| `attachments task-journal` | Append task activity to a running journal attachment |
-| `attachments status` | Show DB stats, S3 config, and last few attachments |
-| `attachments clean` | Remove expired DB records |
-| `attachments whoami` | Show configured S3 identity and bucket |
-| `attachments presign-upload <filename>` | Generate a presigned PUT URL |
-
----
-
-## Configuration
-
-Stored at `~/.hasna/attachments/config.json`. Set via CLI or MCP:
-
-```bash
-attachments config set --bucket my-bucket --region us-east-1
-attachments config show
-attachments config test      # verify S3 connectivity
-```
-
-SQLite database: `~/.hasna/attachments/db.sqlite`
-
----
-
-## Context Injection (System Prompt)
-
-Set `ATTACHMENTS_URL=http://localhost:3459` in your agent to enable automatic context injection.
-
-```
-GET http://localhost:3459/api/context
-```
-
-Returns a compact text summary for system prompts:
-```
-Attachments: 42 total (39 active, 3 expired)
-⚠ Expiring in 24h: 2 (report.pdf, data.csv)
-Recent: report.pdf (att_abc), output.json (att_def)
-```
-
-Or use the MCP tool `get_context` (standard profile) for the same result.
-
----
-
-## Health & Reporting
-
-```bash
-GET http://localhost:3459/api/health    # status + counts
-GET http://localhost:3459/api/report    # detailed activity
-GET http://localhost:3459/api/context   # system prompt text
-attachments report [--days 7]           # CLI equivalent
-```
+Configuration lives at `~/.hasna/attachments/config.json`; SQLite defaults to
+`~/.hasna/attachments/db.sqlite` and honors `HASNA_ATTACHMENTS_DB_PATH`.

@@ -1,6 +1,8 @@
 # @hasna/attachments
 
-Open-source attachment transfer for agents and teams — local or private S3 storage, app-hosted share links, CLI + MCP + REST API.
+Open-source attachment transfer for agents and teams with local or private S3
+object storage, share links, a CLI, an MCP server, and local and hosted REST
+APIs.
 
 [![npm](https://img.shields.io/npm/v/@hasna/attachments)](https://www.npmjs.com/package/@hasna/attachments)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
@@ -11,115 +13,195 @@ Open-source attachment transfer for agents and teams — local or private S3 sto
 npm install -g @hasna/attachments
 ```
 
-## CLI Usage
+The package installs three binaries:
+
+- `attachments` — local-first CLI and REST server
+- `attachments-mcp` — MCP server over Streamable HTTP or stdio
+- `attachments-serve` — self-hosted Postgres + S3 service
+
+## Quick Start
+
+Fresh installs need no S3 configuration. Files are stored under
+`~/.hasna/attachments/objects`, metadata is stored in SQLite, and public links
+use the local server.
 
 ```bash
-attachments --help
 attachments upload report.pdf
-attachments upload report.pdf --expiry 24h --password "$ATTACHMENT_PASSWORD"
-attachments upload archive.zip --encrypt --password "$ATTACHMENT_PASSWORD" --max-downloads 1
-attachments serve --host 0.0.0.0 --port 3459
+attachments list
+attachments serve
 ```
 
-Fresh installs work without S3. Objects are stored under
-`~/.hasna/attachments/objects`, metadata is stored in local SQLite, and share
-links are app-hosted URLs such as `http://localhost:3459/a/<token>`.
+The server listens on `http://localhost:3459` by default. Open the URL returned
+by `attachments upload`, or download by attachment ID:
 
-For hosted deployments, keep the bucket private and let the app serve public
-download pages and byte streams from `/a/<token>`. Direct presigned S3 links
-remain available for explicit admin workflows, but server links are the default.
+```bash
+attachments download att_xxx --output ./downloads/
+```
 
-## Storage
+## CLI
+
+Run `attachments <command> --help` for complete options.
+
+| Area | Commands |
+|------|----------|
+| Transfer | `upload`, `download`, `list`, `delete`, `remove`, `link` |
+| Direct S3 upload | `presign-upload`, `presign-complete` |
+| Configuration | `config show`, `config set`, `config test`, `domain` |
+| Service and diagnostics | `serve`, `status`, `whoami`, `doctor`, `health-check`, `clean`, `report` |
+| Agent integrations | `mcp`, `init`, `heartbeat`, `focus`, `link-task`, `complete-task`, `resolve-evidence`, `snapshot-session`, `task-journal`, `watch` |
+
+Common upload controls include expiry, tags, passwords, encrypted storage,
+download limits, email gates, JSON output, stdin input, and internal-network
+links:
+
+```bash
+attachments upload report.pdf --expiry 24h --tag task:TASK-042
+attachments upload archive.zip --password "$ATTACHMENT_PASSWORD" --encrypt --max-downloads 1
+printf 'hello\n' | attachments upload --stdin --filename greeting.txt --format json
+```
+
+## Storage and Links
+
+Storage defaults to `auto`: it uses S3 when a bucket and region are configured,
+and local object storage otherwise.
 
 ```bash
 attachments config set --storage-backend local
 attachments config set --storage-backend s3 --bucket my-bucket --region us-east-1
-attachments config set --max-size 10737418240 # 10 GB
+attachments config set --max-size 10737418240 # 10 GiB
 ```
 
-`--storage-backend auto` uses S3 when S3 credentials are configured and falls
-back to local object storage otherwise.
+The configured default link type is `presigned`. A request automatically uses
+an app-hosted server link when a presigned S3 URL cannot represent it, including
+local storage, expiry beyond seven days, non-expiring links, passwords,
+encryption, download limits, and email gates. The S3 bucket can remain private
+in both modes.
+
+Use `--link-type presigned|server` on uploads, or change the default:
+
+```bash
+attachments config set --link-type server --expiry 7d
+```
+
+## Local REST API
+
+`attachments serve` starts the local SQLite-backed API on port `3459`.
+`GET /api/health` is public. Other `/api/*` routes require a bearer token only
+when `ATTACHMENTS_API_TOKEN` or `HASNA_ATTACHMENTS_API_TOKEN` is set.
+
+| Surface | Path |
+|---------|------|
+| Attachments API | `/api/attachments` |
+| Health, context, report | `/api/health`, `/api/context`, `/api/report` |
+| Public share page | `/a/<token>` |
+| Legacy public download | `/d/<attachment-id>` |
+
+The attachment API supports JSON/base64, raw-body, multipart form, multipart
+S3 upload, presigned upload completion, listing, metadata, deletion, downloads,
+and link regeneration.
+
+## Self-Hosted Service
+
+`attachments-serve` is the hosted API. It reads and writes Postgres and object
+storage directly; there is no local/cloud sync engine or cache mode.
+
+```bash
+export HASNA_ATTACHMENTS_STORAGE_MODE=cloud
+export HASNA_ATTACHMENTS_DATABASE_URL=postgres://...
+export HASNA_ATTACHMENTS_API_SIGNING_KEY=replace-me
+export ATTACHMENTS_S3_BUCKET=my-bucket
+export ATTACHMENTS_PUBLIC_BASE_URL=https://files.example.com
+
+attachments-serve
+```
+
+It runs migrations before serving unless `--no-migrate` or
+`ATTACHMENTS_SKIP_MIGRATE=1` is set. Use `attachments-serve migrate` for a
+one-shot migration. The hosted surface exposes public `/health`, `/ready`,
+`/version`, and `/openapi.json` endpoints plus the authenticated `/v1` API.
 
 ## Public Domains
 
-Domain support is declarative and does not depend on `@hasna/domains` at
-runtime. Configure a public base URL and export a DNS plan for manual,
-Cloudflare, OpenDomains, or other automation.
+Domain support is declarative and does not mutate DNS. Configure public routing,
+export a credential-free plan, then probe the deployed attachment prefix:
 
 ```bash
 attachments domain configure \
   --hostname files.example.com \
-  --base-url https://files.example.com \
-  --path-prefix /a \
-  --provider cloudflare \
   --attachments-origin https://attachments-origin.example.com \
   --fallback-origin https://shortlinks-origin.example.com \
-  --zone example.com \
-  --record CNAME \
-  --name files \
-  --target attachments.example.net \
-  --proxied
+  --provider cloudflare
 
-attachments domain plan --format json
-attachments domain plan --format opendomains
 attachments domain plan --format cloudflare
 attachments domain verify --format json
 ```
 
-The generated plan contains no credentials and does not mutate DNS. For shared
-domains, route the attachment prefix before any generic redirect/shortlink
-route; for example, `files.example.com/a/*` should target the attachments app
-and `files.example.com/*` can remain pointed at an existing shortlink service.
-`attachments domain verify` probes the configured `.../a/__attachments_probe__`
-URL and fails if the prefix is still handled by a shortlink route.
+On a shared hostname, route `/a/*` to attachments before a generic `/*`
+shortlink or redirect route.
 
 ## MCP Server
 
-```bash
-attachments-mcp
-```
-
-## HTTP mode
-
-Run a long-lived Streamable HTTP MCP server on `127.0.0.1` (default port **8800**):
+`attachments-mcp` defaults to Streamable HTTP on `127.0.0.1:8850`. Use `--stdio`
+for clients that launch one MCP process per session.
 
 ```bash
-attachments-mcp --http
-# or: MCP_HTTP=1 attachments-mcp
-# port override: --port 8800  or  MCP_HTTP_PORT=8800
+attachments-mcp                       # http://127.0.0.1:8850/mcp
+attachments-mcp --port 9000           # HTTP port override
+attachments-mcp --stdio               # stdio transport
+MCP_STDIO=1 attachments-mcp           # stdio transport via environment
 ```
 
-- Health: `GET http://127.0.0.1:8800/health` → `{"status":"ok","name":"attachments"}`
-- MCP: `http://127.0.0.1:8800/mcp`
+- Health: `GET http://127.0.0.1:8850/health`
+- MCP: `http://127.0.0.1:8850/mcp`
+- Port environment override: `MCP_HTTP_PORT`
 
-Stdio remains the default when no `--http` / `MCP_HTTP=1` is set.
+`ATTACHMENTS_PROFILE` controls the lean schemas returned by `tools/list`:
 
-## Storage Sync
+| Profile | Tools | Intended use |
+|---------|------:|--------------|
+| `minimal` | 3 | Upload, download, and link retrieval |
+| `standard` | 13 | Default transfer, reporting, task, context, and agent workflow |
+| `full` | 22 | Every tool, including S3 setup, presigned upload, health, search, and feedback |
 
-This package supports local SQLite by default. For cloud storage, point the
-attachments service at its repo-owned AWS Postgres/RDS database.
+Install MCP configuration for supported clients with:
 
 ```bash
-export HASNA_ATTACHMENTS_DATABASE_URL=postgres://...
-export HASNA_ATTACHMENTS_STORAGE_MODE=cloud # local | cloud (AWS)
-
-attachments storage status
-attachments storage push
-attachments storage pull
-attachments storage sync
+attachments mcp --claude
+attachments mcp --codex
+attachments mcp --gemini
+attachments mcp --all
+attachments mcp --uninstall --all
 ```
 
-MCP exposes the same flow through `storage_status`, `storage_push`,
-`storage_pull`, and `storage_sync`.
+## Configuration and Data
 
-## Data Directory
+Configuration is stored in `~/.hasna/attachments/config.json`; secrets are
+masked by `attachments config show`. SQLite metadata defaults to
+`~/.hasna/attachments/db.sqlite` and can be overridden with
+`HASNA_ATTACHMENTS_DB_PATH`.
 
-Data is stored in `~/.hasna/attachments/`. Local object storage defaults to
-`~/.hasna/attachments/objects`. On first run, missing files from legacy
-`~/.open-attachments/` and `~/.attachments/` directories are copied into the
-canonical directory without overwriting existing canonical files. Override the
-SQLite metadata path with `HASNA_ATTACHMENTS_DB_PATH=/path/to/db.sqlite`.
+On first use, missing files from legacy `~/.open-attachments/` and
+`~/.attachments/` directories are copied into the canonical directory without
+overwriting existing files.
+
+## Development
+
+Requires Bun.
+
+```bash
+bun install --frozen-lockfile
+bun run typecheck
+bun run test
+bun run build
+```
+
+## Documentation
+
+- [CLI reference](docs/cli.md)
+- [MCP reference](docs/mcp.md)
+- [HTTP API reference](docs/api.md)
+- [Configuration and deployment](docs/configuration.md)
 
 ## License
 
-Apache-2.0 -- see [LICENSE](LICENSE)
+Apache-2.0 — see [LICENSE](LICENSE).
