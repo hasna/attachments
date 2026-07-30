@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { resolveStore, type Store } from "../../core/store";
+import { withTodosAuth } from "../../core/todos";
 
 export interface CompleteTaskOptions {
   file?: string[];
@@ -75,7 +76,7 @@ export async function completeTaskWithFiles(
 
   // 2. Read the current task so we can merge (not clobber) its metadata and honor
   //    optimistic concurrency via its version.
-  const getResponse = await fetchFn(taskUrl);
+  const getResponse = await fetchFn(taskUrl, withTodosAuth());
   if (!getResponse.ok) {
     if (getResponse.status === 404) {
       throw new Error(`Task not found: ${taskId}`);
@@ -114,11 +115,11 @@ export async function completeTaskWithFiles(
   if (typeof task.version === "number") {
     patchBody.version = task.version;
   }
-  const patchResponse = await fetchFn(taskUrl, {
+  const patchResponse = await fetchFn(taskUrl, withTodosAuth({
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patchBody),
-  });
+  }));
   if (!patchResponse.ok) {
     const responseBody = await patchResponse.text().catch(() => "");
     throw new Error(
@@ -127,11 +128,11 @@ export async function completeTaskWithFiles(
   }
 
   // 4. Mark the task complete.
-  const completeResponse = await fetchFn(`${taskUrl}/complete`, {
+  const completeResponse = await fetchFn(`${taskUrl}/complete`, withTodosAuth({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
-  });
+  }));
   if (!completeResponse.ok) {
     if (completeResponse.status === 404) {
       throw new Error(`Task not found: ${taskId}`);

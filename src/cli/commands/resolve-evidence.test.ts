@@ -130,9 +130,13 @@ describe("resolveEvidence", () => {
       { id: "att_abc123", link: "https://stale-link.example.com", filename: "report.pdf", size: 1258291 },
     ]);
     const fakeFetch = makeFetch(200, task);
+    process.env.TODOS_API_KEY = "remote-key";
 
     const result = await resolveEvidence("TASK-001", { todosUrl: "http://localhost:3000" }, fakeFetch);
+    delete process.env.TODOS_API_KEY;
+    const [, init] = (fakeFetch as ReturnType<typeof mock>).mock.calls[0] as [string, RequestInit];
 
+    expect(new Headers(init.headers).get("x-api-key")).toBe("remote-key");
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("att_abc123");
     // Should use the DB link (fresh), not the stale one stored in the task

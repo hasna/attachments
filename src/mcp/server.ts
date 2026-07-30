@@ -11,6 +11,7 @@ import { nanoid } from "nanoid";
 import { computeReport } from "../cli/commands/report.js";
 import { runHealthCheck } from "../cli/commands/health-check.js";
 import { completeTaskWithFiles } from "../cli/commands/complete-task.js";
+import { linkAttachmentToTask } from "../cli/commands/link-task.js";
 import { resolveStore, LocalStore } from "../core/store.js";
 import { getConfig, parseExpiryStrict, setConfig } from "../core/config.js";
 
@@ -849,45 +850,7 @@ async function handleLinkToTask(args: {
   todos_url?: string;
 }) {
   const todosUrl = args.todos_url ?? "http://localhost:3000";
-  const store = resolveStore();
-  let att;
-  try {
-    att = await store.get(args.attachment_id);
-  } finally {
-    store.close();
-  }
-
-  if (!att) {
-    throw new Error(`Attachment not found: ${args.attachment_id}`);
-  }
-
-  const url = `${todosUrl}/api/tasks/${args.task_id}`;
-  const response = await fetch(url, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      metadata: {
-        _attachments: [
-          {
-            id: att.id,
-            link: att.link,
-            filename: att.filename,
-            size: att.size,
-          },
-        ],
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    if (response.status === 404) {
-      throw new Error(`Task not found: ${args.task_id}`);
-    }
-    const body = await response.text().catch(() => "");
-    throw new Error(
-      `Failed to update task ${args.task_id}: HTTP ${response.status}${body ? ` — ${body}` : ""}`
-    );
-  }
+  await linkAttachmentToTask(args.attachment_id, args.task_id, todosUrl);
 
   return `Linked ${args.attachment_id} → task ${args.task_id}`;
 }

@@ -339,6 +339,7 @@ describe("handleTaskEvent", () => {
 
 describe("connectAndWatch reconnect logic", () => {
   it("reconnects after stream error with backoff", async () => {
+    process.env.TODOS_API_KEY = "remote-key";
     let callCount = 0;
     const controller = new AbortController();
     const sleepCalls: number[] = [];
@@ -382,7 +383,10 @@ describe("connectAndWatch reconnect logic", () => {
       stdoutSpy.mockRestore();
     }
 
+    delete process.env.TODOS_API_KEY;
     expect(callCount).toBe(2);
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("x-api-key")).toBe("remote-key");
     expect(sleepCalls).toHaveLength(1);
     expect(sleepCalls[0]).toBe(5000);
     const errOutput = err.join("");
