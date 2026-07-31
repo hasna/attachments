@@ -42,6 +42,23 @@ async function runDomainCommand(args: string[]): Promise<string> {
 }
 
 describe("domain command", () => {
+  it("makes clear that configure only saves metadata and gives deployment next steps", async () => {
+    const output = await runDomainCommand([
+      "configure",
+      "--hostname",
+      "files.example.com",
+      "--provider",
+      "cloudflare",
+      "--attachments-origin",
+      "https://attachments-origin.example.com",
+    ]);
+
+    expect(output).toContain("Saved public-domain metadata for https://files.example.com/a.");
+    expect(output).toContain("No DNS records, Cloudflare Workers, or provider routes were deployed.");
+    expect(output).toContain("attachments domain plan --format cloudflare");
+    expect(output).toContain("attachments domain verify");
+  });
+
   it("stores path-routing origins and prints a Cloudflare route plan", async () => {
     await runDomainCommand([
       "configure",

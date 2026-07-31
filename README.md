@@ -122,8 +122,11 @@ one-shot migration. The hosted surface exposes public `/health`, `/ready`,
 
 ## Public Domains
 
-Domain support is declarative and does not mutate DNS. Configure public routing,
-export a credential-free plan, then probe the deployed attachment prefix:
+Domain support is declarative and does not depend on `@hasna/domains` at
+runtime. `domain configure` only stores local metadata; it does not deploy DNS,
+Cloudflare Workers, or provider routes. Configure public routing, export a
+credential-free plan, deploy it with your DNS/CDN provider, then probe the
+deployed attachment prefix:
 
 ```bash
 attachments domain configure \
