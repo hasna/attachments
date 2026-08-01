@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { resolveStore, type Store } from "../../core/store";
+import { withTodosAuth } from "../../core/todos";
 import { checkAttachment } from "./health-check";
 
 // ---------------------------------------------------------------------------
@@ -146,7 +147,7 @@ export async function connectAndWatch(
         process.stdout.write(`[watch] Connecting to ${url}\n`);
       }
 
-      const response = await fetchFn(url, { signal });
+      const response = await fetchFn(url, withTodosAuth(url, { signal }));
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);

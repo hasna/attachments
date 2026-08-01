@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { resolveStore } from "../../core/store";
+import { withTodosAuth } from "../../core/todos";
 
 export interface LinkTaskOptions {
   todosUrl?: string;
@@ -42,7 +43,7 @@ export async function linkAttachmentToTask(
   };
 
   const url = `${todosUrl}/api/tasks/${taskId}`;
-  const response = await fetchFn(url, {
+  const response = await fetchFn(url, withTodosAuth(url, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -50,7 +51,7 @@ export async function linkAttachmentToTask(
         _attachments: [entry],
       },
     }),
-  });
+  }));
 
   if (!response.ok) {
     if (response.status === 404) {

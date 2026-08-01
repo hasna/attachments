@@ -29,6 +29,8 @@ download caps, email gates, expiry beyond seven days, and `never` expiry.
 |----------|---------|
 | `HASNA_ATTACHMENTS_DB_PATH` | SQLite database override |
 | `ATTACHMENTS_API_TOKEN`, `HASNA_ATTACHMENTS_API_TOKEN` | Local `/api` authentication |
+| `HASNA_TODOS_API_KEY`, `TODOS_API_KEY` | Todos API authentication for task integrations |
+| `HASNA_TODOS_API_URL`, `TODOS_API_URL` | Trusted non-default Todos API origin for sending todos authentication |
 | `ATTACHMENTS_MAX_SIZE` | Upload limit override in bytes |
 | `ATTACHMENTS_TRACK_COSTS` | Enables economy tracking when set |
 | `ATTACHMENTS_ECONOMY_URL` | Economy URL; defaults to `http://localhost:3460` |

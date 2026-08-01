@@ -174,6 +174,7 @@ describe("completeTaskWithFiles", () => {
   it("uploads files, PATCHes evidence into task metadata, then completes", async () => {
     const upload = makeUpload("att_001", "https://example.com/att_001");
     const fakeFetch = makeFetch();
+    process.env.HASNA_TODOS_API_KEY = "remote-key";
 
     const result = await completeTaskWithFiles(
       "TASK-001",
@@ -182,6 +183,7 @@ describe("completeTaskWithFiles", () => {
       makeStoreFactory(upload),
       fakeFetch
     );
+    delete process.env.HASNA_TODOS_API_KEY;
 
     expect(upload).toHaveBeenCalledTimes(1);
     expect(upload).toHaveBeenCalledWith("/tmp/file.txt", { expiry: undefined });
@@ -189,6 +191,7 @@ describe("completeTaskWithFiles", () => {
     const calls = (fakeFetch as ReturnType<typeof mock>).mock.calls as Array<[string, RequestInit | undefined]>;
     // GET -> PATCH -> POST /complete
     expect(calls).toHaveLength(3);
+    expect(calls.every(([, init]) => new Headers(init?.headers).get("x-api-key") === "remote-key")).toBe(true);
     expect(calls[0][0]).toBe("http://localhost:3000/api/tasks/TASK-001");
     expect((calls[0][1]?.method ?? "GET").toUpperCase()).toBe("GET");
     expect(calls[1][0]).toBe("http://localhost:3000/api/tasks/TASK-001");

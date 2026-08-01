@@ -92,7 +92,11 @@ describe("fetchTaskMeta", () => {
       assignee: "aurelius",
       created_at: "2026-03-14T10:23:00Z",
     });
+    process.env.TODOS_API_KEY = "remote-key";
     const meta = await fetchTaskMeta("TASK-001", "http://localhost:3000", fakeFetch);
+    delete process.env.TODOS_API_KEY;
+    const [, init] = (fakeFetch as ReturnType<typeof mock>).mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("x-api-key")).toBe("remote-key");
     expect(meta).not.toBeNull();
     expect(meta?.subject).toBe("Fix auth bug");
     expect(meta?.status).toBe("completed");
@@ -124,7 +128,11 @@ describe("fetchTaskHistory", () => {
       { timestamp: "2026-03-14T10:45:00Z", action: "started", actor: "aurelius" },
       { timestamp: "2026-03-14T11:30:00Z", action: "completed", actor: "aurelius", progress: 100 },
     ]);
+    process.env.HASNA_TODOS_API_KEY = "remote-key";
     const history = await fetchTaskHistory("TASK-001", "http://localhost:3000", fakeFetch);
+    delete process.env.HASNA_TODOS_API_KEY;
+    const [, init] = (fakeFetch as ReturnType<typeof mock>).mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("x-api-key")).toBe("remote-key");
     expect(history).toHaveLength(3);
     expect(history[0].action).toBe("created");
     expect(history[0].actor).toBe("julius");

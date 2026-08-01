@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import type { Attachment } from "../../core/db";
 import { resolveStore, type Store } from "../../core/store";
+import { withTodosAuth } from "../../core/todos";
 
 export interface TaskJournalOptions {
   todosUrl?: string;
@@ -39,7 +40,8 @@ export async function fetchTaskMeta(
   fetchFn: typeof fetch = fetch
 ): Promise<TaskMeta | null> {
   try {
-    const response = await fetchFn(`${todosUrl}/api/tasks/${taskId}`);
+    const url = `${todosUrl}/api/tasks/${taskId}`;
+    const response = await fetchFn(url, withTodosAuth(url));
     if (response.status === 404) return null;
     if (!response.ok) return null;
     const data = await response.json() as Record<string, unknown>;
@@ -66,7 +68,8 @@ export async function fetchTaskHistory(
   fetchFn: typeof fetch = fetch
 ): Promise<TaskHistoryEntry[]> {
   try {
-    const response = await fetchFn(`${todosUrl}/api/tasks/${taskId}/history`);
+    const url = `${todosUrl}/api/tasks/${taskId}/history`;
+    const response = await fetchFn(url, withTodosAuth(url));
     if (!response.ok) return [];
     const data = await response.json() as unknown;
     if (!Array.isArray(data)) return [];
@@ -261,7 +264,8 @@ export function registerTaskJournal(program: Command): void {
         if (!todosReachable && journal.attachments.length === 0 && !journal.task.subject) {
           // Attempt a direct 404 check
           try {
-            const response = await fetch(`${todosUrl}/api/tasks/${taskId}`);
+            const url = `${todosUrl}/api/tasks/${taskId}`;
+            const response = await fetch(url, withTodosAuth(url));
             if (response.status === 404) {
               process.stderr.write(`Error: Task not found: ${taskId}\n`);
               process.exit(1);

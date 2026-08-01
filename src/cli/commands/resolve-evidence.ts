@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { resolveStore } from "../../core/store";
+import { withTodosAuth } from "../../core/todos";
 
 export interface ResolveEvidenceOptions {
   todosUrl?: string;
@@ -36,7 +37,7 @@ export async function resolveEvidence(
 
   let response: Response;
   try {
-    response = await fetchFn(url);
+    response = await fetchFn(url, withTodosAuth(url));
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Could not reach todos server at ${todosUrl}: ${message}`);
