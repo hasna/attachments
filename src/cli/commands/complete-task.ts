@@ -76,7 +76,7 @@ export async function completeTaskWithFiles(
 
   // 2. Read the current task so we can merge (not clobber) its metadata and honor
   //    optimistic concurrency via its version.
-  const getResponse = await fetchFn(taskUrl, withTodosAuth());
+  const getResponse = await fetchFn(taskUrl, withTodosAuth(taskUrl));
   if (!getResponse.ok) {
     if (getResponse.status === 404) {
       throw new Error(`Task not found: ${taskId}`);
@@ -115,7 +115,7 @@ export async function completeTaskWithFiles(
   if (typeof task.version === "number") {
     patchBody.version = task.version;
   }
-  const patchResponse = await fetchFn(taskUrl, withTodosAuth({
+  const patchResponse = await fetchFn(taskUrl, withTodosAuth(taskUrl, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patchBody),
@@ -128,7 +128,8 @@ export async function completeTaskWithFiles(
   }
 
   // 4. Mark the task complete.
-  const completeResponse = await fetchFn(`${taskUrl}/complete`, withTodosAuth({
+  const completeUrl = `${taskUrl}/complete`;
+  const completeResponse = await fetchFn(completeUrl, withTodosAuth(completeUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),

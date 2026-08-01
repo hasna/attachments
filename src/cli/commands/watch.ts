@@ -147,7 +147,7 @@ export async function connectAndWatch(
         process.stdout.write(`[watch] Connecting to ${url}\n`);
       }
 
-      const response = await fetchFn(url, withTodosAuth({ signal }));
+      const response = await fetchFn(url, withTodosAuth(url, { signal }));
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);

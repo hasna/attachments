@@ -43,7 +43,7 @@ export async function linkAttachmentToTask(
   };
 
   const url = `${todosUrl}/api/tasks/${taskId}`;
-  const response = await fetchFn(url, withTodosAuth({
+  const response = await fetchFn(url, withTodosAuth(url, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
