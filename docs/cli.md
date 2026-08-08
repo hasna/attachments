@@ -47,7 +47,16 @@ Supports `--format compact|json|table`, `--expired`, `--limit <n>` (default
 ### `link <id>`
 
 Shows the current link. `--regenerate` accepts `--expiry`, `--password`, and
-`--max-downloads`. Output supports `--format human|json` and `--brief`.
+`--max-downloads`. Add `--slug <friendly-slug> --password <password>` to mint a
+password-protected `https://<public-host>/a/<friendly-slug>` alias. Friendly
+slugs use lowercase letters, numbers, and single hyphens. Output supports
+`--format human|json` and `--brief`.
+
+### `slug <slug>`
+
+Checks whether a friendly alias is available without creating a share link.
+`--format human|json` controls output, and `--brief` prints only `available` or
+`unavailable`. An unavailable valid slug exits with code `2`.
 
 ## Direct S3 Upload
 
@@ -124,4 +133,6 @@ attachments complete-task TASK-042 \
 attachments snapshot-session session-id --expiry 7d --tag session:session-id
 attachments report --project attachments --format markdown
 attachments health-check --fix --format json
+attachments slug company-closing-packet --format json
+attachments link att_123 --regenerate --slug company-closing-packet --password "$ATTACHMENT_PASSWORD"
 ```

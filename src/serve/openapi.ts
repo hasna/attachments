@@ -82,6 +82,7 @@ export function buildOpenApiDocument(version: string): Record<string, unknown> {
           properties: {
             link: { type: "string", nullable: true },
             expires_at: { type: "integer", nullable: true },
+            slug: { type: "string" },
           },
           required: ["link"],
         },
@@ -92,7 +93,21 @@ export function buildOpenApiDocument(version: string): Record<string, unknown> {
             password: { type: "string" },
             max_downloads: { type: "integer" },
             link_type: { type: "string", enum: ["presigned", "server"] },
+            slug: {
+              type: "string",
+              pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+              minLength: 3,
+              maxLength: 64,
+            },
           },
+        },
+        SlugAvailability: {
+          type: "object",
+          properties: {
+            slug: { type: "string" },
+            available: { type: "boolean" },
+          },
+          required: ["slug", "available"],
         },
         DeleteResponse: {
           type: "object",
@@ -206,6 +221,33 @@ export function buildOpenApiDocument(version: string): Record<string, unknown> {
           },
           responses: {
             "200": { content: { "application/json": { schema: { $ref: "#/components/schemas/LinkResponse" } } } },
+          },
+        },
+      },
+      "/v1/slugs/{slug}": {
+        get: {
+          operationId: "getFriendlySlugAvailability",
+          summary: "Check whether a friendly /a/<slug> alias is available.",
+          security: [{ apiKey: [] }],
+          parameters: [
+            {
+              name: "slug",
+              in: "path",
+              required: true,
+              schema: {
+                type: "string",
+                pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                minLength: 3,
+                maxLength: 64,
+              },
+            },
+          ],
+          responses: {
+            "200": {
+              content: {
+                "application/json": { schema: { $ref: "#/components/schemas/SlugAvailability" } },
+              },
+            },
           },
         },
       },

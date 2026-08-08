@@ -100,6 +100,44 @@ describe("resolveAttachmentsV1", () => {
     expect(calls[0]!.method).toBe("DELETE");
     expect(calls[0]!.url).toBe(`${BASE}/v1/attachments/att_x`);
   });
+
+  test("checks friendly slug availability through the read-only slug route", async () => {
+    const { calls, fetchImpl } = mockFetch(() => ({
+      status: 200,
+      body: { slug: "company-closing-packet", available: true },
+    }));
+    const r = resolveAttachmentsV1(cloudEnv, { fetchImpl });
+    if (r.transport !== "cloud-http") throw new Error("expected cloud");
+    expect(await r.store.isSlugAvailable("company-closing-packet")).toBe(true);
+    expect(calls[0]!.method).toBe("GET");
+    expect(calls[0]!.url).toBe(`${BASE}/v1/slugs/company-closing-packet`);
+  });
+
+  test("passes a friendly slug when regenerating a password-protected link", async () => {
+    const { calls, fetchImpl } = mockFetch(() => ({
+      status: 200,
+      body: {
+        link: "https://has.na/a/company-closing-packet",
+        expires_at: null,
+        slug: "company-closing-packet",
+      },
+    }));
+    const r = resolveAttachmentsV1(cloudEnv, { fetchImpl });
+    if (r.transport !== "cloud-http") throw new Error("expected cloud");
+    const result = await r.store.regenerateLink("att_1", {
+      slug: "company-closing-packet",
+      password: "passphrase",
+      linkType: "server",
+    });
+    expect(result.slug).toBe("company-closing-packet");
+    expect(calls[0]!.method).toBe("POST");
+    expect(calls[0]!.url).toBe(`${BASE}/v1/attachments/att_1/link`);
+    expect(JSON.parse(calls[0]!.body!)).toMatchObject({
+      slug: "company-closing-packet",
+      password: "passphrase",
+      link_type: "server",
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

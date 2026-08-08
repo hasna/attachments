@@ -51,6 +51,7 @@ import {
 } from "./upload";
 import { downloadAttachment, type DownloadResult } from "./download";
 import { resolveAttachmentsV1, type AttachmentsV1Store, type V1UploadOptions } from "./cloud-v1";
+import { parseFriendlySlug, requireFriendlySlugPassword } from "./friendly-slug";
 
 export type { UploadOptions } from "./upload";
 
@@ -58,6 +59,7 @@ export type { UploadOptions } from "./upload";
 export interface LinkResult {
   link: string | null;
   expires_at: number | null;
+  slug?: string;
 }
 
 export interface ListOptions {
@@ -71,6 +73,7 @@ export interface RegenerateLinkOptions {
   password?: string;
   maxDownloads?: number;
   linkType?: "presigned" | "server";
+  slug?: string;
 }
 
 /** A single feedback note about the service. */
@@ -109,6 +112,7 @@ export interface Store {
   deleteExpired(): Promise<number>;
 
   getLink(id: string): Promise<LinkResult>;
+  isSlugAvailable(slug: string): Promise<boolean>;
   regenerateLink(id: string, options: RegenerateLinkOptions): Promise<LinkResult>;
 
   download(idOrUrl: string, output?: string, options?: { password?: string }): Promise<DownloadResult>;
@@ -240,11 +244,21 @@ export class LocalStore implements Store {
     return { link: att.link, expires_at: att.expiresAt };
   }
 
+  async isSlugAvailable(slugInput: string): Promise<boolean> {
+    const slug = parseFriendlySlug(slugInput);
+    return this.db().findShareLinkByToken(slug) === null;
+  }
+
   async regenerateLink(id: string, options: RegenerateLinkOptions): Promise<LinkResult> {
     const db = this.db();
     const att = db.findById(id);
     if (!att) throw new Error(`Attachment not found: ${id}`);
 
+    const slug = options.slug ? parseFriendlySlug(options.slug) : undefined;
+    requireFriendlySlugPassword(slug, options.password);
+    if (slug && !(await this.isSlugAvailable(slug))) {
+      throw new Error(`Friendly slug is already in use: ${slug}`);
+    }
     const { milliseconds: expiryMs } = parseExpiryStrict(options.expiry ?? this.config.defaults.expiry);
     const expiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
     const linkType = resolveDeliverableLinkType({
@@ -253,6 +267,7 @@ export class LocalStore implements Store {
       expiryMs,
       password: options.password,
       maxDownloads: options.maxDownloads,
+      slug,
     });
 
     let link: string;
@@ -262,6 +277,7 @@ export class LocalStore implements Store {
       const { token } = db.createShareLink({
         attachmentId: att.id,
         expiresAt,
+        token: slug,
         password: options.password,
         maxUses: options.maxDownloads ?? null,
       });
@@ -272,7 +288,7 @@ export class LocalStore implements Store {
       );
     }
     db.updateLink(att.id, link, expiresAt);
-    return { link, expires_at: expiresAt };
+    return { link, expires_at: expiresAt, ...(slug ? { slug } : {}) };
   }
 
   async download(idOrUrl: string, output?: string, options: { password?: string } = {}): Promise<DownloadResult> {
@@ -433,6 +449,10 @@ export class ApiStore implements Store {
 
   getLink(id: string): Promise<LinkResult> {
     return this.v1.getLink(id);
+  }
+
+  isSlugAvailable(slug: string): Promise<boolean> {
+    return this.v1.isSlugAvailable(slug);
   }
 
   regenerateLink(id: string, options: RegenerateLinkOptions): Promise<LinkResult> {

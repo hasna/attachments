@@ -85,6 +85,7 @@ export interface DeliverableLinkTypeInput {
   encrypt?: boolean;
   maxDownloads?: number | null;
   requireEmail?: boolean;
+  slug?: string;
 }
 
 /**
@@ -99,7 +100,7 @@ export interface DeliverableLinkTypeInput {
 export function resolveDeliverableLinkType(input: DeliverableLinkTypeInput): "presigned" | "server" {
   if (input.requested === "server") return "server";
   if (input.backend !== "s3") return "server";
-  if (input.password || input.encrypt || input.requireEmail) return "server";
+  if (input.password || input.encrypt || input.requireEmail || input.slug) return "server";
   if (input.maxDownloads !== undefined && input.maxDownloads !== null) return "server";
   if (exceedsPresignLimit(input.expiryMs)) return "server";
   return "presigned";

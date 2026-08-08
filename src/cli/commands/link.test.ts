@@ -16,12 +16,14 @@ type MockAttachment = {
 const mockFindById = mock((_id: string): MockAttachment | null => null);
 const mockUpdateLink = mock((_id: string, _link: string, _expiresAt?: number | null) => {});
 const mockDbClose = mock(() => {});
+const mockFindShareLinkByToken = mock((_token: string) => null);
 const mockCreateShareLink = mock((_input: unknown) => ({ shareLink: {}, token: "share_linktest" }));
 
 mock.module("../../core/db", () => ({
   AttachmentsDB: class MockAttachmentsDB {
     constructor(_path?: string) {}
     findById = mockFindById;
+    findShareLinkByToken = mockFindShareLinkByToken;
     updateLink = mockUpdateLink;
     createShareLink = mockCreateShareLink;
     close = mockDbClose;
@@ -200,6 +202,8 @@ describe("linkCommand", () => {
     mockFindById.mockReset();
     mockUpdateLink.mockReset();
     mockDbClose.mockReset();
+    mockFindShareLinkByToken.mockReset();
+    mockFindShareLinkByToken.mockImplementation(() => null);
     mockS3Presign.mockReset();
     mockCreateShareLink.mockReset();
     mockCreateShareLink.mockImplementation(() => ({ shareLink: {}, token: "share_linktest" }));
@@ -316,6 +320,43 @@ describe("linkCommand", () => {
     } finally {
       capture.restore();
       setConfig({ defaults: { expiry: "7d", linkType: "presigned" } });
+    }
+  });
+
+  it("creates a password-protected friendly alias when --slug is provided", async () => {
+    const att = makeAttachment({ id: "att_friendly" });
+    mockFindById.mockImplementation(() => att);
+
+    const capture = captureOutput();
+    try {
+      const program = buildLinkCmd();
+      await program.parseAsync(
+        [
+          "link",
+          "att_friendly",
+          "--regenerate",
+          "--slug",
+          "company-closing-packet",
+          "--password",
+          "passphrase",
+          "--format",
+          "json",
+        ],
+        { from: "user" },
+      );
+      expect(mockFindShareLinkByToken).toHaveBeenCalledWith("company-closing-packet");
+      expect(mockCreateShareLink).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attachmentId: "att_friendly",
+          token: "company-closing-packet",
+          password: "passphrase",
+        }),
+      );
+      expect(mockGeneratePresignedLink).not.toHaveBeenCalled();
+      const parsed = JSON.parse(capture.out.join(""));
+      expect(parsed.slug).toBe("company-closing-packet");
+    } finally {
+      capture.restore();
     }
   });
 

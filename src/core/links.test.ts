@@ -156,6 +156,7 @@ describe("resolveDeliverableLinkType", () => {
     expect(resolveDeliverableLinkType({ ...base, password: "x" })).toBe("server");
     expect(resolveDeliverableLinkType({ ...base, maxDownloads: 1 })).toBe("server");
     expect(resolveDeliverableLinkType({ ...base, requireEmail: true })).toBe("server");
+    expect(resolveDeliverableLinkType({ ...base, slug: "friendly-link" })).toBe("server");
     expect(resolveDeliverableLinkType({ ...base, encrypt: true })).toBe("server");
     expect(resolveDeliverableLinkType({ ...base, backend: "local" })).toBe("server");
     expect(resolveDeliverableLinkType({ ...base, requested: "server" })).toBe("server");

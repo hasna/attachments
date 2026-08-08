@@ -91,10 +91,17 @@ export interface AttachmentsV1Store {
   uploadUrl(url: string, options?: V1UploadOptions): Promise<Attachment>;
   delete(id: string): Promise<void>;
   getLink(id: string): Promise<{ link: string | null; expires_at: number | null }>;
+  isSlugAvailable(slug: string): Promise<boolean>;
   regenerateLink(
     id: string,
-    options: { expiry?: string; password?: string; maxDownloads?: number; linkType?: "presigned" | "server" },
-  ): Promise<{ link: string | null; expires_at: number | null }>;
+    options: {
+      expiry?: string;
+      password?: string;
+      maxDownloads?: number;
+      linkType?: "presigned" | "server";
+      slug?: string;
+    },
+  ): Promise<{ link: string | null; expires_at: number | null; slug?: string }>;
   download(id: string, output: string | undefined, options?: { password?: string }): Promise<V1DownloadResult>;
   saveFeedback(input: { message: string; email?: string | null; category?: string; version?: string | null }): Promise<void>;
 }
@@ -327,12 +334,20 @@ function makeStore(client: HasnaStorageClient, env: NodeJS.ProcessEnv): Attachme
       return client.transport.get(`/attachments/${encodeURIComponent(id)}/link`);
     },
 
+    async isSlugAvailable(slug: string): Promise<boolean> {
+      const result = await client.transport.get<{ slug: string; available: boolean }>(
+        `/slugs/${encodeURIComponent(slug)}`,
+      );
+      return result.available;
+    },
+
     async regenerateLink(id, options): Promise<{ link: string | null; expires_at: number | null }> {
       return client.transport.post(`/attachments/${encodeURIComponent(id)}/link`, {
         expiry: options.expiry,
         password: options.password,
         max_downloads: options.maxDownloads,
         link_type: options.linkType,
+        slug: options.slug,
       });
     },
 

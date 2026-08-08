@@ -224,12 +224,13 @@ export class PgAttachmentsStore {
   async createShareLink(input: {
     attachmentId: string;
     expiresAt: number | null;
+    token?: string;
     password?: string;
     maxUses?: number | null;
     requireEmail?: boolean;
     allowedEmails?: string[] | null;
   }): Promise<{ shareLink: ShareLink; token: string }> {
-    const token = generateShareToken();
+    const token = input.token ?? generateShareToken();
     const now = Date.now();
     const allowedEmails =
       input.allowedEmails && input.allowedEmails.length > 0 ? input.allowedEmails : null;
