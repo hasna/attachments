@@ -35,6 +35,11 @@ import {
   resolveDeliverableLinkType,
 } from "../core/links.js";
 import { createObjectKey, sanitizeFilename, contentDispositionAttachment } from "../core/security.js";
+import {
+  FriendlySlugError,
+  parseFriendlySlug,
+  requireFriendlySlugPassword,
+} from "../core/friendly-slug.js";
 import { buildOpenApiDocument } from "./openapi.js";
 import { registerCloudPublicRoutes } from "./public-routes.js";
 
@@ -66,6 +71,7 @@ function toApiAttachment(a: Attachment) {
 
 /** Thrown for caller mistakes that must surface as HTTP 400, never a bare 500. */
 class BadRequestError extends Error {}
+class ConflictError extends Error {}
 
 /**
  * Turn a handler failure into a response. Caller mistakes become 400 with the
@@ -76,6 +82,9 @@ class BadRequestError extends Error {}
 function badRequestOrRethrow(c: Context, err: unknown): Response {
   if (err instanceof BadRequestError || err instanceof PresignExpiryError) {
     return c.json({ error: err.message }, 400);
+  }
+  if (err instanceof ConflictError) {
+    return c.json({ error: err.message }, 409);
   }
   const message = err instanceof Error ? err.message : String(err);
   console.error("[v1]", c.req.method, c.req.path, message);
@@ -88,6 +97,23 @@ function parseExpiryOr400(expiry: string): { milliseconds: number | null; never:
   } catch (err) {
     throw new BadRequestError(err instanceof Error ? err.message : String(err));
   }
+}
+
+function parseFriendlySlugOr400(slug: string): string {
+  try {
+    return parseFriendlySlug(slug);
+  } catch (err) {
+    if (err instanceof FriendlySlugError) throw new BadRequestError(err.message);
+    throw err;
+  }
+}
+
+function isShareTokenConflict(err: unknown): boolean {
+  const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  return (
+    (message.includes("unique") || message.includes("duplicate")) &&
+    (message.includes("token_hash") || message.includes("share_links"))
+  );
 }
 
 interface ParsedMultipartUpload {
@@ -225,6 +251,18 @@ export function createServeApp(deps: ServeAppDeps): Hono {
   app.get("/openapi.json", (c) => c.json(buildOpenApiDocument(version)));
 
   // ── /v1 API ──────────────────────────────────────────────────────────────
+  app.get("/v1/slugs/:slug", async (c) => {
+    const denied = await requireScopes(c, [`${APP_SLUG}:read`]);
+    if (denied) return denied;
+    try {
+      const slug = parseFriendlySlugOr400(c.req.param("slug"));
+      const existing = await store.findShareLinkByToken(slug);
+      return c.json({ slug, available: existing === null });
+    } catch (err) {
+      return badRequestOrRethrow(c, err);
+    }
+  });
+
   app.get("/v1/attachments", async (c) => {
     const denied = await requireScopes(c, [`${APP_SLUG}:read`]);
     if (denied) return denied;
@@ -448,8 +486,19 @@ export function createServeApp(deps: ServeAppDeps): Hono {
       password?: string;
       max_downloads?: number;
       link_type?: "presigned" | "server";
+      slug?: string;
     };
     try {
+      const slug = body.slug ? parseFriendlySlugOr400(body.slug) : undefined;
+      try {
+        requireFriendlySlugPassword(slug, body.password);
+      } catch (err) {
+        if (err instanceof FriendlySlugError) throw new BadRequestError(err.message);
+        throw err;
+      }
+      if (slug && (await store.findShareLinkByToken(slug))) {
+        throw new ConflictError(`Friendly slug is already in use: ${slug}`);
+      }
       const { milliseconds: expiryMs } = parseExpiryOr400(body.expiry ?? config.defaults.expiry);
       const newExpiresAt = expiryMs !== null ? Date.now() + expiryMs : null;
       const linkType = resolveDeliverableLinkType({
@@ -458,22 +507,37 @@ export function createServeApp(deps: ServeAppDeps): Hono {
         expiryMs,
         password: body.password,
         maxDownloads: body.max_downloads,
+        slug,
       });
 
       let newLink: string;
       if (linkType === "presigned") {
         newLink = await generatePresignedLink(new S3Client(config.s3), attachment.s3Key, expiryMs);
       } else {
-        const { token } = await store.createShareLink({
-          attachmentId: id,
-          expiresAt: newExpiresAt,
-          password: body.password,
-          maxUses: body.max_downloads ?? null,
-        });
+        let token: string;
+        try {
+          ({ token } = await store.createShareLink({
+            attachmentId: id,
+            expiresAt: newExpiresAt,
+            token: slug,
+            password: body.password,
+            maxUses: body.max_downloads ?? null,
+          }));
+        } catch (err) {
+          if (slug && isShareTokenConflict(err)) {
+            throw new ConflictError(`Friendly slug is already in use: ${slug}`);
+          }
+          throw err;
+        }
         newLink = generateShareLink(token, publicBaseUrl, config.server.publicPath);
       }
       await store.updateLink(id, newLink, newExpiresAt);
-      return c.json({ link: newLink, expires_at: newExpiresAt, link_type: linkType });
+      return c.json({
+        link: newLink,
+        expires_at: newExpiresAt,
+        link_type: linkType,
+        ...(slug ? { slug } : {}),
+      });
     } catch (err) {
       return badRequestOrRethrow(c, err);
     }

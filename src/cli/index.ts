@@ -25,6 +25,7 @@ import { linkCommand } from "./commands/link";
 import { configCommand } from "./commands/config";
 import { initCommand, heartbeatCommand, focusCommand } from "./commands/agent";
 import { domainCommand } from "./commands/domain";
+import { slugCommand } from "./commands/slug";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkgVersion: string = (() => { try { return (require("../../package.json") as { version: string }).version; } catch { return process.env.npm_package_version ?? "unknown"; } })();
@@ -58,6 +59,7 @@ program.addCommand(removeCommand());
 program.addCommand(linkCommand());
 program.addCommand(configCommand());
 program.addCommand(domainCommand());
+program.addCommand(slugCommand());
 program.addCommand(initCommand());
 program.addCommand(heartbeatCommand());
 program.addCommand(focusCommand());

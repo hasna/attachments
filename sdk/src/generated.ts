@@ -14,9 +14,11 @@ export interface VersionInfo { "status": string; "version": string; "mode": stri
 
 export interface CreateAttachmentRequest { "filename": string; "content_base64": string; "expiry"?: string; "tag"?: string; "password"?: string; "max_downloads"?: number; "link_type"?: "presigned" | "server" }
 
-export interface LinkResponse { "link": string | null; "expires_at"?: number | null }
+export interface LinkResponse { "link": string | null; "expires_at"?: number | null; "slug"?: string }
 
-export interface RegenerateLinkRequest { "expiry"?: string; "password"?: string; "max_downloads"?: number; "link_type"?: "presigned" | "server" }
+export interface RegenerateLinkRequest { "expiry"?: string; "password"?: string; "max_downloads"?: number; "link_type"?: "presigned" | "server"; "slug"?: string }
+
+export interface SlugAvailability { "slug": string; "available": boolean }
 
 export interface DeleteResponse { "deleted": boolean; "id": string }
 
@@ -146,6 +148,15 @@ export class AttachmentsApiClient {
     async regenerateAttachmentLink(id: string, body?: RegenerateLinkRequest, init?: RequestInit): Promise<LinkResponse> {
       return this.request("POST", `/v1/attachments/${encodeURIComponent(String(id))}/link`, {
         body,
+        query: undefined,
+        init,
+      });
+    }
+
+    /** Check whether a friendly /a/<slug> alias is available. */
+    async getFriendlySlugAvailability(slug: string, init?: RequestInit): Promise<SlugAvailability> {
+      return this.request("GET", `/v1/slugs/${encodeURIComponent(String(slug))}`, {
+        body: undefined,
         query: undefined,
         init,
       });

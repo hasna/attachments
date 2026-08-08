@@ -13,6 +13,7 @@ export type { AttachmentsConfig } from "./core/config.js";
 export { S3Client } from "./core/s3.js";
 export type { S3Config } from "./core/s3.js";
 export { generatePresignedLink, generateServerLink, generateShareLink, getLinkType } from "./core/links.js";
+export { FriendlySlugError, parseFriendlySlug, requireFriendlySlugPassword } from "./core/friendly-slug.js";
 export { resolveShareAccess, ShareAccessError } from "./core/share.js";
 export { LocalObjectStore, createObjectStore } from "./core/object-storage.js";
 export { buildDeploymentPlan } from "./core/deployment.js";

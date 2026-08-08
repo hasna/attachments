@@ -54,12 +54,16 @@ export class InMemoryAttachmentsStore {
   async createShareLink(input: {
     attachmentId: string;
     expiresAt: number | null;
+    token?: string;
     password?: string;
     maxUses?: number | null;
     requireEmail?: boolean;
     allowedEmails?: string[] | null;
   }): Promise<{ shareLink: ShareLink; token: string }> {
-    const token = generateShareToken();
+    const token = input.token ?? generateShareToken();
+    if (this.shareLinks.some((link) => link.tokenHash === hashShareToken(token))) {
+      throw new Error("Friendly slug is already in use.");
+    }
     const shareLink: ShareLink = {
       id: `share_${generateShareToken().slice(0, 16)}`,
       attachmentId: input.attachmentId,

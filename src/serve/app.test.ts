@@ -103,6 +103,7 @@ describe("attachments serve app", () => {
       "/v1/attachments",
       "/v1/attachments/{id}",
       "/v1/attachments/{id}/link",
+      "/v1/slugs/{slug}",
       "/version",
     ]);
   });

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Friendly, password-protected share aliases are now supported end to end. Use
+  `attachments slug <slug>` for a read-only availability check, then
+  `attachments link <id> --regenerate --slug <slug> --password <password>` to
+  create `https://<public-host>/a/<slug>`. Slugs are stored only as hashes in
+  the existing share-link table, so no schema migration is required.
+
 ## [1.1.5] - 2026-07-25
 
 ### Fixed

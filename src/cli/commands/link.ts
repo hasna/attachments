@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { getConfig } from "../../core/config";
 import { resolveStore } from "../../core/store";
 import { formatExpiry } from "../utils";
+import { parseFriendlySlug } from "../../core/friendly-slug";
 
 export function linkCommand(): Command {
   const cmd = new Command("link")
@@ -10,6 +11,7 @@ export function linkCommand(): Command {
     .option("--regenerate", "Generate a fresh share link", false)
     .option("--expiry <time>", "Expiry duration for regenerated link (e.g. 7d, 24h, 30m, never)")
     .option("--password <password>", "Require a password for the regenerated link")
+    .option("--slug <slug>", "Create a friendly /a/<slug> alias (requires --regenerate and --password)")
     .option("--max-downloads <count>", "Maximum successful downloads for the regenerated link")
     .option("--format <format>", "Output format: human or json", "human")
     .option("--brief", "Compact one-line output")
@@ -21,6 +23,15 @@ export function linkCommand(): Command {
       }
 
       const config = getConfig();
+      const slug = options.slug ? parseFriendlySlug(options.slug as string) : undefined;
+      if (slug && !options.regenerate) {
+        process.stderr.write("Error: --slug requires --regenerate\n");
+        process.exit(1);
+      }
+      if (slug && !options.password) {
+        process.stderr.write("Error: --slug requires --password because friendly URLs are guessable\n");
+        process.exit(1);
+      }
       const maxDownloads = options.maxDownloads ? parseInt(options.maxDownloads as string, 10) : undefined;
       if (maxDownloads !== undefined && (!Number.isInteger(maxDownloads) || maxDownloads <= 0)) {
         process.stderr.write("Error: --max-downloads must be a positive integer\n");
@@ -35,13 +46,14 @@ export function linkCommand(): Command {
           process.exit(1);
         }
 
-        let result: { link: string | null; expires_at: number | null };
+        let result: { link: string | null; expires_at: number | null; slug?: string };
         if (options.regenerate) {
           result = await store.regenerateLink(id, {
             expiry: options.expiry,
             password: options.password as string | undefined,
             maxDownloads,
             linkType: config.defaults.linkType,
+            slug,
           });
         } else {
           result = await store.getLink(id);
@@ -51,7 +63,13 @@ export function linkCommand(): Command {
           process.stdout.write(`${result.link ?? "no link"}\n`);
         } else if (format === "json") {
           process.stdout.write(
-            JSON.stringify({ id: att.id, filename: att.filename, link: result.link, expiresAt: result.expires_at }, null, 2) +
+            JSON.stringify({
+              id: att.id,
+              filename: att.filename,
+              link: result.link,
+              expiresAt: result.expires_at,
+              ...(result.slug ? { slug: result.slug } : {}),
+            }, null, 2) +
               "\n"
           );
         } else {
